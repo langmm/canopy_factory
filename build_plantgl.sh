@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+if [ ! -d plantgl ]; then
+    git clone git@github.com:openalea/plantgl.git
+fi
+cd plantgl
+if [ ! -d build ]; then
+    mkdir build
+fi
+cd build
+conda run -n lpy \
+      cmake -DCMAKE_INSTALL_PREFIX=${CONDA_PREFIX} \
+      -DCMAKE_PREFIX_PATH=${CONDA_PREFIX} \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBISON_ROOT=${CONDA_PREFIX} \
+      -DPython3_ROOT_DIR=${CONDA_PREFIX} \
+      -DPython3_FIND_STRATEGY=LOCATION \
+      ..
+conda run -n lpy make -j 8
+conda run -n lpy make install
+cd ..
+conda run -n lpy pip install .

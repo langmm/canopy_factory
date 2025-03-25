@@ -1,0 +1,10 @@
+name: lpy
+channels:
+  - conda-forge
+  - fredboudon
+dependencies:
+  - openalea.lpy
+  - yggdrasil
+  - pandas
+  - scipy
+  - numpy

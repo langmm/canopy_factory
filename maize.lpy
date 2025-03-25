@@ -1,0 +1,149 @@
+# Adapted from:
+# Mikolaj Cieslak, Nazifa Khan, Pascal Ferraro, Raju Soolanayakanahally,
+#   Stephen J Robinson, Isobel Parkin, Ian McQuillan, Przemyslaw
+#   Prusinkiewicz, L-system models for image-based phenomics: case
+#   studies of maize and canola, in silico Plants, Volume 4, Issue 1,
+#   2022, diab039, https://doi.org/10.1093/insilicoplants/diab039
+
+import numpy as np
+from maize3D import MaizeGenerator
+from openalea.plantgl.all import NurbsCurve2D, Point3Array, Point2Array
+
+############################################################
+## External parameters
+############################################################
+
+extern(MAIZE3D_PARAM = {})
+extern(PLASTOCHRON = 3)  # 3 days
+extern(NLEAFDIVIDE = 10)
+extern(OUTPUT_TIME = 27)
+extern(START_TIME = OUTPUT_TIME)
+
+extern(InternodeLength = 8.5)  # 8.5 cm
+extern(InternodeLengthMean = 1.0)
+extern(InternodeLengthStdDev = 0.2)
+extern(InternodeLengthAgeMature = 1.0)
+extern(LeafLength = 60.0)  # 60 cm
+extern(LeafLengthMean = 1.0)
+extern(LeafLengthStdDev = 0.2)
+extern(LeafLengthAgeMature = 6.3)
+extern(InternodeWidthExp = 0.15)  # 1.5)
+extern(LeafWidthExp = 0.25)
+extern(BranchAngle = 90)
+extern(BranchAngleMean = 1.0)
+extern(BranchAngleStdDev = 0.1)
+extern(BranchAngleAgeMature = 4.2)
+extern(RotationAngle = 180)
+extern(RotationAngleMean = 1.0)
+extern(RotationAngleStdDev = 0.1)
+extern(LeafAgeMax = 27)
+extern(ApexNMax = 20)
+extern(LeafNMax = ApexNMax)
+extern(LeafBendMean = 1.0)
+extern(LeafBendStdDev = 0.1)
+extern(LeafTwistMean = 1.0)
+extern(LeafTwistStdDev = 0.1)
+
+DX = 1.0 / NLEAFDIVIDE
+
+
+############################################################
+## Python functions
+############################################################
+
+generator = MaizeGenerator(
+    InternodeLength=InternodeLength,
+    InternodeLengthMean=InternodeLengthMean,
+    InternodeLengthStdDev=InternodeLengthStdDev,
+    LeafLength=LeafLength,
+    LeafLengthMean=LeafLengthMean,
+    LeafLengthStdDev=LeafLengthStdDev,
+    InternodeWidthExp=InternodeWidthExp,
+    LeafWidthExp=LeafWidthExp,
+    BranchAngle=BranchAngle,
+    BranchAngleMean=BranchAngleMean,
+    BranchAngleStdDev=BranchAngleStdDev,
+    RotationAngle=RotationAngle,
+    RotationAngleMean=RotationAngleMean,
+    RotationAngleStdDev=RotationAngleStdDev,
+    InternodeNMax=ApexNMax,
+    LeafNMax=LeafNMax,
+    LeafAgeMax=LeafAgeMax,
+    LeafBendMean=LeafBendMean,
+    LeafBendStdDev=LeafBendStdDev,
+    BranchNMax=ApexNMax,
+    LeafCurveDist=None,
+    **MAIZE3D_PARAM
+)
+StartingAngle = generator.sample_dist('uniform', 0, 360)
+BranchAngle = generator.BranchAngle
+RotationAngle = generator.RotationAngle
+InternodeLength = generator.InternodeLength
+InternodeWidth = generator.InternodeWidth
+LeafLength = generator.LeafLength
+LeafWidth = generator.LeafWidth
+LeafBend = generator.LeafBend
+LeafTwist = generator.LeafTwist
+LeafCurve = generator.LeafCurve
+
+
+############################################################
+## Begin LSystem syntax
+############################################################
+
+# TODO: Include time in LSystem?
+
+module A  # Apex
+module I  # Internode
+module L  # Leaf
+
+Axiom: SetColor(0,255,20)/(StartingAngle)_(0.01)A(START_TIME,0)
+
+derivation length: ApexNMax
+production:
+
+# A(age,n):
+#     produce A(age+dt,n)
+
+# Apex
+A(age,n):
+    if (age >= PLASTOCHRON):
+        # age = age - PLASTOCHRON  # decrement apex age
+        produce I(age,n) [&(BranchAngle(age,n)) L(age,n)] /(RotationAngle(age,n)) A(age,n+1)
+
+# Internode
+I(age,n):
+    produce F(InternodeLength(age,n),InternodeWidth(age,n))
+
+
+# Leaf
+L(age,n):
+    if n == 0:
+        # TODO: Cotyledons
+        produce L(age, n + 1)
+    else:
+        # calculate leaf length
+        length = LeafLength(age,n)
+        # set the initial leaf width
+        nproduce _(LeafWidth(age,n,0))
+        # start drawing the generalized cylinder
+        nproduce @Gc
+        x = 0
+        while x < 1:
+            # determine current leaf cross-section
+            nproduce SetContour(LeafCurve(age,n,x))
+            # nproduce BlendedContour(0,1,x)
+            # generate leaf segment
+            nproduce F(length*DX)
+            # set width and orientation of next segment
+            nproduce _(LeafWidth(age,n,x)) &(LeafBend(age,n,x)*length*DX) /(LeafTwist(age,n,x)*length*DX)
+            x = x + DX
+        # generate last segment
+        nproduce F(length*(1-x))
+        # end the generalized cylinder
+        produce @Ge
+
+interpretation:
+
+
+endlsystem

@@ -1,0 +1,29 @@
+name: lpy
+channels:
+    - conda-forge
+dependencies:
+    - python
+    - setuptools
+    - cmake
+    - numpy
+    - boost
+    - qt-main
+    - pyqt
+    - libpng
+    - zlib
+    - qhull
+    - cgal-cpp
+    - gmp 
+    - mpfr 
+    - eigen
+    - ann
+    - ipython
+    - pyopengl
+    # - pyqglviewer
+    - pytest
+    - bison
+    - flex
+    - scipy
+    - matplotlib-base
+    - yggdrasil
+    - pandas
