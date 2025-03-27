@@ -5,7 +5,8 @@ model based on field measurements provided by Matthew Runyun for the
 rdla field trials. The L-System used to generate the
 geometry is based on the system described in
 [Cieslak et al. 2022](https://doi.org/10.1093/insilicoplants/diab039).
-Where parameters were missing from the data provided by Matth
+Where parameters were missing from the data, values & profiles
+from Cieslak et al. 2022 were used.
 
 
 # Installation
@@ -155,12 +156,6 @@ python maize3D.py --crop-class=WT --canopy=unique --plot-length=500 --plot-width
 - `param` - Directory containing saved input parameters
 
 
-# Citations
-
-- Mikolaj Cieslak, Nazifa Khan, Pascal Ferraro, Raju Soolanayakanahally, Stephen J Robinson, Isobel Parkin, Ian McQuillan, Przemyslaw Prusinkiewicz, L-system models for image-based phenomics: case studies of maize and canola, in silico Plants, Volume 4, Issue 1, 2022, diab039, https://doi.org/10.1093/insilicoplants/diab039
-- F. Boudon, C. Pradal, T. Cokelaer, P. Prusinkiewicz, C. Godin. L-Py: an L-system simulation framework for modeling plant architecture development based on a dynamic language. Frontiers in Plant Science, Frontiers, 2012, 3 (76), doi: 10.3389/fpls.2012.00076
-
-
 # Parameters
 
 | Name            | Description                   | Phenotyping methods |
@@ -172,32 +167,31 @@ python maize3D.py --crop-class=WT --canopy=unique --plot-length=500 --plot-width
 | LeafCurve       | Profile of leaf cross-section | Image segmentation |
 | LeafBend        | Profile of how leaf curves due to gravity along their length | Image segmentation |
 | LeafTwist       | Profile of how leaves twist along their length | Image segmentation |
-| ---             | ---                           | ---                 |
 
 
 Most important:
-- BranchAngle
 - InternodeLength (or leaf height)
+- BranchAngle
 
-Need multiple time points for age dependence, probably 3 or more.
+Need multiple time points for age dependence, probably 3 or more. Movies along the row (e.g. by rover) could be segmented to get parameters if manual measurements would not be possible. Drone images probably would not help with these parameters, but would be good for validating the canopy coverage predicted by the model.
+
+
+# Citations
+
+- Mikolaj Cieslak, Nazifa Khan, Pascal Ferraro, Raju Soolanayakanahally, Stephen J Robinson, Isobel Parkin, Ian McQuillan, Przemyslaw Prusinkiewicz, L-system models for image-based phenomics: case studies of maize and canola, in silico Plants, Volume 4, Issue 1, 2022, diab039, https://doi.org/10.1093/insilicoplants/diab039
+- F. Boudon, C. Pradal, T. Cokelaer, P. Prusinkiewicz, C. Godin. L-Py: an L-system simulation framework for modeling plant architecture development based on a dynamic language. Frontiers in Plant Science, Frontiers, 2012, 3 (76), doi: 10.3389/fpls.2012.00076
 
 
 # To do
 
-- Confirm width of mesh leaves
+- Confirm width of mesh leaves (radius vs. diameter)
 - Add thickness to leaves when not unfurling
-- Generate example images w/ labels
-- Email Tony & Matthew
-  - How old were the plants when the data was collected?
-  - Is there data for any other time points (does not have to be the same plants, just using it to get length/width distributions)? This would help with including time dependence.
-
-- Enumerate parameters in README w/ phenotyping options
 - Describe profiles in README
 - More generic way of specifying profiles (e.g. using PlantGL
   editor to generate profile and then saving it to a file that can
   be loaded in the future)
 - More realistic age dependency?
-- How to validate?
+- Validate simulated distribution against observations
 - Try running hothouse on a small canopy
 - Profile to determine if anything can be optimized
 - Fix leaf unfurling

@@ -1222,28 +1222,30 @@ def generate_plot(args, x=None, y=None, plantid=0, **kwargs):
     ncols = int(args.plot_length / args.plant_spacing)
     if args.canopy == 'unique':
         for i in range(nrows):
-            ix = x + i * args.row_spacing + posdev()
+            ix = x + i * args.row_spacing
             for j in range(ncols):
-                iy = y + j * args.plant_spacing + posdev()
+                iy = y + j * args.plant_spacing
                 if i == 0 and j == 0:
                     continue
                 mesh.append(
                     generate_single_plant(
-                        args, x=ix, y=iy, plantid=plantid, **kwargs
+                        args, x=(ix + posdev()), y=(iy + posdev()),
+                        plantid=plantid, **kwargs
                     )
                 )
                 plantid += 1
     elif args.canopy == 'tile':
         mesh_single = type(mesh)(mesh)
         for i in range(nrows):
-            ix = i * args.row_spacing + posdev()
+            ix = i * args.row_spacing
             for j in range(ncols):
-                iy = j * args.plant_spacing + posdev()
+                iy = j * args.plant_spacing
                 if i == 0 and j == 0:
                     continue
                 mesh.append(
                     shift_mesh(
-                        mesh_single, ix, iy, upaxis=args.upaxis
+                        mesh_single, ix + posdev(), iy + posdev(),
+                        upaxis=args.upaxis
                     )
                 )
     return mesh
@@ -1386,7 +1388,7 @@ if __name__ == "__main__":
         '--unfurl-leaves', action='store_true',
         help='Start leaves as cylinders and then unfurl them')
     parser.add_argument(
-        '--location-stddev', type=float, default=0.3,
+        '--location-stddev', type=float, default=0.2,
         help=('Standard deviation relative to \'plant_spacing\' that '
               'should be used when selecting planting locations for '
               'multi-plant canopies'))
