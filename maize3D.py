@@ -1251,7 +1251,7 @@ def generate_plot(args, x=None, y=None, plantid=0, **kwargs):
     return mesh
 
 
-def generate_mesh(args, **kwargs):
+def generate_mesh(args=None, **kwargs):
     r"""Generate a 3D mesh.
 
     Args:
@@ -1263,6 +1263,8 @@ def generate_mesh(args, **kwargs):
         ObjDict: Generated mesh.
 
     """
+    if args is None:
+        args, kwargs = parse_args(**kwargs)
     add_crop_classes = []
     if args.crop_class == 'all':
         df = MaizeGenerator.load_leaf_data(args.leaf_data)
@@ -1322,7 +1324,7 @@ def generate(args):
     print(f"Saved mesh to \"{args.output}\"")
 
 
-if __name__ == "__main__":
+def parse_args(**kwargs):
     parser = argparse.ArgumentParser("Generate a 3D maize model")
     parser.add_argument(
         '--time', type=float, default=27,
@@ -1405,6 +1407,9 @@ if __name__ == "__main__":
         '--output-scale', type=float, default=1.0,
         help='Scale factor that should be applied to the output mesh')
     args = parser.parse_args()
+    for k in list(kwargs.keys()):
+        if hasattr(args, k):
+            setattr(args, k, kwargs.pop(k))
     output_format = None
     if args.output_units != 'cm':
         args.output_scale *= float(units.Quantity(1.0, 'cm').to(
@@ -1435,4 +1440,9 @@ if __name__ == "__main__":
         raise RuntimeError(f'Output format \"{args.output_format}\" '
                            f'does not match file extension on output '
                            f'\"{args.output}\"')
+    return args, kwargs
+
+
+if __name__ == "__main__":
+    args, _ = parse_args()
     generate(args)

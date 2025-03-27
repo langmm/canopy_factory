@@ -196,3 +196,5 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 - Profile to determine if anything can be optimized
 - Fix leaf unfurling
 - Debug InternodeWidthExp taken from Cieslak et al. 2022 seems to be off by a factor of 10
+- Connect to yggdrasil
+- Add to model repo
