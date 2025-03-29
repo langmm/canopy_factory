@@ -14,6 +14,8 @@ from openalea.plantgl.all import NurbsCurve2D, Point3Array, Point2Array
 ############################################################
 
 extern(MAIZE3D_PARAM = {})
+extern(TIME_UNITS = "days")
+extern(LENGTH_UNITS = "cm")
 extern(PLASTOCHRON = 3)  # 3 days
 extern(NLEAFDIVIDE = 10)
 extern(OUTPUT_TIME = 27)
@@ -27,6 +29,8 @@ extern(LeafLength = 60.0)  # 60 cm
 extern(LeafLengthMean = 1.0)
 extern(LeafLengthStdDev = 0.2)
 extern(LeafLengthAgeMature = 6.3)
+extern(LeafLengthUnfurled = 0.3)
+extern(LeafThickness = 0.1)
 extern(InternodeWidthExp = 0.15)  # 1.5)
 extern(LeafWidthExp = 0.25)
 extern(BranchAngle = 90)
@@ -52,14 +56,21 @@ DX = 1.0 / NLEAFDIVIDE
 ############################################################
 
 generator = MaizeGenerator(
+    length_units=LENGTH_UNITS,
+    time_units=TIME_UNITS,
     InternodeLength=InternodeLength,
     InternodeLengthMean=InternodeLengthMean,
     InternodeLengthStdDev=InternodeLengthStdDev,
     LeafLength=LeafLength,
     LeafLengthMean=LeafLengthMean,
     LeafLengthStdDev=LeafLengthStdDev,
+    LeafLengthAgeMature=LeafLengthAgeMature,
+    LeafLengthUnfurled=LeafLengthUnfurled,
+    LeafThickness=LeafThickness,
     InternodeWidthExp=InternodeWidthExp,
+    InternodeWidthFuncVar="InternodeLength",
     LeafWidthExp=LeafWidthExp,
+    LeafWidthFuncVar="LeafLength",
     BranchAngle=BranchAngle,
     BranchAngleMean=BranchAngleMean,
     BranchAngleStdDev=BranchAngleStdDev,
@@ -72,7 +83,6 @@ generator = MaizeGenerator(
     LeafBendMean=LeafBendMean,
     LeafBendStdDev=LeafBendStdDev,
     BranchNMax=ApexNMax,
-    LeafCurveDist=None,
     **MAIZE3D_PARAM
 )
 StartingAngle = generator.sample_dist('uniform', 0, 360)
@@ -84,7 +94,7 @@ LeafLength = generator.LeafLength
 LeafWidth = generator.LeafWidth
 LeafBend = generator.LeafBend
 LeafTwist = generator.LeafTwist
-LeafCurve = generator.LeafCurve
+LeafProfileCurve = generator.LeafProfileCurve
 
 
 ############################################################
@@ -97,7 +107,7 @@ module A  # Apex
 module I  # Internode
 module L  # Leaf
 
-Axiom: SetColor(0,255,20)/(StartingAngle)_(0.01)A(START_TIME,0)
+Axiom: @Gc SetColor(0,255,20)/(StartingAngle)_(0.01)A(START_TIME,0)&(90)@o^(90) @Ge
 
 derivation length: ApexNMax
 production:
@@ -115,7 +125,6 @@ A(age,n):
 I(age,n):
     produce F(InternodeLength(age,n),InternodeWidth(age,n))
 
-
 # Leaf
 L(age,n):
     if n == 0:
@@ -124,24 +133,24 @@ L(age,n):
     else:
         # calculate leaf length
         length = LeafLength(age,n)
-        # set the initial leaf width
-        nproduce _(LeafWidth(age,n,0))
-        # start drawing the generalized cylinder
-        nproduce @Gc
         x = 0
+        # Set initial width
+        # nproduce _(LeafWidth(age,n,x))
         while x < 1:
-            # determine current leaf cross-section
-            nproduce SetContour(LeafCurve(age,n,x))
             # nproduce BlendedContour(0,1,x)
+            if generator.unfurl_leaves and x < LeafLengthUnfurled:
+                nproduce @Ge @Gc
             # generate leaf segment
-            nproduce F(length*DX)
-            # set width and orientation of next segment
-            nproduce _(LeafWidth(age,n,x)) &(LeafBend(age,n,x)*length*DX) /(LeafTwist(age,n,x)*length*DX)
+            nproduce SetContour(LeafProfileCurve(age,n,x)) F(length*DX)
+            if generator.unfurl_leaves and x < LeafLengthUnfurled:
+                nproduce @Ge @Gc
             x = x + DX
+            # set width and orientation of next segment
+            if x > 1:
+                x = 1
+            nproduce _(LeafWidth(age,n,x)) &(LeafBend(age,n,x)*length*DX) /(LeafTwist(age,n,x)*length*DX)
         # generate last segment
-        nproduce F(length*(1-x))
-        # end the generalized cylinder
-        produce @Ge
+        produce F(length*(1-x))
 
 interpretation:
 

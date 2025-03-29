@@ -17,8 +17,8 @@ It is highly recommended that dependencies be installed via the conda
 package manager. Two conda environment YAML files are provided that 
 enumerate all of the required dependencies and conda channels. These
 files can be used to create
-(`conda create -f environment.yml`) or update
-(`conda update -n lpy --file environment.yml`)
+(`conda env create --file environment.yml`) or update
+(`conda env update -n lpy --file environment.yml`)
 conda environments with those requirements.
 
 - `environment.yml` dependencies necessary if binaries are available for LPy your system (see note below about Macs w/ Apple Silicon)
@@ -29,7 +29,7 @@ conda environments with those requirements.
 
 Unfortunately, there are not pre-built LPy binaries available for Mac w/
 AppleSilicon (ARM64) so it (and one of its dependencies) must be
-installed from source (see the "Building from source" section below). The
+installed from source (see the "Installing from source" section below). The
 `environment_build_lpy.yml` file should be used to create & populate 
 the conda environment prior to completing the build steps below.
 
@@ -42,9 +42,9 @@ Installation is complete when you have the following packages installed:
 - [yggdrasil](https://github.com/cropsinsilico/yggdrasil) Utilities for manipulating 3D geometry files
 
 
-## Building from source
+## Installing from source
 
-### Build PlantGL
+### Install PlantGL
 
 With the conda env containing the build dependencies activated...
 
@@ -71,10 +71,10 @@ pip install .
 cd ..
 ```
 
-This commands are provided by the `build_plantgl.sh` script.
+These commands are provided by the `build_plantgl.sh` script.
 
 
-### Build LPy
+### Install LPy
 
 With the conda env containing the build dependencies activated...
 
@@ -101,7 +101,46 @@ pip install .
 cd ..
 ```
 
-This commands are provided by the `build_lpy.sh` script.
+These commands are provided by the `build_lpy.sh` script.
+
+
+## Installing ray tracer
+
+If you would like to run a ray tracer on the generated 3D geometries,
+`maize3d.py` has some options for doing so using [pyembree](https://github.com/scopatz/pyembree) and [hothouse](https://github.com/cropsinsilico/hothouse). Both of these libraries will need to be installed from source as they are not under active development and had to be updated to use embree 4. Before running the command below, the conda environment should be updated with their dependencies that can be found in `environment_raytrace.yml`:
+
+```
+conda update -n lpy --file environment_raytrace.yml
+```
+
+If you are using Python >= 3.12 and you get an error along the lines of `AttributeError: module 'pkgutil' has no attribute 'ImpImporter'. Did you mean: 'zipimporter'?` during the installation process, you will need to
+manually upgrade pip and setuptools via:
+
+```
+python -m ensurepip --upgrade
+python -m pip install --upgrade setuptools
+```
+
+### Installing pyembree
+
+```
+git clone git@github.com:langmm/pyembree.git
+cd pyembree
+pip install . --no-build-isolation
+```
+
+These commands are provided by the `build_pyembree.sh` script.
+
+
+### Installing hothouse
+
+```
+git clone --branch maize git@github.com:langmm/hothouse.git
+cd hothouse
+pip install . --no-build-isolation
+```
+
+These commands are provided by the `build_hothouse.sh` script.
 
 
 # Running
@@ -192,9 +231,17 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
   be loaded in the future)
 - More realistic age dependency?
 - Validate simulated distribution against observations
-- Try running hothouse on a small canopy
 - Profile to determine if anything can be optimized
 - Fix leaf unfurling
 - Debug InternodeWidthExp taken from Cieslak et al. 2022 seems to be off by a factor of 10
 - Connect to yggdrasil
 - Add to model repo
+- age evolution of lpy system
+- add planting data parameter & adjust age of generate mesh so that
+  plants 'grow'
+- plot total intercepted light (with option to break down by plant)
+- options for labeling crop class & plant id
+- restructure as python package
+- allow for other crops
+- allow for inputs to be specified for input parameters and data
+- add senecense
