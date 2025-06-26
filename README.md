@@ -224,7 +224,6 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 # To do
 
 - Confirm width of mesh leaves (radius vs. diameter)
-- Add thickness to leaves when not unfurling
 - Describe profiles in README
 - More generic way of specifying profiles (e.g. using PlantGL
   editor to generate profile and then saving it to a file that can
@@ -239,9 +238,16 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 - age evolution of lpy system
 - add planting data parameter & adjust age of generate mesh so that
   plants 'grow'
-- plot total intercepted light (with option to break down by plant)
 - options for labeling crop class & plant id
 - restructure as python package
+  - cli
+  - crops (directory)
+  - raytrace
+  - generate
+  - solar
+  - geometry
+  - task?
+  - utils
 - allow for other crops
 - allow for inputs to be specified for input parameters and data
 - add senecense

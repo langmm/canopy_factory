@@ -30,16 +30,19 @@ from yggdrasil.communication.AsciiTableComm import AsciiTableComm
 functools_cached_property = getattr(functools, "cached_property", None)
 _default_task = 'generate'
 _source_dir = os.path.abspath(os.path.dirname(__file__))
-_param_dir = os.path.join(_source_dir, 'param')
-_mesh_dir = os.path.join(_source_dir, 'meshes')
-_traced_mesh_dir = os.path.join(_source_dir, 'traced_meshes')
+_output_dir = os.path.join(_source_dir, 'output')
 _input_dir = os.path.join(_source_dir, 'input')
-_image_dir = os.path.join(_source_dir, 'images')
-_movie_dir = os.path.join(_source_dir, 'movies')
-_trace_dir = os.path.join(_source_dir, 'traces')
+_param_dir = os.path.join(_source_dir, 'param')
 _leaf_data = os.path.join(_input_dir, 'B73_WT_vs_rdla_Paired_Rows.csv')
 _location_data = os.path.join(_source_dir, 'locations.csv')
 _lpy_rays = os.path.join(_source_dir, 'rays.lpy')
+_mesh_dir = os.path.join(_output_dir, 'meshes')
+_traced_mesh_dir = os.path.join(_output_dir, 'traced_meshes')
+_render_dir = os.path.join(_output_dir, 'render')
+_movie_dir = os.path.join(_output_dir, 'movies')
+_light_dir = os.path.join(_output_dir, 'light')
+_layout_dir = os.path.join(_output_dir, 'layout')
+_trace_dir = os.path.join(_output_dir, 'traces')
 _default_axis_up = np.array([0, 0, 1], dtype=np.float64)
 _default_axis_x = np.array([1, 0, 0], dtype=np.float64)
 _query_options = ['flux_density', 'flux', 'hits', 'areas', 'plantids']
@@ -128,7 +131,7 @@ class ClassRegistry(object):
         return self._properties[classname]
 
     def register_cached_property(self, method, args=None,
-                                 readonly=False):
+                                 readonly=False, classname=None):
         r"""Register a cached property.
 
         Args:
@@ -137,9 +140,15 @@ class ClassRegistry(object):
                 when the args for the class are updated.
             readonly (bool, optional): If True, the property can only
                 be read, not set.
+            classname (str, optional): Unique name that should be used to
+                register the property in place of the classname from the
+                method's __qualname__.
 
         """
-        classname, methodname = method.__qualname__.rsplit('.', 1)
+        if classname is None:
+            classname, methodname = method.__qualname__.rsplit('.', 1)
+        else:
+            methodname = method.__qualname__.rsplit('.', 1)[-1]
         registry = self.registry_cached_properties(classname)
         if args:
             registry['args'].append(methodname)
@@ -147,49 +156,47 @@ class ClassRegistry(object):
             dest = registry['readonly']
         else:
             dest = registry['readwrite']
+        if methodname in dest:
+            print(classname, methodname)
         assert methodname not in dest
         dest.append(methodname)
 
-    def clear_cached_properties(self, instance, preserve=None,
-                                cls=None, args=False):
+    def clear_cached_properties(self, instance, exclude=None,
+                                include=None, cls=None, args=False):
         r"""Clear the cached properties for an instance.
 
         Args:
             instance (object): Registered class instance to clear the
                 cached properties of.
-            preserve (list, optional): Set of cached properties that
+            exclude (list, optional): Set of cached properties that
                 should be preserved.
+            include (list, optional): Subset of cached properties that
+                should be cleared.
             cls (type, optional): Base class that cached properties
                 should be cleared for.
             args (bool, optional): If true, only args cached properties
                 should be cleared.
 
         """
-        if preserve is None:
-            preserve = []
+        if exclude is None:
+            exclude = []
         registry = self.registry_cached_properties(instance, cls=cls)
-        removed = []
         for k in registry['readwrite']:
-            if k in preserve or (args and k not in registry['args']):
+            if ((k in exclude or (args and k not in registry['args'])
+                 or (include is not None and k not in include))):
                 continue
-            delattr(instance, k)
-            removed.append(k)
+            if k in instance.__dict__:
+                delattr(instance, k)
         for k in registry['readonly']:
-            if k in preserve or (args and k not in registry['args']):
+            if ((k in exclude or (args and k not in registry['args'])
+                 or (include is not None and k not in include))):
                 continue
             instance._cached_properties.pop(k, None)
-            removed.append(k)
-        # if removed:
-        #     # pprint.pprint(self._properties)
-        #     print(self._instance2str(instance, cls=cls),
-        #           "REMOVED", removed,
-        #           'bases', instance._registered_base_classes)
-        #     pprint.pprint(registry)
-        #     pdb.set_trace()
         if cls is None:
             for base in instance._registered_base_classes:
                 self.clear_cached_properties(
-                    instance, preserve=preserve, cls=base, args=args,
+                    instance, exclude=exclude, include=include,
+                    cls=base, args=args,
                 )
 
     def get_cached_properties(self, instance, exclude=None, include=None,
@@ -339,20 +346,22 @@ class ClassRegistry(object):
 _class_registry = ClassRegistry()
 
 
-def readonly_cached_property(method, args=None):
+def readonly_cached_property(method, args=None, **kwargs):
     r"""Read-only cached property decorator.
 
     Args:
         method (function): Method who's output should be cached.
         args (bool, optional): If True, the property will be reset when
             the args for the class are updated.
+        **kwargs: Additional keyword arguments are passed to
+            _class_registry.register_cached_property.
 
     Returns:
         function: Decorated method.
 
     """
     _class_registry.register_cached_property(method, args=args,
-                                             readonly=True)
+                                             readonly=True, **kwargs)
     methodname = method.__qualname__.rsplit('.', 1)[-1]
 
     @property
@@ -364,21 +373,26 @@ def readonly_cached_property(method, args=None):
     return _method_wrapper
 
 
-def cached_property(method, args=None):
+def cached_property(method, args=None, classname=None):
     r"""Cached property decorator.
 
     Args:
         method (function): Method who's output should be cached.
         args (bool, optional): If True, the property will be reset when
             the args for the class are updated.
+        classname (str, optional): Unique name that should be used to
+            register the property in place of the classname from the
+            method's __qualname__.
 
     Returns:
         function: Decorated method.
 
     """
     if functools_cached_property is None:
-        return readonly_cached_property(method, args=args)
-    _class_registry.register_cached_property(method, args=args)
+        return readonly_cached_property(method, args=args,
+                                        classname=classname)
+    _class_registry.register_cached_property(method, args=args,
+                                             classname=classname)
     return functools_cached_property(method)
 
 
@@ -394,6 +408,23 @@ def cached_args_property(method):
 
     """
     return cached_property(method, args=True)
+
+
+def cached_factory_property(classname):
+    r"""Cached property decorator for inside a class factory.
+
+    Args:
+        classname (str): Unique name that should be used to register the
+            property for the factory produced class.
+
+    Returns:
+        function: Decorator for method.
+
+    """
+    def _cached_factory_property(method):
+        return cached_property(method, classname=classname)
+
+    return _cached_factory_property
 
 
 def readonly_cached_args_property(method):
@@ -511,17 +542,21 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
         self.log(f'DEBUG: {message}', force=True, **kwargs)
         pdb.set_trace()
 
-    def clear_cached_properties(self, preserve=None, args=False):
+    def clear_cached_properties(self, exclude=None, include=None,
+                                args=False):
         r"""Clear the cached properties.
 
         Args:
-            preserve (list, optional): Set of cached properties that
+            exclude (list, optional): Set of cached properties that
                 should be preserved.
+            include (list, optional): Subset of cached properties that
+                should be cleared.
             args (bool, optional): If true, only args cached properties
                 should be cleared.
 
         """
-        _class_registry.clear_cached_properties(self, preserve=preserve,
+        _class_registry.clear_cached_properties(self, exclude=exclude,
+                                                include=include,
                                                 args=args)
 
     def get_cached_properties(self, exclude=None, include=None):
@@ -561,7 +596,7 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
         """
         out = self.get_cached_properties(exclude=exclude,
                                          include=include)
-        self.clear_cached_properties(preserve=preserve, args=args)
+        self.clear_cached_properties(exclude=preserve, args=args)
         return out
 
     def set_cached_properties(self, properties):
@@ -585,7 +620,7 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                 should be cleared.
 
         """
-        self.clear_cached_properties(preserve=preserve, args=args)
+        self.clear_cached_properties(exclude=preserve, args=args)
         self.set_cached_properties(properties)
 
 
@@ -687,9 +722,17 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
         args = ['ffmpeg']
         if not verbose:
             args += ['-loglevel', 'quiet']
+        args_palette = copy.deepcopy(args)
+        args_palette += [
+            '-f', 'concat', '-i', os.path.basename(fname_concat),
+            '-vf', 'palettegen=reserve_transparent=true', 'palette.png',
+        ]
+        subprocess.check_call(args_palette, cwd=frame_dir)
         args += [
             '-r', str(frame_rate), '-f', 'concat',
-            '-i', os.path.basename(fname_concat), fname,
+            '-i', os.path.basename(fname_concat),
+            '-i', 'palette.png', '-lavfi', 'paletteuse',
+            fname
         ]
         if verbose:
             print(args)
@@ -701,7 +744,7 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
         print(f'Wrote movie with {len(frames)} frames to \"{fname}\"')
 
 
-def read_csv(fname, select=None, verbose=False):
+def read_csv(fname, select=None, verbose=False, include_units=True):
     r"""Read data from a CSV file.
 
     Args:
@@ -709,6 +752,8 @@ def read_csv(fname, select=None, verbose=False):
         select (str, list, optional): One or more fields that should be
             selected.
         verbose (bool, optional): If True, log messages will be emitted.
+        include_units (bool, optional): If True, units contained in the
+            header names will be added to the returned columns.
 
     Returns:
         dict: CSV contents with colums as key/value pairs.
@@ -722,10 +767,12 @@ def read_csv(fname, select=None, verbose=False):
         out[k] = df[k].to_numpy()
     for k in list(out.keys()):
         if ' (' in k:
-            k_name, k_units = k.split(' (')
-            k_units = k_units.rstrip(')')
-            out[k_name] = out.pop(k)
-            # out[k_name] = units.QuantityArray(out.pop(k), k_units)
+            k_name, k_units = k.split(' (', 1)
+            k_units = k_units.rsplit(')', 1)[0]
+            if include_units:
+                out[k_name] = units.QuantityArray(out.pop(k), k_units)
+            else:
+                out[k_name] = out.pop(k)
     if isinstance(select, str):
         out = out[select]
     elif isinstance(select, list):
@@ -783,7 +830,7 @@ def read_png(fname, verbose=False):
         print(f'Reading image from \"{fname}\"')
     # ImageIO version
     import imageio
-    out = imageio.rmread(fname)
+    out = imageio.v3.imread(fname)
     # # PyPNG Version
     # import png
     # reader = png.Reader(filename=fname)
@@ -813,7 +860,6 @@ def write_png(data, fname, fmt=None, verbose=False):
         verbose (bool, optional): If True, log messages will be emitted.
 
     """
-    verbose = True
     if verbose:
         print(f"Writing image to \"{fname}\"")
     if fmt is None:
@@ -1636,11 +1682,11 @@ def parse_solar_time(x, date, latitude, longitude, altitude=None,
     out = out_pd.iloc[0].to_pydatetime()
     if horizon_buffer:
         if x == 'sunrise':
-            out += timedelta(minutes=parse_quantity(horizon_buffer,
-                                                    'minutes').value)
+            out += timedelta(minutes=int(parse_quantity(horizon_buffer,
+                                                        'minutes')))
         elif x == 'sunset':
-            out -= timedelta(minutes=parse_quantity(horizon_buffer,
-                                                    'minutes').value)
+            out -= timedelta(minutes=int(parse_quantity(horizon_buffer,
+                                                        'minutes')))
     return out
 
 
@@ -2249,7 +2295,8 @@ class SubparserBase(RegisteredClassBase):
 
     def cache_args(self, adjust=None, args_preserve=None,
                    args_overwrite=None, properties_preserve=None,
-                   alternate_outputs=None, recursive=None):
+                   properties_overwrite=None, alternate_outputs=None,
+                   recursive=None):
         r"""Cache the current set of arguments.
 
         Args:
@@ -2263,6 +2310,9 @@ class SubparserBase(RegisteredClassBase):
                 the run after copying the current argument namespace.
             properties_preserve (list, optional): Set of cached
                 properties that should be preserved.
+            properties_overwrite (dict, optional): Cached property
+                values to set for the run after caching the current
+                properties.
             alternate_outputs (list, optional): Set of alternate outputs
                 that should be generated.
             recursive (bool, optional): If True, this is a recursive
@@ -2279,6 +2329,8 @@ class SubparserBase(RegisteredClassBase):
             args_overwrite = {}
         if properties_preserve is None:
             properties_preserve = []
+        if properties_overwrite is None:
+            properties_overwrite = {}
         if alternate_outputs is None:
             alternate_outputs = []
         if recursive is None:
@@ -2292,7 +2344,6 @@ class SubparserBase(RegisteredClassBase):
                 args_overwrite.setdefault(output_key, False)
             if recursive:
                 args_overwrite.setdefault(f'overwrite_{name}', False)
-        # TODO: cache/restore cached properties?
         cached_properties = self.pop_cached_properties(
             preserve=properties_preserve, args=True)
         self._cached_args.append(
@@ -2303,6 +2354,8 @@ class SubparserBase(RegisteredClassBase):
         self.log(f'Updating args with {args_overwrite}')
         for k, v in args_overwrite.items():
             setattr(self.args, k, v)
+        if properties_overwrite:
+            self.set_cached_properties(properties_overwrite)
         adjust.adjust_args(self.args)
 
     def restore_args(self):
@@ -2393,8 +2446,8 @@ class TaskBase(SubparserBase):
     @classmethod
     def run_class(cls, self, dont_load_existing=False,
                   args_preserve=None, args_overwrite=None,
-                  properties_preserve=None,
-                  dont_reset_alternate_output=False,
+                  properties_preserve=None, properties_overwrite=None,
+                  recursive=None, dont_reset_alternate_output=False,
                   return_alternate_output=False,
                   require_alternate_output=None, **kwargs):
         r"""Run the process associated with this subparser.
@@ -2409,6 +2462,13 @@ class TaskBase(SubparserBase):
                 the run after copying the current argument namespace.
             properties_preserve (list, optional): Set of cached
                 properties that should be preserved.
+            properties_overwrite (dict, optional): Cached property
+                values to set for the run after caching the current
+                properties.
+            recursive (bool, optional): If True, this is a recursive
+                call and overwrite for outputs should be reset to False.
+                If not provided, recursive will be set to true if self
+                is an instance of the provided adjust class.
             dont_reset_alternate_output (bool, optional): If True, don't
                 reset the dictionary of alternate outputs on return.
             return_alternate_output (str, optional): Name of an
@@ -2436,17 +2496,24 @@ class TaskBase(SubparserBase):
             return_alternate_output = False
         self.cache_args(adjust=cls, args_preserve=args_preserve,
                         args_overwrite=args_overwrite,
-                        alternate_outputs=require_alternate_output)
+                        properties_preserve=properties_preserve,
+                        properties_overwrite=properties_overwrite,
+                        alternate_outputs=require_alternate_output,
+                        recursive=recursive)
         output_names = cls.enabled_outputs(self.args)
+        output_files = [
+            getattr(self.args, f'output_{k}') for k in output_names
+        ]
         out = None
         if ((self.output_exists(name=output_names)
              and return_alternate_output is False)):
             if dont_load_existing:
                 self.log(f'Output already exists and overwrite '
-                         f'not set: \"{output_names}\"', cls=cls,
-                         force=True)
+                         f'not set: {output_files} '
+                         f'(output_names={output_names})',
+                         cls=cls, force=True)
             else:
-                self.log(f'Loading existing output \"{output_names}\"',
+                self.log(f'Loading existing output {output_files}',
                          cls=cls, force=True)
                 out = cls.read_output(
                     self,
@@ -2456,6 +2523,8 @@ class TaskBase(SubparserBase):
             # outputs = {k: getattr(self.args, f'output_{k}') for k in
             #            output_names}
             # self.log(f'outputs = {pprint.pformat(outputs)}')
+            self.log(f'Generating output {output_files}', cls=cls,
+                     force=True)
             out = cls._run(self, **kwargs)
             cls.write_output(self, out)
         self.restore_args()
@@ -2478,6 +2547,7 @@ class TaskBase(SubparserBase):
             object: Generated object.
 
         """
+        kwargs.setdefault('recursive', False)
         return self.run_class(self, **kwargs)
 
     def add_alternate_output(self, key, value):
@@ -2767,6 +2837,8 @@ class TaskBase(SubparserBase):
             str: Directory.
 
         """
+        if cls._output_dir is None and cls._name is not None:
+            return os.path.join(_output_dir, cls._name)
         return cls._output_dir
 
     @classmethod
@@ -2784,7 +2856,9 @@ class TaskBase(SubparserBase):
             str: File base.
 
         """
-        raise NotImplementedError
+        if cls._name is None:
+            raise NotImplementedError
+        return cls._name
 
     @classmethod
     def output_suffix(cls, args, name=None):
@@ -2821,6 +2895,1047 @@ class TaskBase(SubparserBase):
     def _run(cls, self):
         raise NotImplementedError
 
+    @cached_property
+    def figure(self):
+        r"""Matplotlib figure."""
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        import matplotlib.units as munits
+        converter = mdates.ConciseDateConverter()
+        munits.registry[datetime] = converter
+        return plt.figure()
+
+    @cached_property
+    def axes(self):
+        r"""Matplotlib axes."""
+        ax = self.figure.add_subplot(111)
+        return ax
+
+    @property
+    def raw_figure_data(self):
+        r"""np.ndarray: Raw pixel data for the current figure."""
+        fig = self.figure
+        fig.canvas.draw()
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        return data
+
+
+def TemporalTaskBase(step_task, step_alias=None):
+    r"""Factory for creating a time-step based base class.
+
+    Args:
+        step_task (TaskBase): Class for task that will be performed for
+            each time step.
+        step_alias (str, optional): Alias name for time steps within the
+            base class that will be returned.
+
+    Returns:
+        type: New base class.
+
+    """
+
+    classname = f'TemporalTaskBase_{step_task._name}'
+
+    def add_step_alias(key):
+        if step_alias is None:
+            return key
+        if isinstance(key, tuple):
+            out = list(key)
+            for k in key:
+                out.append(add_step_alias(k)[-1])
+            return tuple(out)
+        return tuple([key, key.replace('step', step_alias)])
+
+    class TemporalTask(step_task):
+        r"""Base class for performing a task for a set of times."""
+
+        __name__ = classname
+        __qualname__ = classname
+        _name = None
+        _step_task = step_task
+        _step_alias = step_alias
+        _time_vars = ['start_time', 'stop_time']
+        _hour_defaults = {}
+        _arguments_suffix_ignore = [
+            'start_time', 'stop_time',
+        ]
+        _alternate_outputs_write_required = []
+        _alternate_outputs_write_optional = []
+        _arguments = [
+            (('--start-time', ), {
+                'type': str, 'default': 'sunrise',
+                'help': ('Date time (in any ISO 8601 format) that the '
+                         'animation should start at. If not provided, the '
+                         'time of sunrise for the selected \"location\" (or '
+                         '\"latitude\"/\"longitude\") & \"doy\" will be '
+                         'used.'),
+            }),
+            (('--stop-time', ), {
+                'type': str, 'default': 'sunset',
+                'help': ('Date time (in any ISO 8601 format) that the '
+                         'animation should stop at. If not provided, the '
+                         'time of sunset for the selected \"location\" (or '
+                         '\"latitude\"/\"longitude\") & \"doy\" will be '
+                         'used.'),
+            }),
+            (add_step_alias(('--step-count', )), {
+                'type': int,
+                'help': ('The number of time steps that should be taken '
+                         'between the start and end time. If not provided, '
+                         'the number of time steps will be determined from '
+                         '\"step_interval\"'),
+            }),
+            (add_step_alias(('--step-interval', )), {
+                'type': parse_quantity, 'units': 'hours',
+                'help': ('The interval (in hours) that should be used '
+                         'between time steps. If not provided, '
+                         '\"step_count\" will be used to calculate the '
+                         'step interval. If \"step_count\" is not '
+                         'provided, a step interval of 1 hour will be '
+                         'used.'),
+            }),
+            (add_step_alias((
+                f'--output-{step_task._name}', '--output-steps'
+            )), {
+                'action': 'store_true',
+                'help': 'Output the step data to disk',
+            }),
+            (add_step_alias((
+                f'--overwrite-{step_task._name}', '--overwrite-steps'
+            )), {
+                'action': 'store_true',
+                'help': 'Regenerate step data that already exist',
+            }),
+        ]
+        _excluded_arguments = [
+            '--time',
+        ]
+
+        @classmethod
+        def adjust_args(cls, args, **kwargs):
+            r"""Adjust the parsed arguments including setting defaults that
+            depend on other provided arguments.
+
+            Args:
+                args (argparse.Namespace): Parsed arguments.
+
+            """
+            super(TemporalTask, cls).adjust_args(args, **kwargs)
+            duration = args.stop_time - args.start_time
+            duration = duration.total_seconds() / 3600
+            if not args.step_count:
+                if not args.step_interval:
+                    args.step_interval = 1.0
+                args.step_count = int(duration / args.step_interval)
+            elif not args.step_interval:
+                args.step_interval = duration / args.step_count
+
+        @classmethod
+        def adjust_args_time(cls, args, timevar=None):
+            r"""Adjust the time related variables in a set of parsed
+            arguments.
+
+            Args:
+                args (argparse.Namespace): Parsed arguments.
+                timevar (str, optional): Time variable to adjust. If not
+                    provided, all of the time variables associated with this
+                    subparser will be adjusted.
+
+            """
+            super(TemporalTask, cls).adjust_args_time(args, timevar=timevar)
+            if timevar is not None:
+                return
+            if args.stop_time == args.start_time:
+                args.stop_time = args.stop_time.replace(hour=0, minute=0,
+                                                        microsecond=0)
+                cls.adjust_args_time(args, timevar='stop_time')
+            start_time_str = getattr(args, 'start_time_str', None)
+            stop_time_str = getattr(args, 'stop_time_str', None)
+            if start_time_str and stop_time_str:
+                start_parts = start_time_str.rsplit('-', 1)
+                stop_parts = stop_time_str.rsplit('-', 1)
+                if start_parts[0] == stop_parts[0]:
+                    args.stop_time_str = stop_parts[-1]
+            if not hasattr(args, 'time'):
+                args.time = None
+                args.time_str = None
+
+        @cached_factory_property(classname)
+        def times(self):
+            r"""list: Set of times for steps in the task."""
+            dt = timedelta(hours=self.args.step_interval)
+            time = self.args.start_time
+            out = []
+            for i in range(self.args.step_count):
+                out.append(time)
+                time += dt
+            if time < self.args.stop_time:
+                out.append(self.args.stop_time)
+            return out
+
+        @classmethod
+        def _run_step(cls, self, time, **kwargs):
+            if cls._step_task is None:
+                raise NotImplementedError
+            step_output = f'output_{cls._step_task._name}'
+            kwargs.setdefault('args_overwrite', {})
+            kwargs.setdefault('args_preserve', [])
+            kwargs['args_overwrite']['time'] = time.isoformat()
+            kwargs['args_overwrite'].setdefault(step_output, True)
+            kwargs['args_preserve'].append(step_output)
+            return cls._step_task.run_class(self, **kwargs)
+
+        @classmethod
+        def _run(cls, self):
+            r"""Run the process associated with this subparser."""
+            result = []
+            for time in self.times:
+                result.append(cls._run_step(self, time))
+            return result
+
+    return TemporalTask
+
+
+class LayoutTask(TaskBase):
+    r"""Class for plotting the layout of a canopy."""
+
+    _name = 'layout'
+    _ext = '.png'
+    _time_vars = ['time']
+    _hour_defaults = {}  # 'time': 12}
+    _arguments_suffix_ignore = [
+        'locaton', 'time', 'doy', 'hour', 'year', 'timezone',
+    ]
+    _convert_to_mesh_units = [
+        'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
+        'x', 'y',
+        'ground_height',
+    ]
+    _convert_to_color_tuple = [
+        # 'interior_plant_color', 'exterior_plant_color',
+        # 'periodic_plant_color',
+    ]
+    _arguments = [
+        (('--canopy', ), {
+            'choices': ['single', 'tile', 'unique'],
+            'default': 'single',
+            'help': 'Type of canopy to layout',
+        }),
+        (('--plot-length', '--row-length'), {
+            'type': parse_quantity, 'default': 200, 'units': 'cm',
+            'help': 'Length of plot rows forming canopy (in cm)',
+        }),
+        (('--plot-width', ), {
+            'type': parse_quantity, 'units': 'cm',
+            'help': ('Width of plot forming canopy (in cm). If provided '
+                     '\'nrows\' will be determined based on the provided '
+                     '\'row_spacing\'. If not provided, \'plot_width\' '
+                     'will be determined from \'nrows\' and '
+                     '\'row_spacing\'.'),
+        }),
+        (('--nrows', ), {
+            'type': int, 'default': 4,
+            'help': 'Number of rows to generate in plot',
+        }),
+        (('--row-spacing', ), {
+            'type': parse_quantity, 'default': 76.2, 'units': 'cm',
+            'help': 'Space between adjacent rows in plot (in cm)',
+        }),
+        (('--plant-spacing', '--col-spacing'), {
+            'type': parse_quantity, 'default': 18.3, 'units': 'cm',
+            'help': 'Space between adjacent plants in rows (in cm)',
+        }),
+        (('-x', '--x', '--row-offset'), {
+            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
+            'help': ('Starting position in the x direction '
+                     '(perpendicular to rows)'),
+        }),
+        (('-y', '--y', '--plant-offset'), {
+            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
+            'help': ('Starting position in the y direction (along '
+                     'rows)'),
+        }),
+        (('--plantid', ), {
+            'type': int, 'default': 0,
+            'help': 'Starting plant ID',
+        }),
+        (('--periodic-canopy', ), {
+            'nargs': '?', 'const': 'scene', 'default': False,
+            'choices': [False, 'scene', 'rays'],
+            'help': ('Make the canopy periodic for ray tracing so '
+                     'that is infinitely wide')
+        }),
+        (('--periodic-canopy-count', ), {
+            'type': int, 'default': 2,
+            'help': ('Number of times the canopy should be repeated in '
+                     'each direction'),
+        }),
+        (('--location', ), {
+            'type': str, 'default': 'Champaign',
+            'choices': sorted(list(
+                read_locations(_location_data).keys())),
+            'help': ('Name of a registered location that should be used '
+                     'to set the location dependent properties: '
+                     'timezone, altitude, longitude, latitude'),
+        }),
+        (('--axis-up', ), {
+            'type': parse_axis, 'default': 'y',
+            'help': 'Axis along which plants should grow within the mesh',
+        }),
+        (('--axis-rows', ), {
+            'type': parse_axis, 'default': 'z',
+            'help': 'Axis along which rows should be spaced',
+        }),
+        (('--axis-north', ), {
+            'type': parse_axis, 'default': 'x',
+            'help': ('Axis that should represent north when computing '
+                     'incident solar radiation'),
+        }),
+        (('--ground-height', ), {
+            'type': parse_quantity, 'default': 0.0, 'units': 'meters',
+            'help': ('Distance that the ground is above 0 along the '
+                     '\"axis_up\" direction'),
+        }),
+        (('--latitude', '--lat', ), {
+            'type': parse_quantity,
+            'default': 40.1164, 'units': 'degrees',
+            'help': ('Latitude (in degrees) at which the sun should be '
+                     'modeled. Defaults to the latitude of Champaign '
+                     'IL.'),
+        }),
+        (('--altitude', '--elevation', ), {
+            'type': parse_quantity,
+            'default': 224.0, 'units': 'meters',
+            'help': ('Altitude (in meters) that should be used for '
+                     'solar light calculations. If not provided, it '
+                     'will be calculated from \"pressure\", if it is '
+                     'provided, and the elevation of Champaign, IL '
+                     'otherwise.'),
+        }),
+        (('--pressure', ), {
+            'type': parse_quantity, 'units': 'Pa',
+            'help': ('Air pressure (in Pa) that should be used for '
+                     'solar light calculations. If not provided, it '
+                     'will be calculated from \"altitude\".'),
+        }),
+        (('--temperature', ), {
+            'type': parse_quantity, 'default': 12.0, 'units': 'degC',
+            'help': ('Air temperature (in degrees C) that should be '
+                     'used for solar light calculations.'),
+        }),
+        (('--longitude', '--long', ), {
+            'type': parse_quantity,
+            'default': -88.2434, 'units': 'degrees',
+            'help': ('Longitude (in degrees) at which the sun should be '
+                     'modeled. Defaults to the longitude of Champaign '
+                     'IL.'),
+        }),
+        (('--time', '-t', ), {
+            'type': str,  # 'default': '2024-06-17',
+            'help': ('Date time (in any ISO 8601 format) that the sun '
+                     'should be modeled for. If hour information is not '
+                     'provided, the provided \"hour\" will be used. '
+                     'If \"now\" is specified the current date and time '
+                     'will be used.'),
+        }),
+        (('--doy', ), {
+            'type': int,
+            'help': ('Day of the year that the sun should be modeled '
+                     'for.'),
+        }),
+        (('--hour', '--hr', ), {
+            'type': int,
+            'help': ('Hour that the sun should be modeled for. If '
+                     'provided with \"--time\", any hour information in '
+                     'the specified time will be overwritten. Defaults '
+                     'to 12 if \"--doy\" is provided, but \"--hour\" is '
+                     'not.'),
+        }),
+        (('--year', ), {
+            'type': int,
+            'help': ('Year that sun should be modeled for. If provided '
+                     'with \"--time\" (or \"--start-time\"/'
+                     '\"--stop-time\"), the year in the time string(s) '
+                     'will be overwritten. Defaults to the current year '
+                     'if \"--doy\" is provided, but \"--year\" is not.'),
+        }),
+        (('--timezone', '--tz', ), {
+            'type': str,
+            'help': ('Name of timezone (as accepted by pytz) for '
+                     'location that sun should be modeled. If provided '
+                     'with \"--time\" (or \"--start-time\"/'
+                     '\"--stop-time\"), any timezone information in the '
+                     'specified time(s) will be overwritten. Defaults '
+                     'to \"America/Chicago\" if \"--doy\" is provided, '
+                     'but \"--timezone\" is not.'),
+        }),
+        (('--mesh-units', ), {
+            'type': parse_units, 'default': units.Units('cm'),
+            'help': 'Units that mesh should be output in',
+        }),
+        (('--interior-plant-color', ), {
+            'type': parse_color, 'default': 'blue',
+            'help': ('Color that should be used for interior plants. '
+                     'This should be a color string or 3 '
+                     'comma separated RGB values expressed as floats in '
+                     'the range [0, 1]'),
+        }),
+        (('--exterior-plant-color', ), {
+            'type': parse_color, 'default': 'green',
+            'help': ('Color that should be used for exterior plants. '
+                     'This should be a color string or 3 '
+                     'comma separated RGB values expressed as floats in '
+                     'the range [0, 1]'),
+        }),
+        (('--periodic-plant-color', ), {
+            'type': parse_color, 'default': 'grey',
+            'help': ('Color that should be used for buffer plants added '
+                     'to periodic canopies. This should be a color '
+                     'string or 3 comma separated RGB values expressed '
+                     'as floats in the range [0, 1]'),
+        }),
+    ]
+    _argument_modifications = {
+        '--output': {
+            'help': 'File where the layout should be saved',
+        },
+        '--canopy': {
+            'default': 'unique',
+        },
+    }
+
+    @staticmethod
+    def _on_registration(cls):
+        TaskBase._on_registration(cls)
+        if cls._registry_key is None or cls._name is None:
+            return
+        import inspect
+        base = inspect.getmro(cls)[1]
+        cls._convert_to_mesh_units = cls.select_valid_arguments(
+            getattr(base, '_convert_to_mesh_units', [])
+            + cls._convert_to_mesh_units)
+        cls._convert_to_color_tuple = cls.select_valid_arguments(
+            getattr(base, '_convert_to_color_tuple', [])
+            + cls._convert_to_color_tuple)
+
+    @classmethod
+    def _read_output(cls, args, name=None):
+        r"""Load an output file produced by this task.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        if name is None:
+            name = cls._name
+        outputfile = getattr(args, f'output_{name}')
+        return read_png(outputfile, verbose=args.verbose)
+
+    @classmethod
+    def _write_output(cls, output, args, name=None):
+        r"""Write to an output file.
+
+        Args:
+            output (object): Output object to write to file.
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        """
+        if name is None:
+            name = cls._name
+        outputfile = getattr(args, f'output_{name}')
+        output.savefig(outputfile, dpi=300)
+
+    @classmethod
+    def adjust_args(cls, args):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        """
+        if isinstance(args.mesh_units, str):
+            args.mesh_units = units.Units(args.mesh_units)
+        for k in cls._convert_to_mesh_units:
+            setattr(args, k, parse_quantity(getattr(args, k, None),
+                                            args.mesh_units))
+        if args.canopy == 'single':
+            args.nrows = 1
+            args.ncols = 1
+        else:
+            if args.plot_width is None:
+                args.plot_width = args.nrows * args.row_spacing
+            args.nrows = int(args.plot_width / args.row_spacing)
+            args.ncols = int(args.plot_length / args.plant_spacing)
+        # args.axis_cols = np.cross(args.axis_rows, args.axis_up)
+        args.axis_cols = np.cross(args.axis_up, args.axis_rows)
+        args.axis_east = np.cross(args.axis_north, args.axis_up)
+        if args.periodic_canopy:
+            args.periodic_period = np.array([
+                args.nrows * args.row_spacing,
+                args.ncols * args.plant_spacing,
+                0.0
+            ], 'f4')
+            args.periodic_direction = np.vstack([
+                args.axis_rows,
+                args.axis_cols,
+                args.axis_up,
+            ])
+        if args.location:
+            location_data = read_locations(_location_data)
+            for k, v in location_data[args.location].items():
+                setattr(args, k, v)
+        cls.adjust_args_time(args)
+        super(LayoutTask, cls).adjust_args(args)
+        for k in cls._convert_to_color_tuple:
+            v = getattr(args, k, None)
+            if isinstance(v, str):
+                setattr(args, f'{k}_str', v)
+                setattr(args, k, parse_color(v, convert_names=True))
+
+    @classmethod
+    def adjust_args_time(cls, args, timevar=None):
+        r"""Adjust the time related variables in a set of parsed
+        arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            timevar (str, optional): Time variable to adjust. If not
+                provided, all of the time variables associated with this
+                subparser will be adjusted.
+
+        """
+        if timevar is None:
+            for tv in cls._time_vars:
+                cls.adjust_args_time(args, timevar=tv)
+            return
+        x = getattr(args, timevar)
+        x_str = None
+        x_solar = None
+        if x in _solar_times:
+            x_solar = x
+            if args.doy:
+                x = None
+            else:
+                x = '2024-06-17'
+        if x:
+            if isinstance(x, datetime):
+                pass
+            else:
+                x = datetime.fromisoformat(x)
+            if not (x.tzinfo or args.timezone):
+                args.timezone = "America/Chicago"
+            if not (x.hour or args.hour):
+                args.hour = cls._hour_defaults.get(timevar, None)
+            if not (x.year or args.year):
+                args.year = datetime.now().year
+        elif args.doy:
+            if not args.hour:
+                args.hour = cls._hour_defaults.get(timevar, None)
+            if not args.year:
+                args.year = datetime.now().year
+            if not args.timezone:
+                args.timezone = "America/Chicago"
+            x = datetime.strptime(args.year, args.doy, "%Y-%j")
+        if isinstance(args.timezone, str):
+            import pytz
+            args.timezone = pytz.timezone(args.timezone)
+        if x:
+            replacements = {}
+            if args.hour:
+                replacements['hour'] = args.hour
+                args.hour = None
+            if args.year:
+                replacements['year'] = args.year
+                args.year = None
+            if replacements:
+                x = x.replace(**replacements)
+            if args.timezone:
+                x = x.astimezone(args.timezone)
+                args.timezone = None
+        if x_solar in _solar_times:
+            date = x.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            x = parse_solar_time(
+                x_solar, date, args.latitude, args.longitude,
+                altitude=args.altitude,
+            )
+            x_str = date.date().isoformat() + '-' + x_solar
+            assert ':' not in x_str
+        if x and x != getattr(args, timevar):
+            if x_str is None:
+                x_str = x.replace(microsecond=0).isoformat().replace(
+                    ':', '-')
+            setattr(args, timevar, x)
+            setattr(args, f'{timevar}_str', x_str)
+            # print(f'Updated {timevar} to {x} ({x_str})')
+
+    @classmethod
+    def output_suffix(cls, args, name=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            str: Suffix.
+
+        """
+        suffix = ''
+        if args.canopy != 'single':
+            suffix += f'_canopy{args.canopy.title()}'
+        if args.location:
+            suffix += f"_{args.location}"
+        else:
+            return False
+        suffix += cls.output_suffix_time(args)
+        if args.periodic_canopy:
+            suffix += (f'_periodic{args.periodic_canopy_count}'
+                       f'_{args.periodic_canopy}')
+        return suffix
+
+    @classmethod
+    def output_suffix_time(cls, args, timevar=None):
+        r"""Get the suffix containing time information that should be
+        included in generated output file names.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            timevar (str, optional): Time variable to generate a suffix
+                for. If not provided, a suffix combining all of the
+                time variables associated with this subparser will be
+                returned.
+
+        Returns:
+            str: Suffix.
+
+        """
+        if timevar is None:
+            suffixes = [cls.output_suffix_time(args, tv)
+                        for tv in cls._time_vars]
+            suffixes = [x for x in suffixes if x is not None]
+            return '_'.join(suffixes)
+        time_str = getattr(args, f'{timevar}_str', None)
+        if time_str:
+            return time_str
+        if getattr(args, timevar) is None:
+            return None
+        time = getattr(args, timevar).replace(microsecond=0)
+        return time.isoformat().replace(':', '-')
+
+    @cached_property
+    def nplants(self):
+        r"""int: Total number of plants in the canopy."""
+        # TODO: Allow all?
+        if self.args.canopy == 'single':
+            return 1
+        return self.args.nrows * self.args.ncols
+
+    @cached_property
+    def plant_positions(self):
+        r"""np.ndarray: Locations of each plant in the canopy, in plantid
+        order."""
+        # TODO: Allow multiple crop classes?
+        pos0 = self.args.plant_spacing * np.zeros((1, 3), 'f4')
+        plantid = 0
+        x = self.args.x
+        y = self.args.y
+        axis_x = self.args.axis_rows
+        axis_y = self.args.axis_cols
+        out = self.args.plant_spacing * np.zeros((self.nplants, 3), 'f4')
+        for i in range(self.args.nrows):
+            y = self.args.y
+            for j in range(self.args.ncols):
+                out[plantid, :] = pos0 + x * axis_x + y * axis_y
+                y = y + self.args.plant_spacing
+                plantid += 1
+            x = x + self.args.row_spacing
+        return out
+
+    @cached_property
+    def nplants_periodic(self):
+        r"""int: Number of plants in the periodic canopy buffer."""
+        # TODO: Allow multiple crop classes?
+        if not self.args.periodic_canopy:
+            return 0
+        if self.args.canopy == 'single':
+            return (2 * self.args.periodic_canopy_count + 1)**2 - 1
+        return self.nplants * (
+            (2 * self.args.periodic_canopy_count + 1)**2 - 1)
+
+    @cached_property
+    def plant_positions_periodic(self):
+        r"""np.ndarray: Locations of each plant in the periodic canopy
+        buffer, in the order they are added to the scene."""
+        # TODO: Allow all?
+        if not self.args.periodic_canopy:
+            return self.args.plant_spacing * np.zeros((0, 3), 'f4')
+        from hothouse.scene import PeriodicScene as Scene
+        pos_units0 = self.plant_positions.units
+        pos0 = self.plant_positions
+        shifts = units.QuantityArray(
+            Scene.get_periodic_shifts(
+                self.args.periodic_period.astype('f4'),
+                self.args.periodic_direction.astype('f4'),
+                self.args.periodic_canopy_count * np.ones((3, ), 'i4')),
+            pos_units0,
+        )
+        out = []
+        for pos in pos0:
+            out.append(shifts + pos)
+        out = np.vstack(out)
+        assert out.shape[0] == self.nplants_periodic
+        assert out.shape[1] == 3
+        return units.QuantityArray(out, pos_units0)
+
+    @classmethod
+    def parse_time(cls, x, args, timevar=None):
+        r"""Adjust the time related variables in a set of parsed
+        arguments.
+
+        Args:
+            x (str, datetime.datetime): Time to parse.
+            args (argparse.Namespace): Parsed arguments.
+            timevar (str, optional): Name of the variable that should be
+                updated on args.
+
+        Returns:
+            datetime.datetime: Parsed time.
+
+        """
+        x_str = None
+        x_solar = None
+        if x in _solar_times:
+            x_solar = x
+            if args.doy:
+                x = None
+            else:
+                x = '2024-06-17'
+        if x:
+            if isinstance(x, datetime):
+                pass
+            else:
+                x = datetime.fromisoformat(x)
+            if not (x.tzinfo or args.timezone):
+                args.timezone = "America/Chicago"
+            if not (x.hour or args.hour):
+                args.hour = cls._hour_defaults.get(timevar, None)
+            if not (x.year or args.year):
+                args.year = datetime.now().year
+        elif args.doy:
+            if not args.hour:
+                args.hour = cls._hour_defaults.get(timevar, None)
+            if not args.year:
+                args.year = datetime.now().year
+            if not args.timezone:
+                args.timezone = "America/Chicago"
+            x = datetime.strptime(args.year, args.doy, "%Y-%j")
+        if isinstance(args.timezone, str):
+            import pytz
+            args.timezone = pytz.timezone(args.timezone)
+        if x:
+            replacements = {}
+            if args.hour:
+                replacements['hour'] = args.hour
+            if args.year:
+                replacements['year'] = args.year
+            if replacements:
+                x = x.replace(**replacements)
+            reset = list(replacements.keys())
+            if args.timezone:
+                x = x.astimezone(args.timezone)
+                reset.append('timezone')
+            if reset and timevar is not None:
+                for k in reset:
+                    setattr(args, k, None)
+        if x_solar in _solar_times:
+            date = x.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            x = parse_solar_time(
+                x_solar, date, args.latitude, args.longitude,
+                altitude=args.altitude,
+            )
+            x_str = date.date().isoformat() + '-' + x_solar
+            assert ':' not in x_str
+        if x and timevar is not None and x != getattr(args, timevar):
+            if x_str is None:
+                x_str = x.replace(microsecond=0).isoformat().replace(
+                    ':', '-')
+            setattr(args, timevar, x)
+            setattr(args, f'{timevar}_str', x_str)
+            # print(f'Updated {timevar} to {x} ({x_str})')
+        return x
+
+    def get_solar_model(self, time=None):
+        if time is None:
+            return self.solar_model
+        if isinstance(time, str):
+            time = self.parse_time(time, self.args)
+        return SolarModel(
+            self.args.latitude, self.args.longitude, time,
+            altitude=self.args.altitude, pressure=self.args.pressure,
+            temperature=self.args.temperature,
+        )
+
+    def get_solar_direction(self, time=None):
+        if time is None:
+            return self.solar_direction
+        return self.get_solar_model(time).relative_direction(
+            self.args.axis_up, self.args.axis_north)
+
+    # def get_solar_alititude(self, time=None):
+    #     return self.get_solar_model(time).apparent_elevation
+
+    def isExteriorPlant(self, plantid, nbuffer_col=1, nbuffer_row=1):
+        r"""Determine if a plant is on the edge of the field.
+
+        Args:
+            plantid (int): Plant identifier.
+            nbuffer_col (int, optional): Number of plants from the edge
+                along the columns to count as exterior.
+            nbuffer_row (int, optional): Number of plants from the edge
+                along the rowss to count as exterior.
+
+        """
+        plantid -= self.args.plantid
+        j = plantid % self.args.ncols
+        i = np.floor(plantid / self.args.ncols)
+        return ((j < nbuffer_row)
+                or (i < nbuffer_col)
+                or (j >= (self.args.ncols - nbuffer_row))
+                or (i >= (self.args.nrows - nbuffer_col)))
+
+    @cached_property
+    def solar_model(self):
+        if self.args.time is None:
+            return None
+        return self.get_solar_model(self.args.time)
+
+    @cached_property
+    def solar_direction(self):
+        if self.args.time is None:
+            return None
+        return self.solar_model.relative_direction(
+            self.args.axis_up, self.args.axis_north)
+
+    @cached_property
+    def solar_elevation(self):
+        if self.args.time is None:
+            return None
+        return self.solar_model.apparent_elevation
+
+    @cached_property
+    def scene_layout(self):
+        out = {
+            'plants': self.project_onto_ground(self.plant_positions),
+            'periodic_plants': self.project_onto_ground(
+                self.plant_positions_periodic),
+            'north': self.project_onto_ground(
+                self.args.axis_north, ray=True),
+            'east': self.project_onto_ground(
+                self.args.axis_east, ray=True),
+        }
+        if self.solar_direction is not None:
+            out.update(
+                sun_ray=self.project_onto_ground(
+                    -self.solar_direction, ray=True),
+                sun_elevation=self.solar_elevation,
+            )
+        return out
+
+    @cached_property
+    def subplot_ratio(self):
+        width = (self.args.plot_width / self.args.row_spacing) + 10
+        return width
+
+    @cached_property
+    def subplots(self):
+        r"""Matplotlib subplots."""
+        figbuf = 0.05
+        return self.figure.subplots(
+            1, 2,  # width_ratios=[1, self.subplot_ratio],
+            gridspec_kw={
+                'width_ratios': [1, self.subplot_ratio],
+                'hspace': 0.0, 'wspace': figbuf / 2,
+                'left': figbuf, 'right': 1.0 - figbuf,
+                'bottom': figbuf, 'top': 1.0 - figbuf,
+            },
+        )
+
+    @cached_property
+    def axes(self):
+        r"""Matplotlib axes."""
+        out = self.subplots[1]
+        out.set_axis_off()
+        out.axis('equal')
+        if self.args.plot_width > self.args.plot_length:
+            out.autoscale(enable=True, axis='x', tight=True)
+        else:
+            out.autoscale(enable=True, axis='y', tight=True)
+        return out
+
+    @cached_property
+    def legend_axes(self):
+        r"""Matplotlib axes."""
+        out = self.subplots[0]
+        out.set_axis_off()
+        out.axis('equal')
+        return out
+
+    def _get_color(self, plantid):
+        if self.isExteriorPlant(plantid):
+            return self.args.exterior_plant_color
+        return self.args.interior_plant_color
+
+    def project_onto_ground(self, pos, ray=False):
+        r"""Project a 3D point onto the ground.
+
+        Args:
+            pos (np.ndarray): Set of one or more 3D positions.
+            ray (bool, optional): If True, treat pos as a ray and
+                normalize the returned projection.
+
+        Returns:
+            np.ndarray: x & y components of pos projected onto the
+                scene ground.
+
+        """
+        pos_units = None
+        if isinstance(pos, (units.Quantity, units.QuantityArray)):
+            pos_units = pos.units
+            pos = pos.data
+        x = np.dot(pos, self.args.axis_rows)
+        y = np.dot(pos, self.args.axis_cols)
+        out = np.vstack([x, y]).T
+        if pos.ndim == 1:
+            out = out[0]
+        if ray:
+            out /= np.linalg.norm(out)
+        elif pos_units is not None:
+            out = units.QuantityArray(out, pos_units)
+        return out
+
+    def plot_sun(self, time, plant_min, plant_max,
+                 arrow_length=0.1, nrays=9):
+        plant_pad = np.array([
+            self.args.row_spacing, self.args.row_spacing
+        ]) / 5
+        plant_min = plant_min - plant_pad
+        plant_max = plant_max + plant_pad
+        plant_mid = (plant_min + plant_max) / 2
+        raysun = self.project_onto_ground(
+            -self.get_solar_direction(time=time), ray=True)
+        raysun *= arrow_length * (plant_max[0] - plant_min[0])
+        rotsun = np.array([-raysun[1], raysun[0]])
+        anglesun = np.arcsin(raysun[1] / np.linalg.norm(raysun))
+        if raysun[0] < 0:
+            anglesun = np.pi - anglesun
+        anglesun = (2 * np.pi + anglesun) % (2 * np.pi)
+        xsign = np.sign(-raysun[0])
+        ysign = np.sign(-raysun[1])
+        half = (plant_max - plant_min) / 2
+        y = ysign * half[1]
+        x = xsign * abs(y / np.tan(anglesun))
+        if abs(x) > half[0]:
+            x = xsign * half[0]
+            y = ysign * abs(x * np.tan(anglesun))
+        assert abs(x) <= half[0]
+        assert abs(y) <= half[1]
+        rayspacing = 1.0 / (nrays - 1)
+        sunpos = np.array([plant_mid[0] + x, plant_mid[1] + y])
+        for i in range(nrays):
+            self.axes.arrow(
+                *(sunpos - 0.5 * rotsun + i * rayspacing * rotsun),
+                *raysun,
+                color='orange',
+            )
+        if isinstance(time, str):
+            textangle = (anglesun + (np.pi / 2)) % (2 * np.pi)
+            ha = 'center'
+            va = 'bottom'
+            if textangle > np.pi / 2 and textangle < (3 * np.pi / 2):
+                textangle -= np.pi
+                va = 'top'
+            self.axes.text(
+                *sunpos, time,
+                rotation=(180 * textangle / np.pi),
+                rotation_mode='anchor',
+                transform_rotates_text=True,
+                horizontalalignment=ha,
+                verticalalignment=va,
+            )
+
+    def plot_layout(self, layout):
+        ax = self.axes
+        plantid = self.args.plantid
+        for pos in layout['plants']:
+            ax.plot(pos[0], pos[1],
+                    color=self._get_color(plantid),
+                    marker='o')
+            ax.annotate(str(plantid), xy=pos, textcoords='data')
+            plantid += 1
+        for pos in layout['periodic_plants']:
+            ax.plot(pos[0], pos[1],
+                    color=self.args.periodic_plant_color,
+                    marker='o')
+        plant_min = np.vstack([layout['plants'].data,
+                               layout['periodic_plants'].data]).min(axis=0)
+        plant_max = np.vstack([layout['plants'].data,
+                               layout['periodic_plants'].data]).max(axis=0)
+        arrow_length = 0.1
+        # Cardinal directions
+        raynorth = arrow_length * layout['north']
+        rayeast = arrow_length * layout['east']
+        if rayeast[1] == 0:
+            angle = 0
+        else:
+            angle = 180 * np.arcsin(layout['east'][1]) / np.pi
+        dirpos = np.array([0.0, 0.2]) - 0.5 * raynorth - 0.5 * rayeast
+        txtnorth = dirpos + raynorth - 0.05 * rayeast
+        txteast = dirpos + rayeast
+        self.legend_axes.arrow(*dirpos, *raynorth)
+        self.legend_axes.arrow(*dirpos, *rayeast)
+        self.legend_axes.text(
+            *txtnorth, 'N',
+            rotation=angle, rotation_mode='anchor',
+            transform_rotates_text=True,
+            horizontalalignment='right',
+            verticalalignment='top',
+        )
+        self.legend_axes.text(
+            *txteast, 'E',
+            rotation=angle, rotation_mode='anchor',
+            transform_rotates_text=True,
+            horizontalalignment='right',
+            verticalalignment='bottom',
+        )
+        # Sun direction
+        if self.args.time:
+            self.plot_sun(self.args.time, plant_min, plant_max,
+                          arrow_length=arrow_length)
+        else:
+            for t in ['sunrise', 'sunset', 'noon']:
+                self.plot_sun(t, plant_min, plant_max,
+                              arrow_length=arrow_length)
+
+    @classmethod
+    def _run(cls, self, **kwargs):
+        if not os.path.isdir(_layout_dir):
+            os.mkdir(_layout_dir)
+        self.plot_layout(self.scene_layout)
+        return self.figure
+
 
 class GenerateTask(TaskBase):
     r"""Class for generating 3D canopies."""
@@ -2833,8 +3948,9 @@ class GenerateTask(TaskBase):
         'overwrite_lpy_param', 'plantid', 'debug_param',
         'unful_leaves', 'mesh_format', 'overwrite_generate',
         'plot_width', 'output_plantids', 'overwrite_plantids',
+        # 'output_layout', 'overwrite_layout',
     ]
-    _alternate_outputs_write_required = ['plantids']
+    _alternate_outputs_write_required = ['plantids']  # , 'layout']
     _convert_to_mesh_units = [
         'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
         'x', 'y',
@@ -2874,7 +3990,7 @@ class GenerateTask(TaskBase):
             'help': 'Crop to generate a geometry for.',
         }),
         (('--crop-class', ), {
-            'type': str, 'choices': ['WT', 'rdla', 'all'],
+            'type': str, 'choices': ['WT', 'rdla', 'all', 'all_split'],
             'default': 'WT',
             'help': 'Class to generate geometry for',
         }),
@@ -2988,10 +4104,23 @@ class GenerateTask(TaskBase):
             'help': ('Overwrite any existing plant IDs file '
                      '"--output-plantids" is passed'),
         }),
+        # (('--output-layout', ), {
+        #     'nargs': '?', 'const': True, 'default': False,
+        #     'help': ('File where the layout of a multi-plant field '
+        #              'should be saved'),
+        # }),
+        # (('--overwrite-layout', ), {
+        #     'action': 'store_true',
+        #     'help': ('Overwrite any existing plant layout file '
+        #              '"--output-layout" is passed'),
+        # }),
     ]
     _argument_modifications = {
         '--output': {
             'help': 'File where the generated mesh should be saved',
+        },
+        '--canopy': {
+            'default': 'single',
         },
     }
 
@@ -3025,6 +4154,7 @@ class GenerateTask(TaskBase):
         if name is None:
             name = cls._name
         outputfile = getattr(args, f'output_{name}')
+        assert name != 'layout'
         if name == 'plantids':
             return read_csv(outputfile, select='plantids')
         return read_3D(outputfile, file_format=args.mesh_format,
@@ -3041,9 +4171,14 @@ class GenerateTask(TaskBase):
                 to the task make.
 
         """
+        if args.crop_class == 'all_split':
+            return
         if name is None:
             name = cls._name
         outputfile = getattr(args, f'output_{name}')
+        if name == 'layout':
+            output.savefig(outputfile, dpi=300)
+            return
         if name == 'plantids':
             return write_csv({'plantids': output}, outputfile)
         write_3D(output, outputfile, file_format=args.mesh_format,
@@ -3069,6 +4204,7 @@ class GenerateTask(TaskBase):
         if args.canopy == 'single':
             args.nrows = 1
             args.ncols = 1
+            # args.output_layout = False
         else:
             if args.plot_width is None:
                 args.plot_width = args.nrows * args.row_spacing
@@ -3091,9 +4227,10 @@ class GenerateTask(TaskBase):
         if args.lpy_param is None:
             args.lpy_param = os.path.join(
                 _param_dir, f'param_{args.crop_class}.json')
-        if isinstance(args.lpy_param, str):
-            args.lpy_param_str = args.lpy_param
-            args.lpy_param = extract_lpy_param(args)
+        if not args.crop_class.startswith('all'):
+            if isinstance(args.lpy_param, str):
+                args.lpy_param_str = args.lpy_param
+                args.lpy_param = extract_lpy_param(args)
 
     @classmethod
     def output_base(cls, args, name=None):
@@ -3131,7 +4268,7 @@ class GenerateTask(TaskBase):
             suffix += f'_canopy{args.canopy.title()}'
         if args.unfurl_leaves:
             suffix += '_unfurled'
-        if name != 'plantids':
+        if name not in ['plantids', 'layout']:
             color_str = None
             if isinstance(args.color, str):
                 color_str = args.color
@@ -3163,19 +4300,41 @@ class GenerateTask(TaskBase):
         """
         if name == 'plantids':
             return '.csv'
+        # elif name == 'layout':
+        #     return '.png'
         ext = super(GenerateTask, cls).output_ext(args, name=name)
         if ext is None and args.mesh_format:
             ext = _inv_geom_ext[args.mesh_format]
         return ext
 
+    @readonly_cached_property
+    def all_crop_classes(self):
+        r"""list: All crop classes for current data."""
+        df = MaizeGenerator.load_leaf_data(self.args.leaf_data)
+        return sorted(list(set(df['Class'])))
+
     @classmethod
     def _run(cls, self):
         r"""Run the process associated with this subparser."""
-        if self.args.crop_class == 'all':
+        if self.args.crop_class == 'all_split':
+            plantid = self.args.plantid
+            x = self.args.x
+            y = self.args.y
+            for i, crop_class in enumerate(self.all_crop_classes):
+                cls.run_class(
+                    self, dont_reset_alternate_output=True,
+                    dont_load_existing=True,
+                    args_overwrite={
+                        'x': x, 'y': y, 'plantid': plantid,
+                        'crop_class': crop_class,
+                        'lpy_param': None,
+                    },
+                )
             mesh = None
-            df = MaizeGenerator.load_leaf_data(self.args.leaf_data)
-            crop_classes = sorted(list(set(df['Class'])))
-            self.log(f'Crop class order: {crop_classes}')
+            self.add_alternate_output('plantids', None)
+            # self.add_alternate_output('layout', None)
+        elif self.args.crop_class == 'all':
+            mesh = None
             plantids = self.pop_alternate_output('plantids', None)
             if plantids is None:
                 plantids = []
@@ -3184,7 +4343,7 @@ class GenerateTask(TaskBase):
             plantid = self.args.plantid
             x = self.args.x
             y = self.args.y
-            for i, crop_class in enumerate(crop_classes):
+            for i, crop_class in enumerate(self.all_crop_classes):
                 imesh = cls.run_class(
                     self, dont_reset_alternate_output=True,
                     args_overwrite={
@@ -3202,11 +4361,30 @@ class GenerateTask(TaskBase):
                 plantids.append(self.pop_alternate_output('plantids'))
                 # TODO: Labels
             self.add_alternate_output('plantids', np.hstack(plantids))
+            # self.add_alternate_output('layout', None)
         elif self.args.canopy == 'single':
             mesh = cls._generate_single_plant(self)
         else:
             mesh = cls._generate_field(self)
         return mesh
+
+    def isExteriorPlant(self, plantid, nbuffer_col=1, nbuffer_row=1):
+        r"""Determine if a plant is on the edge of the field.
+
+        Args:
+            plantid (int): Plant identifier.
+            nbuffer_col (int, optional): Number of plants from the edge
+                along the columns to count as exterior.
+            nbuffer_row (int, optional): Number of plants from the edge
+                along the rowss to count as exterior.
+
+        """
+        j = plantid % self.args.ncols
+        i = np.floor(plantid / self.args.ncols)
+        return ((j < nbuffer_row)
+                or (i < nbuffer_col)
+                or (j >= (self.args.ncols - nbuffer_row))
+                or (i >= (self.args.nrows - nbuffer_col)))
 
     def shift_mesh(self, mesh, x, y, plantid=None):
         r"""Shift a mesh.
@@ -3422,6 +4600,8 @@ class RayTraceTask(GenerateTask):
         'overwrite_raytrace', 'highlight', 'output_traced_mesh',
         'overwrite_traced_mesh',
     ]
+    # TODO: Add option for showing field layout w/ plantids, north, &
+    #   east labeled
     _alternate_outputs_write_optional = ['traced_mesh']
     _alternate_outputs_write_required = []
     _convert_to_mesh_units = [
@@ -3468,6 +4648,17 @@ class RayTraceTask(GenerateTask):
             'action': 'store_true',
             'help': ('Include multiple bounces when performing the '
                      'trace.'),
+        }),
+        (('--periodic-canopy', ), {
+            'nargs': '?', 'const': 'scene', 'default': False,
+            'choices': [False, 'scene', 'rays'],
+            'help': ('Make the canopy periodic for ray tracing so '
+                     'that is infinitely wide')
+        }),
+        (('--periodic-canopy-count', ), {
+            'type': int, 'default': 2,
+            'help': ('Number of times the canopy should be repeated in '
+                     'each direction'),
         }),
         (('--location', ), {
             'type': str, 'default': 'Champaign',
@@ -3714,7 +4905,8 @@ class RayTraceTask(GenerateTask):
         outputfile = getattr(args, f'output_{name}')
         if name == 'traced_mesh':
             return read_3D(outputfile, file_format=args.mesh_format,
-                           verbose=args.verbose)
+                           verbose=args.verbose,
+                           include_units=args.include_units)
         return read_csv(outputfile, verbose=args.verbose)
 
     @classmethod
@@ -3735,6 +4927,8 @@ class RayTraceTask(GenerateTask):
             return write_3D(output, outputfile,
                             file_format=args.mesh_format,
                             verbose=args.verbose)
+        if args.crop_class == 'all_split':
+            return
         write_csv(output, outputfile, verbose=args.verbose)
 
     @property
@@ -3746,6 +4940,7 @@ class RayTraceTask(GenerateTask):
     def raytracer(self):
         r"""RayTracerBase: Ray tracer."""
         print("Re-creating ray tracer", self.args.time)
+        assert self.plantids is not None
         return _class_registry.get(
             'raytracer', self.args.raytracer)(
                 self.args, self.mesh, plantids=self.plantids)
@@ -3777,10 +4972,28 @@ class RayTraceTask(GenerateTask):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        if args.mesh is None:
+        args.include_units = True
+        if not hasattr(args, 'mesh_generated'):
+            args.mesh_generated = (args.mesh is None)
+        if args.mesh_generated:
+            # LayoutTask.adjust_args(args)
             GenerateTask.adjust_args(args)
             args.mesh = args.output_generate
             args.plantids = args.output_plantids
+            if args.periodic_canopy:
+                args.periodic_period = np.array([
+                    args.nrows * args.row_spacing,
+                    args.ncols * args.plant_spacing,
+                    0.0
+                ], 'f4')
+                east = np.cross(args.axis_rows, args.axis_up)
+                args.periodic_direction = np.vstack([
+                    args.axis_rows,
+                    east,
+                    args.axis_up,
+                ])
+        else:
+            args.periodic_canopy = False
         if args.location:
             location_data = read_locations(_location_data)
             for k, v in location_data[args.location].items():
@@ -3862,7 +5075,8 @@ class RayTraceTask(GenerateTask):
             assert ':' not in x_str
         if x and x != getattr(args, timevar):
             if x_str is None:
-                x_str = x.isoformat().replace(':', '-')
+                x_str = x.replace(microsecond=0).isoformat().replace(
+                    ':', '-')
             setattr(args, timevar, x)
             setattr(args, f'{timevar}_str', x_str)
             # print(f'Updated {timevar} to {x} ({x_str})')
@@ -3935,6 +5149,9 @@ class RayTraceTask(GenerateTask):
             suffix += '_multibounce'
         if args.any_direction:
             suffix += '_anydirection'
+        if args.periodic_canopy:
+            suffix += (f'_periodic{args.periodic_canopy_count}'
+                       f'_{args.periodic_canopy}')
         return suffix
 
     @classmethod
@@ -4017,24 +5234,41 @@ class RayTraceTask(GenerateTask):
             values = cls.extract_query(query_values, query)
             if isinstance(values, units.QuantityArray):
                 values = values.value
-            out[query].update(
-                vmin_linear=values[values >= 0].min(),
-                vmin_log=values[values > 0].min(),
-                vmax_linear=values.max(),
-                vmax_log=values.max(),
-            )
+            if (values == 0).all():
+                out[query].update(
+                    vmin_linear=values[values >= 0].min(),
+                    vmin_log=np.nan,
+                    vmax_linear=values.max(),
+                    vmax_log=np.nan,
+                )
+            else:
+                out[query].update(
+                    vmin_linear=values[values >= 0].min(),
+                    vmin_log=values[values > 0].min(),
+                    vmax_linear=values.max(),
+                    vmax_log=values.max(),
+                )
         return out
 
     # TODO: This should only be modified if the date changes
     @cached_property
     def color_limits_noon(self):
         r"""tuple: Min/max for the queried values at noon."""
-        assert not self.args.time_str.endswith('noon')
-        print('GETTING MIN/MAX FROM NOON', self.args.time_str)
+        assert not (self.args.time_str.endswith('noon')
+                    and self.args.crop_class == self.all_crop_classes[0])
+        print('GETTING MIN/MAX FROM NOON', self.args.time_str,
+              self.args.crop_class)
+        self.clear_cached_properties(include=['mesh'])
         query_values = RayTraceTask.run_class(
-            self, args_overwrite={'time': 'noon'},
-            return_alternate_output='limits',
+            self, args_overwrite={
+                'time': 'noon',
+                'crop_class': self.all_crop_classes[0],
+                'output_raytrace': True,
+                'output_generate': True,
+                'mesh': None,
+            },
         )
+        self.clear_cached_properties(include=['mesh'])
         return self.query_limits(query_values)
 
     @classmethod
@@ -4056,7 +5290,8 @@ class RayTraceTask(GenerateTask):
         if ((getattr(self.args, var_min) is not None
              and getattr(self.args, var_max) is not None)):
             return
-        if self.args.time_str.endswith('noon'):
+        if ((self.args.time_str.endswith('noon')
+             and self.args.crop_class == self.all_crop_classes[0])):
             self.color_limits_noon = self.query_limits(query_values)
         vscaling = getattr(self.args, var_scaling)
         limits = self.color_limits_noon[self.args.query]
@@ -4064,9 +5299,9 @@ class RayTraceTask(GenerateTask):
             setattr(self.args, var_min, limits[f'vmin_{vscaling}'])
         if getattr(self.args, var_max) is None:
             setattr(self.args, var_max, limits[f'vmax_{vscaling}'])
-        # self.log(f'LIMITS[{cls._name}, {name}]: '
-        #          f'{getattr(self.args, var_min)}, '
-        #          f'{getattr(self.args, var_max)}')
+        self.log(f'LIMITS[{cls._name}, {name}]: '
+                 f'{getattr(self.args, var_min)}, '
+                 f'{getattr(self.args, var_max)}', force=True)
 
     @classmethod
     def _color_scene(cls, self, query_values):
@@ -4080,7 +5315,6 @@ class RayTraceTask(GenerateTask):
             ObjDict: Generated mesh with ray traced colors.
 
         """
-        face_values = cls.extract_query(query_values, self.args.query)
         if self.args.show_rays:
             mesh = cls.run_class(
                 self,
@@ -4100,6 +5334,9 @@ class RayTraceTask(GenerateTask):
             return mesh
         cls._set_color_limits(self, query_values)
         mesh = self.mesh
+        face_values = cls.extract_query(query_values, self.args.query)
+        if isinstance(face_values, units.QuantityArray):
+            face_values = np.array(face_values)
         vertex_values = self.raytracer.face2vertex(
             face_values, method='deposit')
         vertex_colors = apply_color_map(
@@ -4113,6 +5350,14 @@ class RayTraceTask(GenerateTask):
         )
         mesh.add_colors('vertex', vertex_colors)
         return mesh
+
+    @classmethod
+    def _check_for_plantids(cls, self, values):
+        if not self.args.mesh_generated:
+            return True
+        plantids = values['plantids']
+        plantids_unique = np.unique(plantids)
+        return len(plantids_unique) == self.args.nrows * self.args.ncols
 
     @classmethod
     def _raytrace_scene(cls, self):
@@ -4132,15 +5377,18 @@ class RayTraceTask(GenerateTask):
             self.cache_args(args_overwrite={'query': k},
                             properties_preserve=['raytracer'],
                             recursive=False)
+            self.raytracer.args = self.args
             values[k] = self.raytracer.raytrace()
             self.restore_args()
+            self.raytracer.args = self.args
         if self.args.output_traced_mesh:
             mesh = cls._color_scene(self, values)
             self.add_alternate_output('traced_mesh', mesh)
         return values
 
     @classmethod
-    def raytrace_totals(cls, self, times=None, **kwargs):
+    def raytrace_totals(cls, self, times=None, per_plant=False,
+                        **kwargs):
         r"""Run the ray tracer on the selected geometry and compute the
         totals for each plant in the scene.
 
@@ -4148,6 +5396,8 @@ class RayTraceTask(GenerateTask):
             self (object): Task instance that is running.
             times (list, optional): Set of times to get values for. If
                 not provided, only the current time will be used.
+            per_plant (bool, optional): If True, the query values should
+                also be totaled for each plant.
             **kwargs: Additional keyword arguments are passed to
                 run_class.
 
@@ -4160,35 +5410,79 @@ class RayTraceTask(GenerateTask):
             out = None
             for time in times:
                 kwargs['args_overwrite']['time'] = time
-                iout = cls.raytrace_totals(self, **kwargs)
+                iout = cls.raytrace_totals(self, per_plant=per_plant,
+                                           **kwargs)
                 if out is None:
-                    out = {k: {i: [] for i in v.keys()}
-                           for k, v in iout.items()}
+                    out = {k: {i: [] for i in ids.keys()}
+                           for k, ids in iout.items()}
                 for k, ids in iout.items():
                     for i, v in ids.items():
                         out[k][i].append(v)
             return out
         values = RayTraceTask.run_class(self, **kwargs)
         values['flux'] = cls.extract_query(values, 'flux')
-        plantids = values['plantids']
-        plantids_unique = np.unique(plantids)
-        out = {k: {'total': values[k].sum()} for k in _query_options}
-        for i in plantids_unique:
-            idx = (plantids == i)
-            for k in _query_options:
-                out[k][i] = values[k][idx].sum()
+
+        def sum(x):
+            if isinstance(x, units.QuantityArray):
+                return units.Quantity(x.value.sum(), x.units)
+            return x.sum()
+
+        out = {k: {'total': sum(values[k])} for k in _query_options}
+        if per_plant:
+            plantids = values['plantids']
+            plantids_unique = np.unique(plantids)
+            for i in plantids_unique:
+                idx = (plantids == i)
+                for k in _query_options:
+                    out[k][i] = sum(values[k][idx])
         return out
 
     @classmethod
     def _run(cls, self, **kwargs):
         r"""Run the process associated with this subparser."""
-        if self.args.mesh is None:
-            self.mesh = GenerateTask.run_class(
-                self,
-                args_preserve=['output_generate', 'output_plantids'],
-            )
-            self.args.mesh = self.args.output_generate
-            self.args.plantids = self.args.output_plantids
+        if self.args.mesh_generated and not os.path.isfile(self.args.mesh):
+            if self.args.crop_class == 'all_split':
+                meshes = []
+                for crop_class in self.all_crop_classes:
+                    self.clear_cached_properties(include=['mesh'])
+                    cls.run_class(
+                        self, args_overwrite={
+                            'crop_class': crop_class,
+                            'output_raytrace': True,
+                            'output_generate': True,
+                            'mesh': None,
+                        },
+                        args_preserve=[
+                            'color_vmin_raytrace',
+                            'color_vmax_raytrace',
+                        ],
+                        dont_load_existing=True,
+                        dont_reset_alternate_output=True,
+                        recursive=False,
+                    )
+                    if self.args.output_traced_mesh:
+                        meshes.append(
+                            self.pop_alternate_output('traced_mesh')
+                        )
+                if self.args.output_traced_mesh:
+                    mesh = meshes[0]
+                    x = 0.0 * self.args.x
+                    y = 0.0 * self.args.y
+                    plantid = 0
+                    for imesh in meshes[1:]:
+                        mesh.append(self.shift_mesh(
+                            imesh, x, y, plantid=plantid,
+                        ))
+                        x += self.args.row_spacing * (self.args.nrows + 2)
+                        plantid += (self.args.nrows * self.args.ncols)
+                    self.add_alternate_output('traced_mesh', mesh)
+                return None
+        self.mesh = GenerateTask.run_class(
+            self,
+            args_preserve=['output_generate', 'output_plantids'],
+        )
+        self.args.mesh = self.args.output_generate
+        self.args.plantids = self.args.output_plantids
         return cls._raytrace_scene(self, **kwargs)
 
 
@@ -4197,7 +5491,7 @@ class RenderTask(RayTraceTask):
 
     _name = 'render'
     _ext = '.png'
-    _output_dir = _image_dir
+    _output_dir = _render_dir
     _arguments_suffix_ignore = [
         'camera_direction', 'output_raytrace', 'overwrite_raytrace',
         'overwrite_render',
@@ -4367,24 +5661,6 @@ class RenderTask(RayTraceTask):
              and args.camera_location is None)):
             args.camera_direction = 'downnortheast'
         super(RenderTask, cls).adjust_args(args, **kwargs)
-        # if args.output_raytrace:
-        #     # Overwrite is required to force return of face values
-        #     args.overwrite_raytrace = True
-
-    # @classmethod
-    # def adjust_args_output(cls, args, name=None):
-    #     r"""Adjust the parsed arguments controling output, generating a
-    #     file name from the other arguments if it is not present.
-
-    #     Args:
-    #         args (argparse.Namespace): Parsed arguments.
-    #         name (str, optional): Base name for variable to set. Defaults
-    #             to the task make.
-
-    #     """
-    #     super(RenderTask, cls).adjust_args_output(args, name=name)
-    #     if args.output_raytrace:
-    #         RayTraceTask.adjust_args_output(args)
 
     @classmethod
     def output_suffix(cls, args, name=None, **kwargs):
@@ -4409,6 +5685,15 @@ class RenderTask(RayTraceTask):
             return False
         if args.camera_type != 'projection':
             suffix += f'_{args.camera_type}'
+        background_str = None
+        if isinstance(args.background, str):
+            background_str = background_str
+        elif getattr(args, 'background_str', None):
+            background_str = args.background_str
+        elif args.background:
+            return False
+        if background_str != 'transparent':
+            suffix += f'_{background_str}'
         return suffix
 
     @classmethod
@@ -4429,9 +5714,11 @@ class RenderTask(RayTraceTask):
         RayTraceTask._set_color_limits(self, query_values, name='render')
         face_values = RayTraceTask.extract_query(
             query_values, self.args.query)
+        if isinstance(face_values, units.QuantityArray):
+            face_values = np.array(face_values)
         pixel_values = self.raytracer.render(face_values)
         if isinstance(pixel_values, units.QuantityArray):
-            pixel_values = copy.deepcopy(pixel_values.value)
+            pixel_values = np.array(pixel_values)
         self.add_alternate_output('pixel_values', pixel_values)
         pixel_values = (pixel_values.T)[::-1, :]
         image = apply_color_map(
@@ -4449,7 +5736,27 @@ class RenderTask(RayTraceTask):
     @classmethod
     def _run(cls, self, **kwargs):
         r"""Run the process associated with this subparser."""
-        if self.args.mesh is None:
+        if self.args.mesh_generated and not os.path.isfile(self.args.mesh):
+            if self.args.crop_class == 'all_split':
+                images = []
+                for crop_class in self.all_crop_classes:
+                    self.clear_cached_properties(include=['mesh'])
+                    images.append(cls.run_class(
+                        self, args_overwrite={
+                            'crop_class': crop_class,
+                            'output_render': True,
+                            'output_generate': True,
+                            'mesh': None,
+                        },
+                        args_preserve=[
+                            'color_vmin_render',
+                            'color_vmax_render',
+                        ],
+                        recursive=False,
+                    ))
+                # TODO: Verify that this is correct axis
+                image = np.concatenate(images, axis=1)
+                return image
             self.mesh = GenerateTask.run_class(
                 self,
                 args_preserve=['output_generate', 'output_plantids'],
@@ -4459,72 +5766,28 @@ class RenderTask(RayTraceTask):
         return cls._render_scene(self, **kwargs)
 
 
-class AnimateTask(RenderTask):
+class AnimateTask(TemporalTaskBase(RenderTask, step_alias='frame')):
     r"""Class for producing an animation."""
 
     _name = 'animate'
     _ext = None
     _output_dir = _movie_dir
-    _time_vars = ['start_time', 'stop_time']
-    _hour_defaults = {}
     _arguments_suffix_ignore = [
-        'start_time', 'stop_time', 'movie_format', 'output_render',
+        'movie_format', 'output_render',
         'overwrite_render', 'output_totals', 'overwrite_totals',
     ]
     _alternate_outputs_write_required = []
     _alternate_outputs_write_optional = ['totals']
     _arguments = [
-        (('--start-time', ), {
-            'type': str, 'default': 'sunrise',
-            'help': ('Date time (in any ISO 8601 format) that the '
-                     'animation should start at. If not provided, the '
-                     'time of sunrise for the selected \"location\" (or '
-                     '\"latitude\"/\"longitude\") & \"doy\" will be '
-                     'used.'),
-        }),
-        (('--stop-time', ), {
-            'type': str, 'default': 'sunset',
-            'help': ('Date time (in any ISO 8601 format) that the '
-                     'animation should stop at. If not provided, the '
-                     'time of sunset for the selected \"location\" (or '
-                     '\"latitude\"/\"longitude\") & \"doy\" will be '
-                     'used.'),
-        }),
         (('--movie-format', ), {
             'type': str, 'choices': ['mp4', 'mpeg', 'gif'],
             'default': 'gif',
             'help': 'Format that the movie should be output in',
         }),
-        (('--frame-count', ), {
-            'type': int,
-            'help': ('The number of frames that should be generated '
-                     'between the animation start and end time. If not '
-                     'provided, the number of frames will be determined '
-                     'from \"frame_interval\"'),
-        }),
-        (('--frame-interval', ), {
-            'type': parse_quantity, 'units': 'hours',
-            'help': ('The time (in hours) that should be used for '
-                     'frames in the animation. If not provided, '
-                     '\"frame_count\" will be used to calculate the '
-                     'frame interval. If \"frame_count\" is not '
-                     'provided, a frame interval of 1 hour will be '
-                     'used.'),
-        }),
         (('--frame-rate', ), {
             'type': int, 'default': 1,
             'help': ('The frame rate that should be used for the '
                      'generated movie in frames per second'),
-        }),
-        (('--output-frames', '--output-render'), {
-            'action': 'store_true', 'dest': 'output_render',
-            'help': 'Output the rendered frames to disk.',
-        }),
-        (('--regenerate-frames', '--overwrite-render',
-          '--overwrite-frames'), {
-            'action': 'store_true', 'dest': 'overwrite_render',
-            'help': ('Regenerate frames that already have existing '
-                     'images.'),
         }),
         (('--output-totals', ), {
             'nargs': '?', 'const': True, 'default': False,
@@ -4536,12 +5799,11 @@ class AnimateTask(RenderTask):
             'help': ('Overwrite any existing plot of the totals as a '
                      'function of time.'),
         }),
-        (('--plot-total', ), {
-            'nargs': '?', 'const': 'total',
-            'choices': ['total', 'plants'],
-            'help': ('Include a plot of the query total below the '
-                     'image. If \"--plot-total=plants\" is specified, '
-                     'the totals will be shown on a per-plant basis.'),
+        (('--inset-totals', ), {
+            'action': 'store_true',
+            'help': ('Inset a plot of the query total below the '
+                     'image.'),
+
         }),
     ]
     _argument_modifications = {
@@ -4549,14 +5811,9 @@ class AnimateTask(RenderTask):
             'help': 'File where the generated animation should be saved',
         },
     }
-    _excluded_arguments = [
-        '--time',
-    ]
-
-    def __init__(self, *args, **kwargs):
-        self._figure_totals = None
-        self._time_marker = None
-        super(AnimateTask, self).__init__(*args, **kwargs)
+    # _excluded_arguments = [
+    #     '--time',
+    # ]
 
     @classmethod
     def _read_output(cls, args, name=None):
@@ -4585,7 +5842,12 @@ class AnimateTask(RenderTask):
                 to the task make.
 
         """
-        outputfile = getattr(args, f'output_{cls._name}')
+        if name is None:
+            name = cls._name
+        outputfile = getattr(args, f'output_{name}')
+        if name == 'totals':
+            output.savefig(outputfile, dpi=300)
+            return
         write_movie(output, outputfile, frame_rate=args.frame_rate,
                     verbose=args.verbose)
 
@@ -4600,47 +5862,9 @@ class AnimateTask(RenderTask):
         """
         args.output_render = True
         super(AnimateTask, cls).adjust_args(args, **kwargs)
-        duration = args.stop_time - args.start_time
-        duration = duration.total_seconds() / 3600
-        if not args.frame_count:
-            if not args.frame_interval:
-                args.frame_interval = 1.0
-            args.frame_count = int(duration / args.frame_interval)
-        elif not args.frame_interval:
-            args.frame_interval = duration / args.frame_count
         for k in ['colormap', 'color_vmin', 'color_vmax',
                   'colormap_scaling']:
             setattr(args, f'{k}_render', getattr(args, f'{k}_animate'))
-
-    @classmethod
-    def adjust_args_time(cls, args, timevar=None):
-        r"""Adjust the time related variables in a set of parsed
-        arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Time variable to adjust. If not
-                provided, all of the time variables associated with this
-                subparser will be adjusted.
-
-        """
-        super(AnimateTask, cls).adjust_args_time(args, timevar=timevar)
-        if timevar is not None:
-            return
-        if args.stop_time == args.start_time:
-            args.stop_time = args.stop_time.replace(hour=0, minute=0,
-                                                    microsecond=0)
-            cls.adjust_args_time(args, timevar='stop_time')
-        start_time_str = getattr(args, 'start_time_str', None)
-        stop_time_str = getattr(args, 'stop_time_str', None)
-        if start_time_str and stop_time_str:
-            start_parts = start_time_str.rsplit('-', 1)
-            stop_parts = stop_time_str.rsplit('-', 1)
-            if start_parts[0] == stop_parts[0]:
-                args.stop_time_str = stop_parts[-1]
-        if not hasattr(args, 'time'):
-            args.time = None
-            args.time_str = None
 
     @classmethod
     def output_suffix(cls, args, name=None, **kwargs):
@@ -4658,9 +5882,11 @@ class AnimateTask(RenderTask):
         """
         suffix = super(AnimateTask, cls).output_suffix(
             args, name=name, **kwargs)
-        if args.plot_total:
+        if args.inset_totals:
             suffix += '_totals'
-        if name != 'totals' and args.frame_rate != 1:
+        # if args.per_plant_totals:
+        #     suffix += '_per_plant'
+        if args.frame_rate != 1:
             suffix += f'_{args.frame_rate}fps'
         return suffix
 
@@ -4677,118 +5903,368 @@ class AnimateTask(RenderTask):
             str: Output file extension.
 
         """
-        if name == 'totals':
-            return '.png'
         return f'.{args.movie_format}'
 
-    @property
-    def times(self):
-        r"""list: Set of times for frames in the animation."""
-        dt = timedelta(hours=self.args.frame_interval)
-        time = self.args.start_time
-        out = []
-        for i in range(self.args.frame_count):
-            out.append(time)
-            time += dt
-        return out
-
-    @property
+    @cached_property
     def figure_totals(self):
         r"""Figure containing the query totals."""
-        if self._figure_totals is not None:
-            return self._figure_totals
         import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        import matplotlib.units as munits
+        converter = mdates.ConciseDateConverter()
+        munits.registry[datetime] = converter
         times = self.times
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        totals = RayTraceTask.raytrace_totals(self, times=times)[
-            self.args.query]
-        ylabel = self.args.query.title()  # TODO: Add units
-        if self.args.plot_total == 'plants':
-            for k, v in totals.items():
-                ax.plot(times, v, label=k)
+        if self.args.crop_class == 'all_split':
+            crop_classes = self.all_crop_classes
         else:
-            ax.plot(times, totals['total'])
+            crop_classes = [self.args.crop_class]
+        ylabel = None
+        xlim = None
+        ylim = None
+        linestyles = ['-', ':']
+        colors = ['b', 'o']
+        for iclass, crop_class in enumerate(crop_classes):
+            totals = RayTraceTask.raytrace_totals(
+                self, times=times,
+                per_plant=self.args.per_plant_totals,
+                args_overwrite={
+                    'crop_class': crop_class,
+                    'output_render': True,
+                    'output_generate': True,
+                    'mesh': None,
+                },
+            )[self.args.query]
+            if ylabel is None:
+                ylabel = self.args.query.title()  # TODO: Add units
+                if isinstance(totals['total'], units.QuantityArray):
+                    ylabel += f" ({totals['total'].units})"
+                elif isinstance(totals['total'][0], units.Quantity):
+                    ylabel += f" ({totals['total'][0].units})"
+            if self.args.per_plant_totals:
+                lines_int = {}
+                lines_ext = {}
+                # TODO: Split plants by crop class when they are
+                # combined in the same mesh
+                for k, v in totals.items():
+                    loc = None
+                    label = None
+                    if k == 'total':
+                        continue
+                    if self.isExteriorPlant(k):
+                        loc = 1
+                        lines_ext[k] = v
+                        if (len(lines_ext) == 1):
+                            label = f'Exterior plants ({crop_class})'
+                    else:
+                        loc = 0
+                        lines_int[k] = v
+                        if (len(lines_int) == 1):
+                            label = f'Interior plants ({crop_class})'
+                    color = colors[iclass]
+                    style = linestyles[loc]
+                    ax.plot(times, v, label=label, color=color,
+                            linestyle=style)
+            else:
+                ax.plot(times, totals['total'],
+                        label=f'total ({crop_class})')
         ax.set_xlabel('Time')
         ax.set_ylabel(ylabel)
-        self._figure_totals = fig
-        self._time_marker = ax.axvline(x=self.start_time,
-                                       color=(1, 1, 1), alpha=0.5,
-                                       linewidth=10)
-        return self._figure_totals
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.legend()
+        return fig
 
     @property
     def time_marker(self):
         r"""matplotlib.lines.line2D: Vertical line marking the time."""
-        if self._time_marker is None:
-            self.figure_totals
-        return self._time_marker
+        ax = self.figure_totals.get_axes()[0]
+        return ax.axvline(x=self.start_time,
+                          color=(1, 1, 1), alpha=0.5,
+                          linewidth=10)
 
-    def add_totals_to_frame(self, frame, time):
+    @cached_property
+    def inset_figure(self):
+        r"""LightTask: Light instance."""
+        if not self.args.inset_totals:
+            return None
+        light_task = LightTask(args=self.args)
+        frame = self.args.output_render
+        old_data = read_png(frame, verbose=self.args.verbose)
+        print('OLD_IMAGE', old_data.shape)
+        pdb.set_trace()
+        width_px = old_data.shape[0]
+        height_px = int(0.2 * width_px)
+        dpi = light_task.figure.get_dpi()
+        light_task.figure.set_size_inches(width_px / dpi,
+                                          height_px / dpi)
+        return light_task
+
+    def add_totals_to_frame(self, time, frame=None):
         r"""Add a plot of query totals to a frame.
 
         Args:
-            frame (str): Frame containing the rendered scene that the
-                plot should be added to.
             time (datetime.datetime): Time that frame is associated with.
+            frame (str, optional): Frame containing the rendered scene
+                that the plot should be added to. If not provided, the
+                most recent value of self.args.output_render is used.
 
         Returns:
             str: Updated frame with the plot added.
 
         """
+        update_args = False
+        if frame is None:
+            update_args = True
+            frame = self.args.output_render
+        if not self.inset_figure:
+            return frame
+        old_data = read_png(frame, verbose=self.args.verbose)
         frame_new = '_totals'.join(os.path.splitext(frame))
-        if self._figure_totals is None:
-            old_data = read_png(frame, verbose=self.args.verbose)
-            print('OLD_IMAGE', old_data.shape)
-            pdb.set_trace()
-            width_px = old_data.shape[0]
-            height_px = int(0.2 * width_px)
-            dpi = self.figure_totals.get_dpi()
-            self.figure_totals.set_size_inches(width_px / dpi,
-                                               height_px / dpi)
-        fig = self.figure_totals
-        self.time_marker.set_xdata([time, time])
-        fig.canvas.draw()
-        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        self.inset_figure.mark_time(time)
+        data = self.inset_figure.raw_figure_data
         print('NEW_IMAGE', data.shape)
         pdb.set_trace()
         data_new = np.concatenate([old_data, data])
         print('CONCAT', data_new)
         write_png(data_new, frame_new, verbose=self.args.verbose)
+        if update_args:
+            self.args.output_render = frame_new
         return frame_new
 
     @classmethod
-    def _run(cls, self):
-        r"""Run the process associated with this subparser."""
-        frames = []
-        for time in self.times:
-            # self.cache_args(
-            #     args_overwrite={
-            #         'time': time.isoformat(),
-            #         'time_str': None,
-            #         'output_render': True,
-            #     },
-            #     adjust=RenderTask
-            # )
-            # iframe = self.args.output_render
-            # print('time', time, iframe)
-            RenderTask.run_class(self, dont_load_existing=True,
-                                 args_overwrite={
-                                     'time': time.isoformat(),
-                                     'time_str': None,
-                                     'output_render': True,
-                                 },
-                                 args_preserve=['output_render'])
-            iframe = self.args.output_render
-            print('time', time, iframe)
-            # self.restore_args()
-            if self.args.plot_total:
-                iframe = self.add_totals_to_frame(iframe, time)
-            frames.append(iframe)
+    def _run_step(cls, self, time, **kwargs):
+        kwargs.setdefault('args_preserve', [])
+        kwargs['args_preserve'] += [
+            'color_vmin_render', 'color_vmax_render',
+        ]
         if not os.path.isdir(_movie_dir):
             os.mkdir(_movie_dir)
-        return frames
+        super(AnimateTask, cls)._run_step(self, time, **kwargs)
+        self.add_totals_to_frame(time)
+        return self.args.output_render
+
+
+class LightTask(TemporalTaskBase(RayTraceTask)):
+    r"""Class for plotting the flux on a geometry as a function of time."""
+    _name = 'light'
+    _ext = '.png'
+    _output_dir = _light_dir
+    _alternate_outputs_write_required = []
+    _alternate_outputs_write_optional = []
+    _arguments = [
+        (('--per-plant', ), {
+            'action': 'store_true',
+            'help': ('Plot the totals on a per-plant basis'),
+        }),
+    ]
+    _argument_modifications = {
+        '--output': {
+            'help': 'File where the generated plot should be saved',
+        },
+    }
+
+    @classmethod
+    def _read_output(cls, args, name=None):
+        r"""Load an output file produced by this task.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        # if name is None:
+        #     name = cls._name
+        # outputfile = getattr(args, f'output_{name}')
+        # return read_png(outputfile, verbose=args.verbose)
+        raise NotImplementedError
+
+    @classmethod
+    def _write_output(cls, output, args, name=None):
+        r"""Write to an output file.
+
+        Args:
+            output (object): Output object to write to file.
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        """
+        if name is None:
+            name = cls._name
+        outputfile = getattr(args, f'output_{name}')
+        output.savefig(outputfile, dpi=300)
+
+    @classmethod
+    def output_suffix(cls, args, name=None, **kwargs):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        Returns:
+            str: Suffix.
+
+        """
+        suffix = super(LightTask, cls).output_suffix(
+            args, name=name, **kwargs)
+        if args.per_plant:
+            suffix += '_per_plant'
+        return suffix
+
+    @cached_property
+    def time_marker(self):
+        r"""matplotlib.lines.line2D: Vertical line marking a time."""
+        return self.axes.axvline(x=self.start_time, color=(1, 1, 1),
+                                 alpha=0.5, linewidth=10)
+
+    def mark_time(self, time):
+        r"""Mark a time with a vertical line on the figure.
+
+        Args:
+            time (datetime.datetime): Time that should be marked.
+
+        """
+        self.time_marker.set_xdata([time, time])
+
+    def plot_data(self, totals, crop_class=None, iclass=0):
+        if crop_class is None:
+            crop_class = self.args.crop_class
+            iclass = 0
+        totals = totals[self.args.query]
+        first = getattr(self, 'first', True)
+        times = self.times
+        ax = self.axes
+        linestyles = ['-', ':']
+        colors = ['blue', 'orange']
+        if first:
+            ylabel = self.args.query.title()  # TODO: Add units
+            if isinstance(totals['total'], units.QuantityArray):
+                ylabel += f" ({totals['total'].units})"
+            elif isinstance(totals['total'][0], units.Quantity):
+                ylabel += f" ({totals['total'][0].units})"
+            ax.set_xlabel('Time')
+            ax.set_ylabel(ylabel)
+        if self.args.per_plant:
+            lines = {'interior': {}, 'exterior': {}}
+            # TODO: Split plants by crop class when they are
+            # combined in the same mesh
+            for k, v in totals.items():
+                if k == 'total':
+                    continue
+                loc = None
+                locStr = None
+                label = None
+                if self.isExteriorPlant(k):
+                    loc = 1
+                    locStr = 'exterior'
+                else:
+                    loc = 0
+                    locStr = 'interior'
+                lines[locStr][k] = v
+                if len(lines[locStr]) == 1:
+                    label = f'{locStr.title()} plants ({crop_class})'
+                color = colors[iclass]
+                style = linestyles[loc]
+                ax.plot(times, v, label=label, color=color,
+                        linestyle=style)
+            print(f'INTERIOR PLANTS [{crop_class}]: '
+                  f'{len(lines["interior"])}/{len(totals) - 1}')
+            print(f'EXTERIOR PLANTS [{crop_class}]: '
+                  f'{len(lines["exterior"])}/{len(totals) - 1}')
+        else:
+            color = colors[iclass]
+            style = linestyles[0]
+            ax.plot(times, totals['total'], color=color,
+                    label=f'total ({crop_class})',
+                    linestyle=style)
+
+    @classmethod
+    def _run_step(cls, self, time, crop_class=None, **kwargs):
+        if crop_class is not None:
+            kwargs.setdefault('args_overwrite', {})
+            kwargs['args_overwrite'].update(
+                crop_class=crop_class,
+                mesh=None,
+                output_generate=True,
+                output_raytrace=True,
+            )
+        if self.args.per_plant:
+            kwargs.setdefault('args_overwrite', {})
+            kwargs['args_overwrite'].update(
+                output_plantids=True,
+            )
+            kwargs.setdefault('args_preserve', [])
+            kwargs['args_preserve'].append('output_plantids')
+        values = super(LightTask, cls)._run_step(self, time, **kwargs)
+        if not RayTraceTask._check_for_plantids(self, values):
+            kwargs.setdefault('args_overwrite', {})
+            kwargs['args_overwrite'].update(
+                overwrite_raytrace=True,
+            )
+            print("REGENERATING RAY TRACE WITHOUT PLANTIDS")
+            values = super(LightTask, cls)._run_step(self, time, **kwargs)
+            assert RayTraceTask._check_for_plantids(self, values)
+        values['flux'] = cls.extract_query(values, 'flux')
+
+        def sum(x):
+            if isinstance(x, units.QuantityArray):
+                return units.Quantity(x.value.sum(), x.units)
+            return x.sum()
+
+        out = {k: {'total': sum(values[k])} for k in _query_options}
+        if self.args.per_plant:
+            plantids = values['plantids']
+            plantids_unique = np.unique(plantids)
+            if self.args.mesh_generated:
+                assert (len(plantids_unique)
+                        == self.args.nrows * self.args.ncols)
+            for i in plantids_unique:
+                idx = (plantids == i)
+                for k in _query_options:
+                    out[k][i] = sum(values[k][idx])
+        return out
+
+    @classmethod
+    def _run(cls, self, crop_class=None, iclass=None, **kwargs):
+        r"""Run the process associated with this subparser."""
+        if not os.path.isdir(_light_dir):
+            os.mkdir(_light_dir)
+        if self.args.crop_class == 'all_split' and crop_class is None:
+            # out = {}
+            for iclass, crop_class in enumerate(self.all_crop_classes):
+                cls._run(self, crop_class=crop_class, iclass=iclass,
+                         **kwargs)
+                # out[crop_class] = cls._run(
+                #     self, crop_class=crop_class, **kwargs
+                # )
+            # return out
+            self.axes.legend()
+            return self.figure
+        out = None
+        for time in self.times:
+            iout = cls._run_step(self, time, crop_class=crop_class,
+                                 **kwargs)
+            if out is None:
+                out = {k: {i: [] for i in ids.keys()}
+                       for k, ids in iout.items()}
+            for k, ids in iout.items():
+                for i, v in ids.items():
+                    out[k][i].append(v)
+        self.plot_data(out, crop_class=crop_class, iclass=iclass, **kwargs)
+        if crop_class is None:
+            self.axes.legend()
+        return self.figure
 
 
 ############################################################
@@ -7073,6 +8549,19 @@ class SolarModel(object):
         return parse_quantity(
             self.solar_position["azimuth"].iloc[0], 'degrees')
 
+    def relative_direction(self, up, north):
+        from hothouse.blaster import SunRayBlaster
+        blaster = SunRayBlaster(
+            latitude=self.latitude.value, longitude=self.longitude.value,
+            date=self.time, solar_altitude=self.apparent_elevation,
+            solar_azimuth=self.azimuth,
+            zenith=up.astype('f4'), north=north.astype('f4'),
+            ground=np.zeros((3,), 'f4'),
+            # direct_ppfd=self.ppfd_direct,
+            # diffuse_ppfd=self.ppfd_diffuse,
+        )
+        return -blaster.forward
+
     # @property
     # def airmass(self):
     #     r"""pandas.DataFrame: Relative and absolute air mass."""
@@ -7115,7 +8604,7 @@ class SolarModel(object):
             self._irradiance = self.location.get_clearsky(
                 self.time, model=self.method_irradiance,
                 solar_position=self.solar_position,
-                dni_extra=self.dni_extra,  # .value,
+                dni_extra=self.dni_extra,
                 linke_turbidity=self.linke_turbidity,
                 airmass_absolute=self.absolute_airmass,
             )
@@ -7198,6 +8687,8 @@ class RayTracerBase(RegisteredClassBase):
 
     def __init__(self, args, mesh, plantids=None):
         super(RayTracerBase, self).__init__()
+        if args.mesh_generated:
+            assert plantids is not None
         self.args = args
         self.mesh = mesh
         self.plantids_face = plantids
@@ -7209,7 +8700,9 @@ class RayTracerBase(RegisteredClassBase):
         self.area_mask = (self.areas > self._area_min)
         # print(f'{np.logical_not(self.area_mask).sum()} '
         #       f'faces have areas of 0')
-        # self.areas = parse_quantity(self.areas, self.args.mesh_units**2)
+        if self.args.include_units:
+            self.areas = parse_quantity(
+                self.areas, self.args.mesh_units**2)
         if self.args.plantids_in_blue:
             self.plantids_vertex = (
                 255 * self.mesh_dict['vertex_colors'][:, 2]
@@ -7507,7 +9000,7 @@ class RayTracerBase(RegisteredClassBase):
             - (camera_distance * self.camera_direction)
         )
         if isinstance(out, units.QuantityArray) and out.is_dimensionless():
-            out = out.value
+            out = np.array(out)
         return out
 
     @cached_args_property
@@ -7722,9 +9215,17 @@ class HothouseRayTracer(RayTracerBase):
     def scene(self):
         r"""hothouse.scene.Scene: Scene containing geometry."""
         from hothouse.plant_model import PlantModel
-        from hothouse.scene import Scene
+        kws = {}
+        if self.args.periodic_canopy == 'scene':
+            from hothouse.scene import PeriodicScene as Scene
+            kws.update(period=self.args.periodic_period.astype('f4'),
+                       direction=self.args.periodic_direction.astype('f4'),
+                       count=(self.args.periodic_canopy_count
+                              * np.ones((3, ), 'i4')))
+        else:
+            from hothouse.scene import Scene
         out = Scene(
-            ground=self.ground, up=self.up, north=self.north,
+            ground=self.ground, up=self.up, north=self.north, **kws
         )
         for plantid, mesh_dict in self.plants.items():
             triangles = []
@@ -7757,7 +9258,6 @@ class HothouseRayTracer(RayTracerBase):
             kws['fov_height'] = self.args.camera_fov_height
         rbcls = camera_classes[self.args.camera_type]
         assert self.image_width.value > 0
-        print(f'NX = {self.image_nx}, NY = {self.image_ny}')
         camera_blaster = rbcls(
             center=self.image_center.astype("f4"),
             forward=self.camera_direction.astype("f4"),
@@ -7788,6 +9288,14 @@ class HothouseRayTracer(RayTracerBase):
                  f"\n   direct = {self.solar_model.ppfd_direct}"
                  f"\n   diffuse = {self.solar_model.ppfd_diffuse}",
                  force=True)
+        kws = {}
+        if self.args.periodic_canopy == 'rays':
+            kws.update(
+                period=self.args.periodic_period.astype('f4'),
+                periodic_direction=self.args.periodic_direction.astype('f4'),
+                periodic_count=(self.args.periodic_canopy_count
+                                * np.ones((3, ), 'i4')),
+            )
         return self.scene.get_sun_blaster(
             self.args.latitude, self.args.longitude, self.args.time,
             direct_ppfd=self.solar_model.ppfd_direct,
@@ -7795,7 +9303,7 @@ class HothouseRayTracer(RayTracerBase):
             solar_altitude=self.solar_model.apparent_elevation,
             solar_azimuth=self.solar_model.azimuth,
             nx=self.args.nrays, ny=self.args.nrays,
-            multibounce=self.args.multibounce,
+            multibounce=self.args.multibounce, **kws
         )
 
     @property
@@ -7851,7 +9359,8 @@ class HothouseRayTracer(RayTracerBase):
                 self.solar_blaster,
                 any_direction=self.args.any_direction,
             )
-            # value_units = self.solar_model.ppfd_direct.units
+            if self.args.include_units:
+                value_units = self.solar_model.ppfd_direct.units
         elif self.args.query == 'hits':
             component_values = self.scene.compute_hit_count(
                 self.solar_blaster)
@@ -7885,7 +9394,14 @@ class HothouseRayTracer(RayTracerBase):
             np.ndarray: Ray tracer results for each pixel.
 
         """
+        from hothouse.scene import PeriodicScene
+        prev = None
+        if isinstance(self.scene, PeriodicScene):
+            prev = self.scene.buffer_as_primary
+            self.scene.buffer_as_primary = True
         camera_hits = self.camera_blaster.compute_count(self.scene)
+        if prev is not None:
+            self.scene.buffer_as_primary = prev
         out = np.zeros(self.image_nx * self.image_ny, "f4")
         if isinstance(values, units.QuantityArray):
             out = units.QuantityArray(out, values.units)
