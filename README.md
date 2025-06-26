@@ -240,14 +240,11 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
   plants 'grow'
 - options for labeling crop class & plant id
 - restructure as python package
-  - cli
   - crops (directory)
-  - raytrace
-  - generate
-  - solar
-  - geometry
-  - task?
-  - utils
+    - maize
+    - tomato
+    - sweet potato
+  - geometry?
 - allow for other crops
 - allow for inputs to be specified for input parameters and data
 - add senecense
