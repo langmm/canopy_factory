@@ -2074,6 +2074,7 @@ class SubparserBase(RegisteredClassBase):
     _name = None
     _help = None
     _default = None
+    _argument_sources = []
     _arguments = []
     _arguments_suffix_ignore = []
     _argument_modifications = {}
@@ -2102,6 +2103,9 @@ class SubparserBase(RegisteredClassBase):
         base_args = base.argument_dict(use_flags=True)
         local_args = cls.argument_dict(use_flags=True)
         arguments = copy.deepcopy(base_args)
+        for other_base in cls._argument_sources:
+            arguments.update(
+                **copy.deepcopy(other_base.argument_dict(use_flags=True)))
         subparser_specific = [
             k for k, v in base_args.items()
             if v[1].get('subparser_specific_dest', False)
@@ -2128,6 +2132,7 @@ class SubparserBase(RegisteredClassBase):
         cls._argument_modifications = {}
         cls._excluded_arguments = []
         cls._external_arguments = {}
+        cls._argument_sources = []
 
     @classmethod
     def add_arguments(cls, parser):
@@ -3112,14 +3117,11 @@ class LayoutTask(TaskBase):
         'x', 'y',
         'ground_height',
     ]
-    _convert_to_color_tuple = [
-        # 'interior_plant_color', 'exterior_plant_color',
-        # 'periodic_plant_color',
-    ]
+    _convert_to_color_tuple = []
     _arguments = [
         (('--canopy', ), {
             'choices': ['single', 'tile', 'unique'],
-            'default': 'single',
+            'default': 'unique',
             'help': 'Type of canopy to layout',
         }),
         (('--plot-length', '--row-length'), {
@@ -3270,6 +3272,7 @@ class LayoutTask(TaskBase):
                      'to \"America/Chicago\" if \"--doy\" is provided, '
                      'but \"--timezone\" is not.'),
         }),
+        # TODO: Use mesh units in input
         (('--mesh-units', ), {
             'type': parse_units, 'default': units.Units('cm'),
             'help': 'Units that mesh should be output in',
@@ -3299,9 +3302,6 @@ class LayoutTask(TaskBase):
     _argument_modifications = {
         '--output': {
             'help': 'File where the layout should be saved',
-        },
-        '--canopy': {
-            'default': 'unique',
         },
     }
 
@@ -3393,6 +3393,8 @@ class LayoutTask(TaskBase):
             location_data = read_locations(_location_data)
             for k, v in location_data[args.location].items():
                 setattr(args, k, v)
+        if not (args.pressure or args.altitude):
+            args.altitude = parse_quantity(10.0, 'meters')
         cls.adjust_args_time(args)
         super(LayoutTask, cls).adjust_args(args)
         for k in cls._convert_to_color_tuple:
@@ -3496,8 +3498,6 @@ class LayoutTask(TaskBase):
             suffix += f'_canopy{args.canopy.title()}'
         if args.location:
             suffix += f"_{args.location}"
-        else:
-            return False
         suffix += cls.output_suffix_time(args)
         if args.periodic_canopy:
             suffix += (f'_periodic{args.periodic_canopy_count}'
@@ -3776,6 +3776,8 @@ class LayoutTask(TaskBase):
     @cached_property
     def axes(self):
         r"""Matplotlib axes."""
+        if self._name != 'layout':
+            return super(LayoutTask, self).axes
         out = self.subplots[1]
         out.set_axis_off()
         out.axis('equal')
@@ -3788,6 +3790,8 @@ class LayoutTask(TaskBase):
     @cached_property
     def legend_axes(self):
         r"""Matplotlib axes."""
+        if self._name != 'layout':
+            return None
         out = self.subplots[0]
         out.set_axis_off()
         out.axis('equal')
@@ -3937,24 +3941,21 @@ class LayoutTask(TaskBase):
         return self.figure
 
 
-class GenerateTask(TaskBase):
+class GenerateTask(LayoutTask):
     r"""Class for generating 3D canopies."""
 
     _name = 'generate'
+    _ext = None
     _help = 'Generate a canopy mesh'
     _output_dir = _mesh_dir
+    _time_vars = []
     _arguments_suffix_ignore = [
         'crop', 'crop_class', 'canopy', 'color',
         'overwrite_lpy_param', 'plantid', 'debug_param',
         'unful_leaves', 'mesh_format', 'overwrite_generate',
         'plot_width', 'output_plantids', 'overwrite_plantids',
-        # 'output_layout', 'overwrite_layout',
     ]
-    _alternate_outputs_write_required = ['plantids']  # , 'layout']
-    _convert_to_mesh_units = [
-        'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
-        'x', 'y',
-    ]
+    _alternate_outputs_write_required = ['plantids']
     _convert_to_color_tuple = [
         'color',
     ]
@@ -4011,49 +4012,6 @@ class GenerateTask(TaskBase):
             'type': int, 'default': 20,
             'help': 'Number of iterations to generate',
         }),
-        (('--canopy', ), {
-            'choices': ['single', 'tile', 'unique'],
-            'default': 'single',
-            'help': 'Type of canopy to generate a mesh for',
-        }),
-        (('--plot-length', '--row-length'), {
-            'type': parse_quantity, 'default': 200, 'units': 'cm',
-            'help': 'Length of plot rows forming canopy (in cm)',
-        }),
-        (('--plot-width', ), {
-            'type': parse_quantity, 'units': 'cm',
-            'help': ('Width of plot forming canopy (in cm). If provided '
-                     '\'nrows\' will be determined based on the provided '
-                     '\'row_spacing\'. If not provided, \'plot_width\' '
-                     'will be determined from \'nrows\' and '
-                     '\'row_spacing\'.'),
-        }),
-        (('--nrows', ), {
-            'type': int, 'default': 4,
-            'help': 'Number of rows to generate in plot',
-        }),
-        (('--row-spacing', ), {
-            'type': parse_quantity, 'default': 76.2, 'units': 'cm',
-            'help': 'Space between adjacent rows in plot (in cm)',
-        }),
-        (('--plant-spacing', '--col-spacing'), {
-            'type': parse_quantity, 'default': 18.3, 'units': 'cm',
-            'help': 'Space between adjacent plants in rows (in cm)',
-        }),
-        (('-x', '--x', '--row-offset'), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
-            'help': ('Starting position in the x direction '
-                     '(perpendicular to rows)'),
-        }),
-        (('-y', '--y', '--plant-offset'), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
-            'help': ('Starting position in the y direction (along '
-                     'rows)'),
-        }),
-        (('--plantid', ), {
-            'type': int, 'default': 0,
-            'help': 'Starting plant ID',
-        }),
         (('--color', ), {
             'type': parse_color, 'default': 'green',
             'help': ('Color that should be used for the generated plant. '
@@ -4066,14 +4024,6 @@ class GenerateTask(TaskBase):
         (('--debug-param', ), {
             'action': 'append',
             'help': 'Parameter(s) that debug mode should be enabled for.',
-        }),
-        (('--axis-up', ), {
-            'type': parse_axis, 'default': 'y',
-            'help': 'Axis along which plants should grow within the mesh',
-        }),
-        (('--axis-rows', ), {
-            'type': parse_axis, 'default': 'z',
-            'help': 'Axis along which rows should be spaced',
         }),
         (('--unfurl-leaves', ), {
             'action': 'store_true',
@@ -4089,11 +4039,6 @@ class GenerateTask(TaskBase):
             'type': str, 'choices': _supported_3d_formats,
             'help': 'Format that mesh should be saved in',
         }),
-        # TODO: Use mesh units in input
-        (('--mesh-units', ), {
-            'type': parse_units, 'default': units.Units('cm'),
-            'help': 'Units that mesh should be output in',
-        }),
         (('--output-plantids', ), {
             'nargs': '?', 'const': True, 'default': True,
             'help': ('File where the IDs of the plant each face belongs '
@@ -4104,16 +4049,6 @@ class GenerateTask(TaskBase):
             'help': ('Overwrite any existing plant IDs file '
                      '"--output-plantids" is passed'),
         }),
-        # (('--output-layout', ), {
-        #     'nargs': '?', 'const': True, 'default': False,
-        #     'help': ('File where the layout of a multi-plant field '
-        #              'should be saved'),
-        # }),
-        # (('--overwrite-layout', ), {
-        #     'action': 'store_true',
-        #     'help': ('Overwrite any existing plant layout file '
-        #              '"--output-layout" is passed'),
-        # }),
     ]
     _argument_modifications = {
         '--output': {
@@ -4123,20 +4058,14 @@ class GenerateTask(TaskBase):
             'default': 'single',
         },
     }
-
-    @staticmethod
-    def _on_registration(cls):
-        TaskBase._on_registration(cls)
-        if cls._registry_key is None or cls._name is None:
-            return
-        import inspect
-        base = inspect.getmro(cls)[1]
-        cls._convert_to_mesh_units = cls.select_valid_arguments(
-            getattr(base, '_convert_to_mesh_units', [])
-            + cls._convert_to_mesh_units)
-        cls._convert_to_color_tuple = cls.select_valid_arguments(
-            getattr(base, '_convert_to_color_tuple', [])
-            + cls._convert_to_color_tuple)
+    _excluded_arguments = [
+        '--axis-north', '--ground-height', '--latitude',
+        '--altitude', '--pressure', '--temperature', '--longitude',
+        '--time', '--doy', '--hour', '--year', '--timezone',
+        '--interior-plant-color', '--exterior-plant-color',
+        '--periodic-plant-color',
+        '--periodic-canopy', '--periodic-canopy-count',
+    ]
 
     @classmethod
     def _read_output(cls, args, name=None):
@@ -4154,7 +4083,6 @@ class GenerateTask(TaskBase):
         if name is None:
             name = cls._name
         outputfile = getattr(args, f'output_{name}')
-        assert name != 'layout'
         if name == 'plantids':
             return read_csv(outputfile, select='plantids')
         return read_3D(outputfile, file_format=args.mesh_format,
@@ -4176,9 +4104,6 @@ class GenerateTask(TaskBase):
         if name is None:
             name = cls._name
         outputfile = getattr(args, f'output_{name}')
-        if name == 'layout':
-            output.savefig(outputfile, dpi=300)
-            return
         if name == 'plantids':
             return write_csv({'plantids': output}, outputfile)
         write_3D(output, outputfile, file_format=args.mesh_format,
@@ -4193,23 +4118,7 @@ class GenerateTask(TaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        if isinstance(args.mesh_units, str):
-            args.mesh_units = units.Units(args.mesh_units)
-        for k in cls._convert_to_mesh_units:
-            setattr(args, k, parse_quantity(getattr(args, k, None),
-                                            args.mesh_units))
-        if not args.output_plantids:
-            args.output_plantids = True
         args.save_all_plantids = False
-        if args.canopy == 'single':
-            args.nrows = 1
-            args.ncols = 1
-            # args.output_layout = False
-        else:
-            if args.plot_width is None:
-                args.plot_width = args.nrows * args.row_spacing
-            args.nrows = int(args.plot_width / args.row_spacing)
-            args.ncols = int(args.plot_length / args.plant_spacing)
         if not args.output_generate:
             if not args.mesh_format:
                 args.mesh_format = 'obj'
@@ -4217,11 +4126,6 @@ class GenerateTask(TaskBase):
         args.plantids_in_blue = False
         if not args.mesh_format:
             args.mesh_format = get_3D_format(args.output_generate)
-        for k in cls._convert_to_color_tuple:
-            v = getattr(args, k, None)
-            if isinstance(v, str):
-                setattr(args, f'{k}_str', v)
-                setattr(args, k, parse_color(v, convert_names=True))
         if args.color_str == 'plantids':
             args.plantids_in_blue = True
         if args.lpy_param is None:
@@ -4300,8 +4204,6 @@ class GenerateTask(TaskBase):
         """
         if name == 'plantids':
             return '.csv'
-        # elif name == 'layout':
-        #     return '.png'
         ext = super(GenerateTask, cls).output_ext(args, name=name)
         if ext is None and args.mesh_format:
             ext = _inv_geom_ext[args.mesh_format]
@@ -4332,7 +4234,6 @@ class GenerateTask(TaskBase):
                 )
             mesh = None
             self.add_alternate_output('plantids', None)
-            # self.add_alternate_output('layout', None)
         elif self.args.crop_class == 'all':
             mesh = None
             plantids = self.pop_alternate_output('plantids', None)
@@ -4344,6 +4245,7 @@ class GenerateTask(TaskBase):
             x = self.args.x
             y = self.args.y
             for i, crop_class in enumerate(self.all_crop_classes):
+                print("IMESH", i, crop_class)
                 imesh = cls.run_class(
                     self, dont_reset_alternate_output=True,
                     args_overwrite={
@@ -4361,30 +4263,11 @@ class GenerateTask(TaskBase):
                 plantids.append(self.pop_alternate_output('plantids'))
                 # TODO: Labels
             self.add_alternate_output('plantids', np.hstack(plantids))
-            # self.add_alternate_output('layout', None)
         elif self.args.canopy == 'single':
             mesh = cls._generate_single_plant(self)
         else:
             mesh = cls._generate_field(self)
         return mesh
-
-    def isExteriorPlant(self, plantid, nbuffer_col=1, nbuffer_row=1):
-        r"""Determine if a plant is on the edge of the field.
-
-        Args:
-            plantid (int): Plant identifier.
-            nbuffer_col (int, optional): Number of plants from the edge
-                along the columns to count as exterior.
-            nbuffer_row (int, optional): Number of plants from the edge
-                along the rowss to count as exterior.
-
-        """
-        j = plantid % self.args.ncols
-        i = np.floor(plantid / self.args.ncols)
-        return ((j < nbuffer_row)
-                or (i < nbuffer_col)
-                or (j >= (self.args.ncols - nbuffer_row))
-                or (i >= (self.args.nrows - nbuffer_col)))
 
     def shift_mesh(self, mesh, x, y, plantid=None):
         r"""Shift a mesh.
@@ -4600,8 +4483,6 @@ class RayTraceTask(GenerateTask):
         'overwrite_raytrace', 'highlight', 'output_traced_mesh',
         'overwrite_traced_mesh',
     ]
-    # TODO: Add option for showing field layout w/ plantids, north, &
-    #   east labeled
     _alternate_outputs_write_optional = ['traced_mesh']
     _alternate_outputs_write_required = []
     _convert_to_mesh_units = [
@@ -4611,6 +4492,7 @@ class RayTraceTask(GenerateTask):
     _convert_to_color_tuple = [
         'ray_color',
     ]
+    _argument_sources = [LayoutTask]
     _arguments = [
         (('--mesh', ), {
             'type': str,
@@ -4648,108 +4530,6 @@ class RayTraceTask(GenerateTask):
             'action': 'store_true',
             'help': ('Include multiple bounces when performing the '
                      'trace.'),
-        }),
-        (('--periodic-canopy', ), {
-            'nargs': '?', 'const': 'scene', 'default': False,
-            'choices': [False, 'scene', 'rays'],
-            'help': ('Make the canopy periodic for ray tracing so '
-                     'that is infinitely wide')
-        }),
-        (('--periodic-canopy-count', ), {
-            'type': int, 'default': 2,
-            'help': ('Number of times the canopy should be repeated in '
-                     'each direction'),
-        }),
-        (('--location', ), {
-            'type': str, 'default': 'Champaign',
-            'choices': sorted(list(
-                read_locations(_location_data).keys())),
-            'help': ('Name of a registered location that should be used '
-                     'to set the location dependent properties: '
-                     'timezone, altitude, longitude, latitude'),
-        }),
-        (('--axis-north', ), {
-            'type': parse_axis, 'default': 'x',
-            'help': ('Axis that should represent north when computing '
-                     'incident solar radiation'),
-        }),
-        (('--ground-height', ), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'meters',
-            'help': ('Distance that the ground is above 0 along the '
-                     '\"axis_up\" direction'),
-        }),
-        (('--latitude', '--lat', ), {
-            'type': parse_quantity,
-            'default': 40.1164, 'units': 'degrees',
-            'help': ('Latitude (in degrees) at which the sun should be '
-                     'modeled. Defaults to the latitude of Champaign '
-                     'IL.'),
-        }),
-        (('--longitude', '--long', ), {
-            'type': parse_quantity,
-            'default': -88.2434, 'units': 'degrees',
-            'help': ('Longitude (in degrees) at which the sun should be '
-                     'modeled. Defaults to the longitude of Champaign '
-                     'IL.'),
-        }),
-        (('--altitude', '--elevation', ), {
-            'type': parse_quantity,
-            'default': 224.0, 'units': 'meters',
-            'help': ('Altitude (in meters) that should be used for '
-                     'solar light calculations. If not provided, it '
-                     'will be calculated from \"pressure\", if it is '
-                     'provided, and the elevation of Champaign, IL '
-                     'otherwise.'),
-        }),
-        (('--pressure', ), {
-            'type': parse_quantity, 'units': 'Pa',
-            'help': ('Air pressure (in Pa) that should be used for '
-                     'solar light calculations. If not provided, it '
-                     'will be calculated from \"altitude\".'),
-        }),
-        (('--temperature', ), {
-            'type': parse_quantity, 'default': 12.0, 'units': 'degC',
-            'help': ('Air temperature (in degrees C) that should be '
-                     'used for solar light calculations.'),
-        }),
-        (('--time', '-t', ), {
-            'type': str, 'default': '2024-06-17',
-            'help': ('Date time (in any ISO 8601 format) that the sun '
-                     'should be modeled for. If hour information is not '
-                     'provided, the provided \"hour\" will be used. '
-                     'If \"now\" is specified the current date and time '
-                     'will be used.'),
-        }),
-        (('--doy', ), {
-            'type': int,
-            'help': ('Day of the year that the sun should be modeled '
-                     'for.'),
-        }),
-        (('--hour', '--hr', ), {
-            'type': int,
-            'help': ('Hour that the sun should be modeled for. If '
-                     'provided with \"--time\", any hour information in '
-                     'the specified time will be overwritten. Defaults '
-                     'to 12 if \"--doy\" is provided, but \"--hour\" is '
-                     'not.'),
-        }),
-        (('--year', ), {
-            'type': int,
-            'help': ('Year that sun should be modeled for. If provided '
-                     'with \"--time\" (or \"--start-time\"/'
-                     '\"--stop-time\"), the year in the time string(s) '
-                     'will be overwritten. Defaults to the current year '
-                     'if \"--doy\" is provided, but \"--year\" is not.'),
-        }),
-        (('--timezone', '--tz', ), {
-            'type': str,
-            'help': ('Name of timezone (as accepted by pytz) for '
-                     'location that sun should be modeled. If provided '
-                     'with \"--time\" (or \"--start-time\"/'
-                     '\"--stop-time\"), any timezone information in the '
-                     'specified time(s) will be overwritten. Defaults '
-                     'to \"America/Chicago\" if \"--doy\" is provided, '
-                     'but \"--timezone\" is not.'),
         }),
         (('--output-traced-mesh', ), {
             'nargs': '?', 'const': True, 'default': False,
@@ -4885,6 +4665,9 @@ class RayTraceTask(GenerateTask):
         '--canopy': {
             'default': 'unique',
         },
+        '--time': {
+            'default': '2024-06-17',
+        },
     }
 
     @classmethod
@@ -4975,111 +4758,20 @@ class RayTraceTask(GenerateTask):
         args.include_units = True
         if not hasattr(args, 'mesh_generated'):
             args.mesh_generated = (args.mesh is None)
+        if not args.mesh_generated:
+            args.periodic_canopy = False
         if args.mesh_generated:
-            # LayoutTask.adjust_args(args)
             GenerateTask.adjust_args(args)
             args.mesh = args.output_generate
             args.plantids = args.output_plantids
-            if args.periodic_canopy:
-                args.periodic_period = np.array([
-                    args.nrows * args.row_spacing,
-                    args.ncols * args.plant_spacing,
-                    0.0
-                ], 'f4')
-                east = np.cross(args.axis_rows, args.axis_up)
-                args.periodic_direction = np.vstack([
-                    args.axis_rows,
-                    east,
-                    args.axis_up,
-                ])
-        else:
-            args.periodic_canopy = False
-        if args.location:
-            location_data = read_locations(_location_data)
-            for k, v in location_data[args.location].items():
-                setattr(args, k, v)
-        if not (args.pressure or args.altitude):
-            args.altitude = parse_quantity(10.0, 'meters')
-        cls.adjust_args_time(args)
-        super(RayTraceTask, cls).adjust_args(args)
-
-    @classmethod
-    def adjust_args_time(cls, args, timevar=None):
-        r"""Adjust the time related variables in a set of parsed
-        arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Time variable to adjust. If not
-                provided, all of the time variables associated with this
-                subparser will be adjusted.
-
-        """
-        if timevar is None:
-            for tv in cls._time_vars:
-                cls.adjust_args_time(args, timevar=tv)
-            return
-        x = getattr(args, timevar)
-        x_str = None
-        x_solar = None
-        if x in _solar_times:
-            x_solar = x
-            if args.doy:
-                x = None
-            else:
-                x = '2024-06-17'
-        if x:
-            if isinstance(x, datetime):
-                pass
-            else:
-                x = datetime.fromisoformat(x)
-            if not (x.tzinfo or args.timezone):
-                args.timezone = "America/Chicago"
-            if not (x.hour or args.hour):
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not (x.year or args.year):
-                args.year = datetime.now().year
-        elif args.doy:
-            if not args.hour:
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not args.year:
-                args.year = datetime.now().year
-            if not args.timezone:
-                args.timezone = "America/Chicago"
-            x = datetime.strptime(args.year, args.doy, "%Y-%j")
-        if isinstance(args.timezone, str):
-            import pytz
-            args.timezone = pytz.timezone(args.timezone)
-        if x:
-            replacements = {}
-            if args.hour:
-                replacements['hour'] = args.hour
-                args.hour = None
-            if args.year:
-                replacements['year'] = args.year
-                args.year = None
-            if replacements:
-                x = x.replace(**replacements)
-            if args.timezone:
-                x = x.astimezone(args.timezone)
-                args.timezone = None
-        if x_solar in _solar_times:
-            date = x.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            x = parse_solar_time(
-                x_solar, date, args.latitude, args.longitude,
-                altitude=args.altitude,
-            )
-            x_str = date.date().isoformat() + '-' + x_solar
-            assert ':' not in x_str
-        if x and x != getattr(args, timevar):
-            if x_str is None:
-                x_str = x.replace(microsecond=0).isoformat().replace(
-                    ':', '-')
-            setattr(args, timevar, x)
-            setattr(args, f'{timevar}_str', x_str)
-            # print(f'Updated {timevar} to {x} ({x_str})')
+        # if args.location:
+        #     location_data = read_locations(_location_data)
+        #     for k, v in location_data[args.location].items():
+        #         setattr(args, k, v)
+        # if not (args.pressure or args.altitude):
+        #     args.altitude = parse_quantity(10.0, 'meters')
+        # cls.adjust_args_time(args)
+        return super(RayTraceTask, cls).adjust_args(args)
 
     @classmethod
     def output_dir(cls, args, name=None):
@@ -5153,32 +4845,6 @@ class RayTraceTask(GenerateTask):
             suffix += (f'_periodic{args.periodic_canopy_count}'
                        f'_{args.periodic_canopy}')
         return suffix
-
-    @classmethod
-    def output_suffix_time(cls, args, timevar=None):
-        r"""Get the suffix containing time information that should be
-        included in generated output file names.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Time variable to generate a suffix
-                for. If not provided, a suffix combining all of the
-                time variables associated with this subparser will be
-                returned.
-
-        Returns:
-            str: Suffix.
-
-        """
-        if timevar is None:
-            suffixes = [cls.output_suffix_time(args, tv)
-                        for tv in cls._time_vars]
-            return '_'.join(suffixes)
-        time_str = getattr(args, f'{timevar}_str', None)
-        if time_str:
-            return time_str
-        time = getattr(args, timevar).replace(microsecond=0)
-        return time.isoformat().replace(':', '-')
 
     @classmethod
     def output_ext(cls, args, name=None):
@@ -6178,10 +5844,10 @@ class LightTask(TemporalTaskBase(RayTraceTask)):
                 style = linestyles[loc]
                 ax.plot(times, v, label=label, color=color,
                         linestyle=style)
-            print(f'INTERIOR PLANTS [{crop_class}]: '
-                  f'{len(lines["interior"])}/{len(totals) - 1}')
-            print(f'EXTERIOR PLANTS [{crop_class}]: '
-                  f'{len(lines["exterior"])}/{len(totals) - 1}')
+            # print(f'INTERIOR PLANTS [{crop_class}]: '
+            #       f'{len(lines["interior"])}/{len(totals) - 1}')
+            # print(f'EXTERIOR PLANTS [{crop_class}]: '
+            #       f'{len(lines["exterior"])}/{len(totals) - 1}')
         else:
             color = colors[iclass]
             style = linestyles[0]
