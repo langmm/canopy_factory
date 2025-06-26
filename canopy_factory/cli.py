@@ -30,11 +30,12 @@ from yggdrasil.communication.AsciiTableComm import AsciiTableComm
 functools_cached_property = getattr(functools, "cached_property", None)
 _default_task = 'generate'
 _source_dir = os.path.abspath(os.path.dirname(__file__))
-_output_dir = os.path.join(_source_dir, 'output')
+_output_dir = os.path.join(os.getcwd(), 'output')
 _input_dir = os.path.join(_source_dir, 'input')
+_data_dir = os.path.join(_source_dir, 'data')
 _param_dir = os.path.join(_source_dir, 'param')
 _leaf_data = os.path.join(_input_dir, 'B73_WT_vs_rdla_Paired_Rows.csv')
-_location_data = os.path.join(_source_dir, 'locations.csv')
+_location_data = os.path.join(_data_dir, 'locations.csv')
 _lpy_rays = os.path.join(_source_dir, 'rays.lpy')
 _mesh_dir = os.path.join(_output_dir, 'meshes')
 _traced_mesh_dir = os.path.join(_output_dir, 'traced_meshes')
@@ -2086,7 +2087,7 @@ class SubparserBase(RegisteredClassBase):
         super(SubparserBase, self).__init__()
         if args is None:
             kwargs.setdefault(self._registry_key, self._name)
-            args, kwargs = parse_args(**kwargs)
+            args, kwargs = main(**kwargs)
         self._cached_args = []
         self.adjust_args(args)
         self.args = args
@@ -9147,7 +9148,7 @@ def animate(**kwargs):
 # CLI
 #################################################################
 
-def parse_args(**kwargs):
+def main(**kwargs):
     r"""Parse arguments provided via the command line or keyword
     arguments
 
@@ -9176,4 +9177,4 @@ def parse_args(**kwargs):
 
 
 if __name__ == "__main__":
-    args, _ = parse_args()
+    args, _ = main()
