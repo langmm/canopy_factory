@@ -9,7 +9,7 @@ import subprocess
 from datetime import timedelta
 import openalea.plantgl.all as pgl
 from openalea.plantgl.all import Tesselator
-from yggdrasil import units
+from yggdrasil import rapidjson, units
 from yggdrasil.serialize.PlySerialize import PlyDict
 from yggdrasil.serialize.ObjSerialize import ObjDict
 from yggdrasil.communication.PlyFileComm import PlyFileComm
@@ -24,7 +24,7 @@ _input_dir = os.path.join(os.getcwd(), 'input')
 _data_dir = os.path.join(_source_dir, 'data')
 _lpy_dir = os.path.join(_data_dir, 'lpy')
 _param_dir = os.path.join(_source_dir, 'param')
-_leaf_data = os.path.join(_input_dir, 'B73_WT_vs_rdla_Paired_Rows.csv')
+_user_param_dir = os.path.join(_output_dir, 'param')
 _location_data = os.path.join(_data_dir, 'locations.csv')
 _lpy_rays = os.path.join(_lpy_dir, 'rays.lpy')
 _default_axis_up = np.array([0, 0, 1], dtype=np.float64)
@@ -501,16 +501,18 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
             source = self._name
         cls.log_class(message=message, source=source, **kwargs)
 
-    def error(self, error_cls, message='', debug=False):
+    def error(self, error_cls, message='', debug=False, prefix=None):
         r"""Raise an error, adding context to the message.
 
         Args:
             error_cls (type): Error class.
             message (str, optional): Error message.
             debug (bool, optional): If True, set a debug break point.
+            prefix (str, optional): Prefix to use.
 
         """
-        prefix = f'{self.log_prefix_instance}: {self.log_prefix_stack}'
+        if prefix is None:
+            prefix = f'{self.log_prefix_instance}: {self.log_prefix_stack}'
         msg = f'{prefix}{message}'
         if debug:
             self.debug(f'{error_cls}({msg})')
@@ -1592,6 +1594,68 @@ def apply_color_map(values, color_map=None,
 #################################################################
 # TODO: Move these into cli.py?
 
+def jsonschema2argument(json):
+    r"""Contruct a argparser argument from a jsonschema description.
+
+    Args:
+        json (dict): JSON schema.
+
+    Returns:
+        dict: Keyword arguments for adding an argument to an argument
+            parser.
+
+    """
+    out = {}
+    if 'oneOf' in json:
+        for x in json['oneOf']:
+            errors = []
+            try:
+                return jsonschema2argument(x)
+            except BaseException as e:
+                errors.append(str(e))
+        else:
+            raise TypeError(f'Failed to convert any of the options '
+                            f'to an argument: {json["oneOf"]}, errors = '
+                            f'{errors}')
+    typename = json.get('subtype', json.get('type', None))
+    if typename is not None:
+        if not isinstance(typename, str):
+            raise TypeError(f'JSON type should be string, not {typename} '
+                            f'(json = {json})')
+        if ((typename == 'array'
+             and isinstance(json.get('items', None), dict))):
+            out = jsonschema2argument(json['items'])
+            if (('minItems' in json and 'maxItems' in json
+                 and json['minItems'] == json['maxItems'])):
+                out['nargs'] = json['minItems']
+            else:
+                out['nargs'] = '+'
+        elif typename == 'boolean':
+            if json['default']:
+                out['action'] = 'store_false'
+            else:
+                out['action'] = 'store_true'
+        elif typename == 'string':
+            out['type'] = str
+        elif typename in ['number', 'float']:
+            out['type'] = float
+        elif typename in ['integer', 'int', 'uint']:
+            out['type'] = int
+        elif typename == 'function':
+            out['type'] = rapidjson.loads
+    if 'enum' in json:
+        out['choices'] = json['enum']
+    if not out:
+        raise TypeError(f'Unsupported JSON schema: {json}')
+    if 'default' in json:
+        out['default'] = json['default']
+    if json.get('type', None) == 'ndarray':
+        out['nargs'] = '+'
+    if 'description' in json:
+        out['help'] = json['description']
+    return out
+
+
 def parse_units(x):
     r"""Parse a units string.
 
@@ -1738,3 +1802,194 @@ def parse_color(x, convert_names=False):
         out = [int(255 * x) for x in out]
     assert len(out) == 3
     return out
+
+
+def format_list_for_help(vals, sep=', '):
+    r"""Format a list in a help friendly way.
+
+    Args:
+        vals (list): Values to format.
+        sep (str, optional): Separator to use.
+
+    Returns:
+        str: Formatted list.
+
+    """
+    if len(vals) > 1:
+        vals = vals[:-2] + [' & '.join(vals[-2:])]
+    return sep.join(vals)
+
+
+class UnitSet(object):
+    r"""Container for a unit set.
+
+    Args:
+        time (str, yggdrasil.units.Unit, optional): Time unit.
+        length (str, yggdrasil.units.Unit, optional): Length unit.
+        mass (str, yggdrasil.units.Unit, optional): Mass unit.
+        angle (str, yggdrasil.units.Unit, optional): Angle unit.
+        area (str, yggdrasil.units.Unit, optional): Area unit. If not
+            provided, this unit will be calculated from the other
+            provided units.
+        density (str, yggdrasil.units.Unit, optional): Density unit. If
+            not provided, this unit will be calculated from the other
+            provided units.
+
+    """
+
+    _dimensions = [
+        'time', 'length', 'mass', 'angle',
+    ]
+    _calculated_dimensions = [
+        'area', 'density',
+    ]
+
+    def __init__(self, **kwargs):
+        for k in self._dimensions + self._calculated_dimensions:
+            v = kwargs.pop(k, None)
+            if isinstance(v, str):
+                v = units.Units(v)
+            if k in self._calculated_dimensions:
+                setattr(self, f'_{k}', v)
+            else:
+                setattr(self, k, v)
+        assert not kwargs
+
+    @property
+    def dimensions(self):
+        return [k for k in self._dimensions + self._calculated_dimensions
+                if getattr(self, k) is not None]
+
+    @property
+    def area(self):
+        if self._area is not None:
+            return self._area
+        if self.length is None:
+            return None
+        return self.length * self.length
+
+    @property
+    def density(self):
+        if self._density is not None:
+            return self._density
+        if self.length is None or self.mass is None:
+            return None
+        return self.mass / self.area
+
+    @property
+    def units(self):
+        out = units.Units()
+        for k in self._dimensions:
+            v = getattr(self, k)
+            if v is not None:
+                out = out * v
+                # out *= v
+        return out
+
+    @classmethod
+    def add_unit_arguments(cls, dest, prefix, help_template=None,
+                           defaults=None):
+        for k in cls._dimensions:
+            iargs = (f'--{prefix}-units-{k}', )
+            ikws = {'type': parse_units}
+            if help_template:
+                plural = k + 'es' if k.endswith('s') else k + 's'
+                ikws['help'] = help_template.format(plural=plural)
+            if defaults and k in defaults:
+                ikws['default'] = defaults[k]
+            dest._arguments.append((iargs, ikws))
+
+    @classmethod
+    def from_kwargs(cls, kwargs, prefix='', suffix='', pop=False):
+        r"""Create the class by extracting units from the provided
+        kwargs.
+
+        Args:
+            kwargs (dict): Dictionary that should be searched for units.
+            prefix (str, optional): Prefix that should be added to units
+                when search kwargs.
+            suffix (str, optional): Suffix that should be added to units
+                when search kwargs.
+            pop (bool, optional): If True, units should be removed from
+                kwargs if they are used to create the class.
+
+        Returns:
+            UnitSet: New unit set.
+
+        """
+        kws = {}
+        if pop:
+            kws = {
+                k: kwargs.pop(f'{prefix}{k}{suffix}')
+                for k in cls._dimensions + cls._calculated_dimensions
+                if f'{prefix}{k}{suffix}' in kwargs
+            }
+        else:
+            kws = {
+                k: kwargs[f'{prefix}{k}{suffix}']
+                for k in cls._dimensions + cls._calculated_dimensions
+                if f'{prefix}{k}{suffix}' in kwargs
+            }
+        return cls(**kws)
+
+    @classmethod
+    def from_attr(cls, inst, prefix='', suffix=''):
+        r"""Create the class by extracting units from attributes of the
+        provided instance.
+
+        Args:
+            inst (object): Instance whose attributes should be checked
+                for units.
+            prefix (str, optional): Prefix that should be added to units
+                when search kwargs.
+            suffix (str, optional): Suffix that should be added to units
+                when search kwargs.
+
+        Returns:
+            UnitSet: New unit set.
+
+        """
+        kws = {
+            k: getattr(inst, f'{prefix}{k}{suffix}')
+            for k in cls._dimensions + cls._calculated_dimensions
+            if hasattr(inst, f'{prefix}{k}{suffix}')
+        }
+        return cls(**kws)
+
+    def as_dict(self, prefix='', suffix='', include_missing=False,
+                as_strings=False):
+        r"""Get a dictionary of units in the set.
+
+        Args:
+            prefix (str, optional): Prefix that should be added to units
+                in the returned dictionary.
+            suffix (str, optional): Suffix that should be added to units
+                in the returned dictionary.
+            include_missing (bool, optional): If True, include missing
+                units in the returned dictionary as None.
+            as_strings (bool, optional): If True, units in the output
+                dictionary should be strings.
+
+        Returns:
+            dict: Units dictionary.
+
+        """
+        out = {}
+        for k in self._dimensions + self._calculated_dimensions:
+            v = getattr(self, k)
+            if v is not None or include_missing:
+                out[f'{prefix}{k}{suffix}'] = str(v) if as_strings else v
+        return out
+
+    def convert(self, x):
+        r"""Convert a quantity to this unit system.
+
+        Args:
+            x (units.QuantityArray): Quantity with units.
+
+        Returns:
+            units.QuantityArray: x converted to this unit system.
+
+        """
+        assert isinstance(x, units.QuantityArray)
+        return x.to_system(self.units)

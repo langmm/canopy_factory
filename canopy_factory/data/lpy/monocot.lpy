@@ -13,7 +13,7 @@
 
 extern(RUNTIME_PARAM = {})
 from canopy_factory.utils import get_class_registry
-generator_cls = get_class_registry().get("crop", "maize")
+generator_cls = get_class_registry().get("crop", "monocot")
 generator = generator_cls(**RUNTIME_PARAM)
 
 ############################################################
@@ -46,7 +46,6 @@ LeafWidth = generator.LeafWidth
 LeafBend = generator.LeafBend
 LeafTwist = generator.LeafTwist
 LeafProfile = generator.LeafProfile
-LeafUnfurledLength = generator.LeafUnfurledLength()
 DX = 1.0 / generator.LeafNDivide()
 
 
@@ -91,11 +90,11 @@ L(age,n):
         # nproduce _(LeafWidth(age,n,x))
         while x < 1:
             # nproduce BlendedContour(0,1,x)
-            if generator.unfurl_leaves and x < LeafUnfurledLength:
+            if generator.unfurl_leaves and x < LeafLengthUnfurled:
                 nproduce @Ge @Gc
             # generate leaf segment
             nproduce SetContour(LeafProfile(age,n,x)) F(length*DX)
-            if generator.unfurl_leaves and x < LeafUnfurledLength:
+            if generator.unfurl_leaves and x < LeafLengthUnfurled:
                 nproduce @Ge @Gc
             x = x + DX
             # set width and orientation of next segment

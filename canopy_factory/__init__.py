@@ -1,4 +1,4 @@
-from canopy_factory.crops.base import LayoutTask, GenerateTask
+from canopy_factory.crops import LayoutTask, GenerateTask
 from canopy_factory.raytrace import (
     RayTraceTask, RenderTask, AnimateTask, LightTask,
 )

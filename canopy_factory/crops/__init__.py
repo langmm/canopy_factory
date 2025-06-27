@@ -1,21 +1,280 @@
 import os
+import copy
 import numpy as np
 from datetime import datetime
 from openalea.lpy import Lsystem
-from yggdrasil import units
+from yggdrasil import units, rapidjson
 from canopy_factory import utils
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_solar_time, parse_axis, parse_color,
-    get_class_registry,
+    get_class_registry, UnitSet,
     cached_property, readonly_cached_property,
 )
 from canopy_factory.cli import TaskBase
-from canopy_factory.crops import maize
+from canopy_factory.crops import monocot, maize
 
 
 ############################################################
 # TASKS
 ############################################################
+
+class ParametrizeCropTask(TaskBase):
+    r"""Class for generating the LSystem parameters for a canopy."""
+
+    _name = 'parametrize'
+    _ext = '.json'
+    _help = 'Generate the parameters for an LSystem crop model.'
+    _output_dir = utils._param_dir
+    _arguments_suffix_ignore = [
+        'crop', 'id', 'update_lpy_model', 'data', 'data_length_units',
+    ]
+    _arguments = [
+        (('--update-lpy-model', ), {
+            'type': str, 'const': True, 'nargs': '?',
+            'help': ('File containing LPy L-system rules that should be '
+                     'updated with default parameters'),
+        }),
+        (('--data', ), {
+            'type': str,
+            'help': ('File containing raw data that should be used '
+                     'to set parameters'),
+        }),
+        (('--debug-param', ), {
+            'action': 'append',
+            'help': ('Parameter(s) that debug mode should be enabled '
+                     'for (does not enable debugging for children of '
+                     'the named parameter(s). Use --debug-param-prefix '
+                     'to also enable debugging for children)'),
+        }),
+        (('--debug-param-prefix', ), {
+            'action': 'append',
+            'help': ('Prefix(es) of parameters that debug mode should '
+                     'be enabled for.'),
+        }),
+    ]
+
+    @staticmethod
+    def _on_registration(cls):
+        units_args = {
+            'output': {
+                'defaults': {
+                    'length': 'cm',
+                    'mass': 'kg',
+                    'time': 'days',
+                    'angle': 'degrees',
+                },
+                'help_template': (
+                    'Units that {plural} should be converted to in '
+                    'the generated parameter file'
+                ),
+            },
+            'data': {
+                'defaults': {
+                    'length': 'cm',
+                    'mass': 'kg',
+                    'time': 'days',
+                    'angle': 'degrees',
+                },
+                'help_template': (
+                    'Units that {plural} are in within the provided '
+                    'data file'
+                )
+            },
+        }
+        for k, v in units_args.items():
+            UnitSet.add_unit_arguments(cls, k, **v)
+        TaskBase._on_registration(cls)
+
+    @staticmethod
+    def add_arguments_static(cls, parser, only_subparser=False,
+                             only_crop_parameters=False, **kwargs):
+        r"""Add arguments associated with this subparser to a parser.
+
+        Args:
+            parser (InstrumentedParser): Parser that the arguments
+                should be added to.
+            only_subparser (bool, optional): If True, only add the
+                subparser if it is missing.
+            only_crop_parameters (list, optional): Set of crop parameters
+                that should be added to the parser.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class method.
+
+        """
+        TaskBase.add_arguments_static(
+            cls, parser, only_subparser=True, **kwargs
+        )
+        subparser = parser.get_subparser(cls._registry_key, cls._name)
+        for v in get_class_registry().values('crop'):
+            v.add_arguments(subparser, only_subparser=True, **kwargs)
+        if only_subparser:
+            return
+        TaskBase.add_arguments_static(
+            cls, parser, only_subparser=only_subparser, **kwargs
+        )
+        for k, v in get_class_registry().items('crop'):
+            v.add_arguments(subparser, only_subparser=only_subparser,
+                            only_crop_parameters=only_crop_parameters,
+                            **kwargs)
+
+    @classmethod
+    def adjust_args(cls, args):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        """
+        super(ParametrizeCropTask, cls).adjust_args(args)
+        if args.update_lpy_model is True:
+            args.update_lpy_model = os.path.join(
+                utils._lpy_dir, f'{args.crop}.lpy')
+        if (not args.data) and args.crop:
+            generator = get_class_registry().get('crop', args.crop)
+            args.data = generator._default_data
+
+    @classmethod
+    def output_base(cls, args, name=None):
+        r"""Generate the base file name that should be used to generate
+        an output file name.
+
+        Args:
+
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        Returns:
+            str: File base.
+
+        """
+        return f'{args.crop}_{args.id}'
+
+    @classmethod
+    def output_suffix(cls, args, name=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        Returns:
+            str: Suffix.
+
+        """
+        return ''
+
+    @classmethod
+    def _write_output(cls, output, args, name=None):
+        r"""Write to an output file.
+
+        Args:
+            output (object): Output object to write to file.
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Base name for variable to set. Defaults
+                to the task make.
+
+        """
+        if name is None:
+            name = cls._name
+        outputfile = getattr(args, f'output_{name}')
+        with open(outputfile, 'w') as fd:
+            rapidjson.dump(output, fd, write_mode=rapidjson.WM_PRETTY)
+
+    @cached_property
+    def generator(self):
+        r"""PlantGenerator: Plant generator that should be parameterized."""
+        return get_class_registry().get('crop', self.args.crop)
+
+    @cached_property
+    def parameters(self):
+        r"""dict: Set of model parameters collected from the command line."""
+        kwargs = {}
+        for k, v in self.generator._arguments:
+            kattr = self.arg2dest(k, v)
+            if getattr(self.args, kattr, None) is not None:
+                kwargs[kattr] = getattr(self.args, kattr)
+        for k in ['verbose', 'debug', 'debug_param',
+                  'debug_param_prefix']:
+            kwargs[k] = getattr(self.args, k)
+        inst = self.generator(**kwargs)
+        out = copy.deepcopy(inst.all_parameters)
+        if self.args.data:
+            self.generator.parameters_from_file(self.args, out)
+        output_units = UnitSet.from_attr(
+            self.args, prefix='output_units_')
+        for k in list(out.keys()):
+            if isinstance(out[k], units.QuantityArray):
+                out[k] = output_units.convert(out[k])
+        out.update(
+            output_units.as_dict(suffix='_units', as_strings=True)
+        )
+        return out
+
+    @cached_property
+    def defaults(self):
+        r"""dict: Set of default model parameters."""
+        out = {
+            'RUNTIME_PARAM': {},
+        }
+        return out
+
+    def add_parameters_to_lpy_model(self):
+        r"""Add parameters to the lpy_model."""
+        comment_start = '\n'.join([
+            60 * '#',
+            "## WARNING: THE FOLLOWING SECTION IS GENERATED AND SHOULD ",
+            "##   NOT BE MODIFIED DIRECTLY",
+            60 * '#',
+        ]) + '\n'
+        comment_end = '\n' + '\n'.join([
+            60 * '#',
+            "## WARNING: THE PREVIOUS SECTION IS GENERATED AND SHOULD ",
+            "##   NOT BE MODIFIED DIRECTLY",
+            60 * '#',
+        ])
+        with open(self.args.update_lpy_model, 'r') as fd:
+            contents = fd.read()
+        prefix_contents = ''
+        suffix_contents = ''
+        if comment_start in contents:
+            assert comment_end in contents
+            prefix_contents = contents.split(comment_start)[0]
+            if prefix_contents.endswith('\n'):
+                prefix_contents = prefix_contents[:-1]
+            suffix_contents = contents.split(comment_end)[-1]
+            if suffix_contents.startswith('\n'):
+                suffix_contents = suffix_contents[1:]
+        contents = [
+            f'extern({k} = {rapidjson.dumps(v)})'
+            for k, v in self.defaults.items()
+        ] + [
+            'from canopy_factory.utils import get_class_registry',
+            f'generator_cls = get_class_registry().get("crop", '
+            f'"{self.args.crop}")',
+            'generator = generator_cls(**RUNTIME_PARAM)'
+        ]
+        contents = [
+            prefix_contents, comment_start
+        ] + contents + [
+            comment_end, suffix_contents
+        ]
+        with open(self.args.update_lpy_model, 'w') as fd:
+            fd.write('\n'.join(contents))
+
+    @classmethod
+    def _run(cls, self):
+        if self.args.update_lpy_model:
+            self.add_parameters_to_lpy_model()
+        generator_args = copy.deepcopy(self.parameters)
+        out = {
+            'RUNTIME_PARAM': generator_args,
+        }
+        return out
+
 
 class LayoutTask(TaskBase):
     r"""Class for plotting the layout of a canopy."""
@@ -277,6 +536,9 @@ class LayoutTask(TaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
+        for k, v in cls._excluded_arguments_defaults.items():
+            if not hasattr(args, k):
+                setattr(args, k, v)
         if isinstance(args.mesh_units, str):
             args.mesh_units = units.Units(args.mesh_units)
         for k in cls._convert_to_mesh_units:
@@ -864,8 +1126,9 @@ class GenerateTask(LayoutTask):
     _output_dir = os.path.join(utils._output_dir, 'meshes')
     _time_vars = []
     _arguments_suffix_ignore = [
-        'crop', 'crop_class', 'canopy', 'color',
+        'crop', 'id', 'canopy', 'color',
         'overwrite_lpy_param', 'plantid', 'debug_param',
+        'debug_param_prefix',
         'unful_leaves', 'mesh_format', 'overwrite_generate',
         'plot_width', 'output_plantids', 'overwrite_plantids',
     ]
@@ -879,41 +1142,13 @@ class GenerateTask(LayoutTask):
             'help': ('Plant age to generate model for (in days '
                      'since planting)'),
         }),
-        (('--leaf-data', ), {
+        (('--data', ), {
             'type': str,
-            'help': 'File containing raw leaf data',
-        }),
-        # TODO: Correct this for the fact that the actual data is
-        # collected when each leaf is mature
-        (('--leaf-data-time', ), {
-            'type': parse_quantity, 'default': 27, 'units': 'days',
-            'help': ('Time that data containing raw leaf data was '
-                     'collected (in days since planting)'),
-        }),
-        (('--leaf-data-units', ), {
-            'type': parse_units, 'default': 'cm',
-            'help': ('Units that lengths are in within the leaf data '
-                     'file'),
-        }),
-        (('--n-leaf-divide', ), {
-            'type': int, 'default': 10,
-            'help': 'Number of segments to divide leaves into',
-        }),
-        # TODO: Use this
-        (('--crop', ), {
-            'type': str, 'default': 'maize',
-            'choices': list(get_class_registry().keys('plants')),
-            'help': 'Crop to generate a geometry for.',
-        }),
-        (('--crop-class', ), {
-            'type': str, 'choices': ['WT', 'rdla', 'all', 'all_split'],
-            'default': 'WT',
-            'help': 'Class to generate geometry for',
+            'help': ('File containing raw data that should be used '
+                     'to set parameters'),
         }),
         (('--lpy-input', ), {
             'type': str,
-            # TODO: Make this more generic or lookup from crop name
-            'default': os.path.join(utils._lpy_dir, 'maize.lpy'),
             'help': 'File containing LPy L-system rules',
         }),
         (('--lpy-param', ), {
@@ -939,12 +1174,20 @@ class GenerateTask(LayoutTask):
         }),
         (('--debug-param', ), {
             'action': 'append',
-            'help': 'Parameter(s) that debug mode should be enabled for.',
+            'help': ('Parameter(s) that debug mode should be enabled '
+                     'for (does not enable debugging for children of '
+                     'the named parameter(s). Use --debug-param-prefix '
+                     'to also enable debugging for children)'),
         }),
-        (('--unfurl-leaves', ), {
-            'action': 'store_true',
-            'help': 'Start leaves as cylinders and then unfurl them',
+        (('--debug-param-prefix', ), {
+            'action': 'append',
+            'help': ('Prefix(es) of parameters that debug mode should '
+                     'be enabled for.'),
         }),
+        # (('--unfurl-leaves', ), {
+        #     'action': 'store_true',
+        #     'help': 'Start leaves as cylinders and then unfurl them',
+        # }),
         (('--location-stddev', ), {
             'type': float, 'default': 0.2,
             'help': ('Standard deviation relative to \'plant_spacing\' '
@@ -983,6 +1226,28 @@ class GenerateTask(LayoutTask):
         '--periodic-canopy', '--periodic-canopy-count',
     ]
 
+    @staticmethod
+    def add_arguments_static(cls, parser, **kwargs):
+        r"""Add arguments associated with this subparser to a parser.
+
+        Args:
+            parser (InstrumentedParser): Parser that the arguments
+                should be added to.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class method.
+
+        """
+        ParametrizeCropTask.add_arguments_static(
+            cls, parser, only_crop_parameters=['id', 'LeafUnfurled'],
+            **kwargs)
+        subparser = parser.get_subparser(cls._registry_key, cls._name)
+        for k in get_class_registry().keys('crop'):
+            parser = subparser.get_subparser('crop', k)
+            action = parser.find_argument('id')
+            if not action.choices:
+                action.choices = []
+            action.choices += ['all', 'all_split']
+
     @classmethod
     def _read_output(cls, args, name=None):
         r"""Load an output file produced by this task.
@@ -1015,7 +1280,7 @@ class GenerateTask(LayoutTask):
                 to the task make.
 
         """
-        if args.crop_class == 'all_split':
+        if args.id == 'all_split':
             return
         if name is None:
             name = cls._name
@@ -1042,19 +1307,27 @@ class GenerateTask(LayoutTask):
         args.plantids_in_blue = False
         if not args.mesh_format:
             args.mesh_format = utils.get_3D_format(args.output_generate)
-        if (not args.leaf_data) and args.crop == 'maize':
-            # TODO: Prevent this from being hard coded
-            args.leaf_data = utils._leaf_data
+        if (not args.data) and args.crop:
+            generator = get_class_registry().get('crop', args.crop)
+            args.data = generator._default_data
         if args.color_str == 'plantids':
             args.plantids_in_blue = True
+        if args.lpy_input is None:
+            args.lpy_input = os.path.join(
+                utils._lpy_dir, f'{args.crop}.lpy')
         if args.lpy_param is None:
             args.lpy_param = os.path.join(
-                utils._param_dir, f'param_{args.crop_class}.json')
-        if not args.crop_class.startswith('all'):
-            if isinstance(args.lpy_param, str):
-                from canopy_factory.crops.base import extract_lpy_param
-                args.lpy_param_str = args.lpy_param
-                args.lpy_param = extract_lpy_param(args)
+                utils._param_dir, f'{args.crop}_{args.id}.json')
+
+    @cached_property
+    def lpy_param(self):
+        r"""dict: Runtime parameters for the lpy model."""
+        if not (self.args.lpy_param
+                and os.path.isfile(self.args.lpy_param)):
+            return {}
+        with open(self.args.lpy_param, 'r') as fd:
+            out = rapidjson.load(fd)
+        return out
 
     @classmethod
     def output_base(cls, args, name=None):
@@ -1071,7 +1344,7 @@ class GenerateTask(LayoutTask):
             str: File base.
 
         """
-        return f'{args.crop}_{args.crop_class}'
+        return f'{args.crop}_{args.id}'
 
     @classmethod
     def output_suffix(cls, args, name=None):
@@ -1090,8 +1363,8 @@ class GenerateTask(LayoutTask):
         suffix = ''
         if args.canopy != 'single':
             suffix += f'_canopy{args.canopy.title()}'
-        if args.unfurl_leaves:
-            suffix += '_unfurled'
+        # if args.LeafUnfurled:
+        #     suffix += '_unfurled'
         if name not in ['plantids', 'layout']:
             color_str = None
             if isinstance(args.color, str):
@@ -1129,34 +1402,36 @@ class GenerateTask(LayoutTask):
             ext = utils._inv_geom_ext[args.mesh_format]
         return ext
 
+    @cached_property
+    def generator(self):
+        r"""PlantGenerator: Plant generator that should be parameterized."""
+        return get_class_registry().get('crop', self.args.crop)
+
     @readonly_cached_property
-    def all_crop_classes(self):
+    def all_ids(self):
         r"""list: All crop classes for current data."""
-        # TODO: Get from maize module/generic crop module
-        from canopy_factory.crops.base import MaizeGenerator
-        df = MaizeGenerator.load_leaf_data(self.args.leaf_data)
-        return sorted(list(set(df['Class'])))
+        return self.generator.ids_from_file(self.args.data)
 
     @classmethod
     def _run(cls, self):
         r"""Run the process associated with this subparser."""
-        if self.args.crop_class == 'all_split':
+        if self.args.id == 'all_split':
             plantid = self.args.plantid
             x = self.args.x
             y = self.args.y
-            for i, crop_class in enumerate(self.all_crop_classes):
+            for i, id in enumerate(self.all_ids):
                 cls.run_class(
                     self, dont_reset_alternate_output=True,
                     dont_load_existing=True,
                     args_overwrite={
                         'x': x, 'y': y, 'plantid': plantid,
-                        'crop_class': crop_class,
+                        'id': id,
                         'lpy_param': None,
                     },
                 )
             mesh = None
             self.add_alternate_output('plantids', None)
-        elif self.args.crop_class == 'all':
+        elif self.args.id == 'all':
             mesh = None
             plantids = self.pop_alternate_output('plantids', None)
             if plantids is None:
@@ -1166,13 +1441,13 @@ class GenerateTask(LayoutTask):
             plantid = self.args.plantid
             x = self.args.x
             y = self.args.y
-            for i, crop_class in enumerate(self.all_crop_classes):
-                print("IMESH", i, crop_class)
+            for i, id in enumerate(self.all_ids):
+                print("IMESH", i, id)
                 imesh = cls.run_class(
                     self, dont_reset_alternate_output=True,
                     args_overwrite={
                         'x': x, 'y': y, 'plantid': plantid,
-                        'crop_class': crop_class,
+                        'id': id,
                         'lpy_param': None,
                     },
                 )
@@ -1249,15 +1524,22 @@ class GenerateTask(LayoutTask):
                 ), x, y, plantid,
             )
             return mesh
-        self.args.lpy_param['MAIZE3D_PARAM']['seed'] = plantid
+        self.lpy_param['RUNTIME_PARAM'].update(
+            seed=plantid,
+            verbose=self.args.verbose,
+            debug=self.args.debug,
+            debug_param=self.args.debug_param,
+            debug_param_prefix=self.args.debug_param_prefix,
+            no_class_defaults=True,
+        )
         color = self.args.color
         if self.args.color_str == 'plantids':
             color = [0, 255, plantid]
-        lsys = Lsystem(self.args.lpy_input, self.args.lpy_param)
+        lsys = Lsystem(self.args.lpy_input, self.lpy_param)
         tree = lsys.axiom
         for i in range(self.args.niter):
             tree = lsys.iterate(tree, 1)
-        lsys_units = lsys.context().globals()['generator'].length_units
+        lsys_units = lsys.context().globals()['generator'].unit_system
         scene = lsys.sceneInterpretation(tree)
         mesh = utils.scene2geom(
             scene, self.args.mesh_format,
@@ -1266,7 +1548,7 @@ class GenerateTask(LayoutTask):
             color=color,
         )
         mesh = utils.scale_mesh(mesh, 1.0,
-                                from_units=lsys_units,
+                                from_units=lsys_units.length,
                                 to_units=self.args.mesh_units)
         if x.value > 0 or y.value > 0:
             mesh = self.shift_mesh(
@@ -1390,4 +1672,4 @@ class GenerateTask(LayoutTask):
         return mesh
 
 
-__all__ = ["maize"]
+__all__ = ["monocot", "maize"]

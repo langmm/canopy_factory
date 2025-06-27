@@ -15,7 +15,7 @@ from canopy_factory.utils import (
     scene2geom, _lpy_rays,
 )
 from canopy_factory.cli import TemporalTaskBase
-from canopy_factory.crops.base import LayoutTask, GenerateTask
+from canopy_factory.crops import LayoutTask, GenerateTask
 
 
 _query_options = ['flux_density', 'flux', 'hits', 'areas', 'plantids']
