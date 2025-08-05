@@ -1,17 +1,18 @@
-import os
 import copy
 import numpy as np
-from datetime import datetime
 from openalea.lpy import Lsystem
 from yggdrasil import units, rapidjson
 from canopy_factory import utils
 from canopy_factory.utils import (
-    parse_units, parse_quantity, parse_solar_time, parse_axis, parse_color,
+    parse_units, parse_quantity, parse_axis, parse_color,
     get_class_registry, UnitSet,
     cached_property, readonly_cached_property,
 )
-from canopy_factory.cli import TaskBase
-from canopy_factory.crops import monocot, maize
+from canopy_factory.cli import TaskBase, TimeArgument
+from canopy_factory.crops import (
+    monocot, maize,
+    dicot,
+)
 
 
 ############################################################
@@ -22,23 +23,28 @@ class ParametrizeCropTask(TaskBase):
     r"""Class for generating the LSystem parameters for a canopy."""
 
     _name = 'parametrize'
-    _ext = '.json'
     _help = 'Generate the parameters for an LSystem crop model.'
-    _output_dir = utils._param_dir
-    _arguments_suffix_ignore = [
-        'crop', 'id', 'update_lpy_model', 'data', 'data_length_units',
-    ]
+    _output_info = {
+        'parametrize': {
+            'base_string': '',
+            'directory': utils._param_dir,
+            'ext': '.json',
+            'description': (
+                'parameters used to generate 3D '
+                'representations of a canopy'
+            ),
+        },
+        'lpy_model': {
+            'base_string': '',
+            'directory': utils._lpy_dir,
+            'ext': '.lpy',
+            'description': 'LPy L-system rules',
+        },
+    }
+    _subparser_arguments = {
+        'crop': True
+    }
     _arguments = [
-        (('--update-lpy-model', ), {
-            'type': str, 'const': True, 'nargs': '?',
-            'help': ('File containing LPy L-system rules that should be '
-                     'updated with default parameters'),
-        }),
-        (('--data', ), {
-            'type': str,
-            'help': ('File containing raw data that should be used '
-                     'to set parameters'),
-        }),
         (('--debug-param', ), {
             'action': 'append',
             'help': ('Parameter(s) that debug mode should be enabled '
@@ -51,6 +57,9 @@ class ParametrizeCropTask(TaskBase):
             'help': ('Prefix(es) of parameters that debug mode should '
                      'be enabled for.'),
         }),
+    ]
+    _age_strings = [
+        'planting', 'maturity', 'senesce', 'remove',
     ]
 
     @staticmethod
@@ -85,125 +94,158 @@ class ParametrizeCropTask(TaskBase):
             UnitSet.add_unit_arguments(cls, k, **v)
         TaskBase._on_registration(cls)
 
-    @staticmethod
-    def add_arguments_static(cls, parser, only_subparser=False,
-                             only_crop_parameters=False, **kwargs):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            only_subparser (bool, optional): If True, only add the
-                subparser if it is missing.
-            only_crop_parameters (list, optional): Set of crop parameters
-                that should be added to the parser.
-            **kwargs: Additional keyword arguments are passed to the
-                parent class method.
-
-        """
-        TaskBase.add_arguments_static(
-            cls, parser, only_subparser=True, **kwargs
-        )
-        subparser = parser.get_subparser(cls._registry_key, cls._name)
-        for v in get_class_registry().values('crop'):
-            v.add_arguments(subparser, only_subparser=True, **kwargs)
-        if only_subparser:
-            return
-        TaskBase.add_arguments_static(
-            cls, parser, only_subparser=only_subparser, **kwargs
-        )
-        for k, v in get_class_registry().items('crop'):
-            v.add_arguments(subparser, only_subparser=only_subparser,
-                            only_crop_parameters=only_crop_parameters,
-                            **kwargs)
-
     @classmethod
-    def adjust_args(cls, args):
-        r"""Adjust the parsed arguments including setting defaults that
-        depend on other provided arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        """
-        super(ParametrizeCropTask, cls).adjust_args(args)
-        if args.update_lpy_model is True:
-            args.update_lpy_model = os.path.join(
-                utils._lpy_dir, f'{args.crop}.lpy')
-        if (not args.data) and args.crop:
-            generator = get_class_registry().get('crop', args.crop)
-            args.data = generator._default_data
-
-    @classmethod
-    def output_base(cls, args, name=None):
-        r"""Generate the base file name that should be used to generate
-        an output file name.
-
-        Args:
-
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: File base.
-
-        """
-        return f'{args.crop}_{args.id}'
-
-    @classmethod
-    def output_suffix(cls, args, name=None):
+    def _output_suffix(cls, args, name, wildcards=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
 
         Returns:
             str: Suffix.
 
         """
-        return ''
+        suffix = ''
+        suffix += cls._make_suffix(
+            args, 'crop', cond=True, prefix='', wildcards=wildcards,
+        )
+        if name == 'lpy_model':
+            return suffix
+        suffix += cls._make_suffix(
+            args, 'id', cond=True, wildcards=wildcards,
+        )
+        return suffix
 
     @classmethod
-    def _write_output(cls, output, args, name=None):
+    def _read_output(cls, args, name, fname):
+        r"""Load an output file produced by this task.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output to read.
+            fname (str): Path of file that should be read from.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        if name == 'lpy':
+            with open(fname, 'r') as fd:
+                return fd.read()
+        with open(fname, 'r') as fd:
+            return rapidjson.load(fd)
+
+    @classmethod
+    def _write_output(cls, args, name, fname, output):
         r"""Write to an output file.
 
         Args:
-            output (object): Output object to write to file.
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Name of the output to write.
+            fname (str): Path of the file that should be written to.
+            output (object): Output object to write to file.
 
         """
-        if name is None:
-            name = cls._name
-        outputfile = getattr(args, f'output_{name}')
-        with open(outputfile, 'w') as fd:
+        if name == 'lpy_model':
+            with open(fname, 'w') as fd:
+                fd.write(output)
+            return
+        with open(fname, 'w') as fd:
             rapidjson.dump(output, fd, write_mode=rapidjson.WM_PRETTY)
 
     @cached_property
-    def generator(self):
-        r"""PlantGenerator: Plant generator that should be parameterized."""
+    def generator_class(self):
+        r"""type: Plant generator class that should be parameterized."""
         return get_class_registry().get('crop', self.args.crop)
+
+    @cached_property
+    def generator(self):
+        r"""PlantGenerator: Parametrized plant generator."""
+        return self.generator_class(**self.parameters)
 
     @cached_property
     def parameters(self):
         r"""dict: Set of model parameters collected from the command line."""
+        return self.get_output('parametrize')
+
+    @classmethod
+    def get_age_from_parameters(cls, name, parameters):
+        r"""Get the age at which the generated crop is mature.
+
+        Args:
+            name (str): Age that should be returned.
+            parameters (dict): Parameters that should be used.
+
+        Returns:
+            units.Quantity: Age of maturity.
+
+        """
+        if name == 'planting':
+            return units.Quantity(0.0, 'days')
+        elif name == 'maturity':
+            return (
+                parameters['NMax']
+                * parameters['Plastocron']
+            )
+        elif f'Age{name.title()}' in parameters:
+            return parameters[f'Age{name.title()}']
+        else:
+            raise NotImplementedError(f'Invalid age \"{name}\"')
+
+    def get_age(self, name):
+        r"""Get the age at which the generated crop is mature.
+
+        Args:
+            name (str): Age that should be returned.
+
+        Returns:
+            units.Quantity: Age of maturity.
+
+        """
+        return self.get_age_from_parameters(name, self.parameters)
+
+    @classmethod
+    def get_age_class(cls, args, name):
+        r"""Get the age at which the generated crop is mature.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Age that should be returned.
+
+        Returns:
+            units.Quantity: Age of maturity.
+
+        """
+        param = cls.from_external_args(args)
+        return param.get_age(name)
+
+    def generate_parameters(self):
+        r"""Generate the model parameters.
+
+        Returns:
+            dict: Architecture parameters.
+
+        """
         kwargs = {}
-        for k, v in self.generator._arguments:
+        for k, v in self.generator_class._arguments:
             kattr = self.arg2dest(k, v)
             if getattr(self.args, kattr, None) is not None:
                 kwargs[kattr] = getattr(self.args, kattr)
         for k in ['verbose', 'debug', 'debug_param',
                   'debug_param_prefix']:
             kwargs[k] = getattr(self.args, k)
-        inst = self.generator(**kwargs)
+        inst = self.generator_class(**kwargs)
         out = copy.deepcopy(inst.all_parameters)
         if self.args.data:
-            self.generator.parameters_from_file(self.args, out)
+            self.generator_class.parameters_from_file(self.args, out)
+        if 'AgeRemove' not in out:
+            out['AgeRemove'] = (
+                out['NMax'] * out['Plastocron']
+            )
         output_units = UnitSet.from_attr(
             self.args, prefix='output_units_')
         for k in list(out.keys()):
@@ -219,6 +261,7 @@ class ParametrizeCropTask(TaskBase):
         r"""dict: Set of default model parameters."""
         out = {
             'RUNTIME_PARAM': {},
+            'OUTPUT_TIME': 20,
         }
         return out
 
@@ -236,7 +279,7 @@ class ParametrizeCropTask(TaskBase):
             "##   NOT BE MODIFIED DIRECTLY",
             60 * '#',
         ])
-        with open(self.args.update_lpy_model, 'r') as fd:
+        with open(self.output_file('lpy_model'), 'r') as fd:
             contents = fd.read()
         prefix_contents = ''
         suffix_contents = ''
@@ -255,44 +298,60 @@ class ParametrizeCropTask(TaskBase):
             'from canopy_factory.utils import get_class_registry',
             f'generator_cls = get_class_registry().get("crop", '
             f'"{self.args.crop}")',
-            'generator = generator_cls(**RUNTIME_PARAM)'
+            'generator = generator_cls(context=context(), **RUNTIME_PARAM)'
         ]
         contents = [
             prefix_contents, comment_start
         ] + contents + [
             comment_end, suffix_contents
         ]
-        with open(self.args.update_lpy_model, 'w') as fd:
+        with open(self.output_file('lpy_model'), 'w') as fd:
             fd.write('\n'.join(contents))
 
-    @classmethod
-    def _run(cls, self):
-        if self.args.update_lpy_model:
-            self.add_parameters_to_lpy_model()
-        generator_args = copy.deepcopy(self.parameters)
-        out = {
-            'RUNTIME_PARAM': generator_args,
-        }
-        return out
+    def generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name == 'lsystem':
+            self.set_output('lpy_model', self.generator.lsystem)
+        elif name == 'parametrize':
+            self.set_output('parametrize', self.generate_parameters())
+        else:
+            super(ParametrizeCropTask, self).generate_output(name)
 
 
 class LayoutTask(TaskBase):
     r"""Class for plotting the layout of a canopy."""
 
     _name = 'layout'
-    _ext = '.png'
-    _output_dir = os.path.join(utils._output_dir, 'layout')
-    _time_vars = ['time']
-    _hour_defaults = {}  # 'time': 12}
-    _arguments_suffix_ignore = [
-        'locaton', 'time', 'doy', 'hour', 'year', 'timezone',
-    ]
-    _convert_to_mesh_units = [
-        'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
-        'x', 'y',
-        'ground_height',
-    ]
-    _convert_to_color_tuple = []
+    _output_info = {
+        'layout': {
+            'ext': '.png',
+            'description': 'a plot of the layout',
+        },
+    }
+    _composite_arguments = {
+        'time': {
+            'time': {
+                'description': ' that the sun should be modeled for',
+                'ignore': ['age', 'planting_date'],
+                'optional': True,
+            },
+        }
+    }
+    _argument_conversions = {
+        'mesh_units': [
+            'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
+            'x', 'y',
+            'ground_height',
+        ],
+    }
     _arguments = [
         (('--canopy', ), {
             'choices': ['single', 'tile', 'unique'],
@@ -314,6 +373,10 @@ class LayoutTask(TaskBase):
         (('--nrows', ), {
             'type': int, 'default': 4,
             'help': 'Number of rows to generate in plot',
+        }),
+        (('--ncols', ), {
+            'type': int,
+            'help': 'Number of plants to generate in each row',
         }),
         (('--row-spacing', ), {
             'type': parse_quantity, 'default': 76.2, 'units': 'cm',
@@ -348,13 +411,6 @@ class LayoutTask(TaskBase):
             'help': ('Number of times the canopy should be repeated in '
                      'each direction'),
         }),
-        (('--location', ), {
-            'type': str, 'default': 'Champaign',
-            'choices': sorted(list(utils.read_locations().keys())),
-            'help': ('Name of a registered location that should be used '
-                     'to set the location dependent properties: '
-                     'timezone, altitude, longitude, latitude'),
-        }),
         (('--axis-up', ), {
             'type': parse_axis, 'default': 'y',
             'help': 'Axis along which plants should grow within the mesh',
@@ -372,79 +428,6 @@ class LayoutTask(TaskBase):
             'type': parse_quantity, 'default': 0.0, 'units': 'meters',
             'help': ('Distance that the ground is above 0 along the '
                      '\"axis_up\" direction'),
-        }),
-        (('--latitude', '--lat', ), {
-            'type': parse_quantity,
-            'default': 40.1164, 'units': 'degrees',
-            'help': ('Latitude (in degrees) at which the sun should be '
-                     'modeled. Defaults to the latitude of Champaign '
-                     'IL.'),
-        }),
-        (('--altitude', '--elevation', ), {
-            'type': parse_quantity,
-            'default': 224.0, 'units': 'meters',
-            'help': ('Altitude (in meters) that should be used for '
-                     'solar light calculations. If not provided, it '
-                     'will be calculated from \"pressure\", if it is '
-                     'provided, and the elevation of Champaign, IL '
-                     'otherwise.'),
-        }),
-        (('--pressure', ), {
-            'type': parse_quantity, 'units': 'Pa',
-            'help': ('Air pressure (in Pa) that should be used for '
-                     'solar light calculations. If not provided, it '
-                     'will be calculated from \"altitude\".'),
-        }),
-        (('--temperature', ), {
-            'type': parse_quantity, 'default': 12.0, 'units': 'degC',
-            'help': ('Air temperature (in degrees C) that should be '
-                     'used for solar light calculations.'),
-        }),
-        (('--longitude', '--long', ), {
-            'type': parse_quantity,
-            'default': -88.2434, 'units': 'degrees',
-            'help': ('Longitude (in degrees) at which the sun should be '
-                     'modeled. Defaults to the longitude of Champaign '
-                     'IL.'),
-        }),
-        (('--time', '-t', ), {
-            'type': str,  # 'default': '2024-06-17',
-            'help': ('Date time (in any ISO 8601 format) that the sun '
-                     'should be modeled for. If hour information is not '
-                     'provided, the provided \"hour\" will be used. '
-                     'If \"now\" is specified the current date and time '
-                     'will be used.'),
-        }),
-        (('--doy', ), {
-            'type': int,
-            'help': ('Day of the year that the sun should be modeled '
-                     'for.'),
-        }),
-        (('--hour', '--hr', ), {
-            'type': int,
-            'help': ('Hour that the sun should be modeled for. If '
-                     'provided with \"--time\", any hour information in '
-                     'the specified time will be overwritten. Defaults '
-                     'to 12 if \"--doy\" is provided, but \"--hour\" is '
-                     'not.'),
-        }),
-        (('--year', ), {
-            'type': int,
-            'help': ('Year that sun should be modeled for. If provided '
-                     'with \"--time\" (or \"--start-time\"/'
-                     '\"--stop-time\"), the year in the time string(s) '
-                     'will be overwritten. Defaults to the current year '
-                     'if \"--doy\" is provided, but \"--year\" is not.'),
-        }),
-        (('--timezone', '--tz', ), {
-            'type': str,
-            'help': ('Name of timezone (as accepted by pytz) for '
-                     'location that sun should be modeled. If provided '
-                     'with \"--time\" (or \"--start-time\"/'
-                     '\"--stop-time\"), any timezone information in the '
-                     'specified time(s) will be overwritten. Defaults '
-                     'to \"America/Chicago\" if \"--doy\" is provided, '
-                     'but \"--timezone\" is not.'),
         }),
         # TODO: Use mesh units in input
         (('--mesh-units', ), {
@@ -473,62 +456,43 @@ class LayoutTask(TaskBase):
                      'as floats in the range [0, 1]'),
         }),
     ]
-    _argument_modifications = {
-        '--output': {
-            'help': 'File where the layout should be saved',
-        },
-    }
-
-    @staticmethod
-    def _on_registration(cls):
-        TaskBase._on_registration(cls)
-        if cls._registry_key is None or cls._name is None:
-            return
-        import inspect
-        base = inspect.getmro(cls)[1]
-        cls._convert_to_mesh_units = cls.select_valid_arguments(
-            getattr(base, '_convert_to_mesh_units', [])
-            + cls._convert_to_mesh_units)
-        cls._convert_to_color_tuple = cls.select_valid_arguments(
-            getattr(base, '_convert_to_color_tuple', [])
-            + cls._convert_to_color_tuple)
 
     @classmethod
-    def _read_output(cls, args, name=None):
+    def _read_output(cls, args, name, fname):
         r"""Load an output file produced by this task.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Name of the output to read.
+            fname (str): Path of file that should be read from.
 
         Returns:
             object: Contents of the output file.
 
         """
-        if name is None:
-            name = cls._name
-        outputfile = getattr(args, f'output_{name}')
-        return utils.read_png(outputfile, verbose=args.verbose)
+        return utils.read_png(fname, verbose=args.verbose)
 
     @classmethod
-    def _write_output(cls, output, args, name=None):
+    def _write_output(cls, args, name, fname, output):
         r"""Write to an output file.
 
         Args:
-            output (object): Output object to write to file.
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Name of the output to write.
+            fname (str): Path of the file that should be written to.
+            output (object): Output object to write to file.
 
         """
-        if name is None:
-            name = cls._name
-        outputfile = getattr(args, f'output_{name}')
-        output.savefig(outputfile, dpi=300)
+        output.savefig(fname, dpi=300)
 
     @classmethod
-    def adjust_args(cls, args):
+    def _convert_mesh_units(cls, args, k, v):
+        if isinstance(args.mesh_units, str):
+            args.mesh_units = units.Units(args.mesh_units)
+        setattr(args, k, parse_quantity(v, args.mesh_units))
+
+    @classmethod
+    def adjust_args_internal(cls, args):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
@@ -536,23 +500,17 @@ class LayoutTask(TaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        for k, v in cls._excluded_arguments_defaults.items():
-            if not hasattr(args, k):
-                setattr(args, k, v)
-        if isinstance(args.mesh_units, str):
-            args.mesh_units = units.Units(args.mesh_units)
-        for k in cls._convert_to_mesh_units:
-            setattr(args, k, parse_quantity(getattr(args, k, None),
-                                            args.mesh_units))
+        super(LayoutTask, cls).adjust_args_internal(args)
         if args.canopy == 'single':
             args.nrows = 1
             args.ncols = 1
         else:
             if args.plot_width is None:
                 args.plot_width = args.nrows * args.row_spacing
+            if args.plot_length is None:
+                args.plot_length = args.ncols * args.plant_spacing
             args.nrows = int(args.plot_width / args.row_spacing)
             args.ncols = int(args.plot_length / args.plant_spacing)
-        # args.axis_cols = np.cross(args.axis_rows, args.axis_up)
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
         if args.periodic_canopy:
@@ -566,149 +524,38 @@ class LayoutTask(TaskBase):
                 args.axis_cols,
                 args.axis_up,
             ])
-        if args.location:
-            location_data = utils.read_locations()
-            for k, v in location_data[args.location].items():
-                setattr(args, k, v)
-        if not (args.pressure or args.altitude):
-            args.altitude = parse_quantity(10.0, 'meters')
-        cls.adjust_args_time(args)
-        super(LayoutTask, cls).adjust_args(args)
-        for k in cls._convert_to_color_tuple:
-            v = getattr(args, k, None)
-            if isinstance(v, str):
-                setattr(args, f'{k}_str', v)
-                setattr(args, k, parse_color(v, convert_names=True))
 
     @classmethod
-    def adjust_args_time(cls, args, timevar=None):
-        r"""Adjust the time related variables in a set of parsed
-        arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Time variable to adjust. If not
-                provided, all of the time variables associated with this
-                subparser will be adjusted.
-
-        """
-        if timevar is None:
-            for tv in cls._time_vars:
-                cls.adjust_args_time(args, timevar=tv)
-            return
-        x = getattr(args, timevar)
-        x_str = None
-        x_solar = None
-        if x in utils._solar_times:
-            x_solar = x
-            if args.doy:
-                x = None
-            else:
-                x = '2024-06-17'
-        if x:
-            if isinstance(x, datetime):
-                pass
-            else:
-                x = datetime.fromisoformat(x)
-            if not (x.tzinfo or args.timezone):
-                args.timezone = "America/Chicago"
-            if not (x.hour or args.hour):
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not (x.year or args.year):
-                args.year = datetime.now().year
-        elif args.doy:
-            if not args.hour:
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not args.year:
-                args.year = datetime.now().year
-            if not args.timezone:
-                args.timezone = "America/Chicago"
-            x = datetime.strptime(args.year, args.doy, "%Y-%j")
-        if isinstance(args.timezone, str):
-            import pytz
-            args.timezone = pytz.timezone(args.timezone)
-        if x:
-            replacements = {}
-            if args.hour:
-                replacements['hour'] = args.hour
-                args.hour = None
-            if args.year:
-                replacements['year'] = args.year
-                args.year = None
-            if replacements:
-                x = x.replace(**replacements)
-            if args.timezone:
-                x = x.astimezone(args.timezone)
-                args.timezone = None
-        if x_solar in utils._solar_times:
-            date = x.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            x = parse_solar_time(
-                x_solar, date, args.latitude, args.longitude,
-                altitude=args.altitude,
-            )
-            x_str = date.date().isoformat() + '-' + x_solar
-            assert ':' not in x_str
-        if x and x != getattr(args, timevar):
-            if x_str is None:
-                x_str = x.replace(microsecond=0).isoformat().replace(
-                    ':', '-')
-            setattr(args, timevar, x)
-            setattr(args, f'{timevar}_str', x_str)
-            # print(f'Updated {timevar} to {x} ({x_str})')
-
-    @classmethod
-    def output_suffix(cls, args, name=None):
+    def _output_suffix(cls, args, name, wildcards=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
 
         Returns:
             str: Suffix.
 
         """
         suffix = ''
-        if args.canopy != 'single':
-            suffix += f'_canopy{args.canopy.title()}'
-        if args.location:
-            suffix += f"_{args.location}"
-        suffix += cls.output_suffix_time(args)
-        if args.periodic_canopy:
-            suffix += (f'_periodic{args.periodic_canopy_count}'
-                       f'_{args.periodic_canopy}')
+        suffix += cls._make_suffix(
+            args, 'canopy', prefix='_canopy', title=True,
+            noteq='single', wildcards=wildcards,
+        )
+        suffix += cls._make_suffix(
+            args, 'time', wildcards=wildcards,
+        )
+        suffix += cls._make_suffix(
+            args, 'periodic_canopy_count', prefix='_periodic',
+            cond=bool(args.periodic_canopy), wildcards=wildcards,
+        )
+        suffix += cls._make_suffix(
+            args, 'periodic_canopy', wildcards=wildcards,
+        )
         return suffix
-
-    @classmethod
-    def output_suffix_time(cls, args, timevar=None):
-        r"""Get the suffix containing time information that should be
-        included in generated output file names.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Time variable to generate a suffix
-                for. If not provided, a suffix combining all of the
-                time variables associated with this subparser will be
-                returned.
-
-        Returns:
-            str: Suffix.
-
-        """
-        if timevar is None:
-            suffixes = [cls.output_suffix_time(args, tv)
-                        for tv in cls._time_vars]
-            suffixes = [x for x in suffixes if x is not None]
-            return '_'.join(suffixes)
-        time_str = getattr(args, f'{timevar}_str', None)
-        if time_str:
-            return time_str
-        if getattr(args, timevar) is None:
-            return None
-        time = getattr(args, timevar).replace(microsecond=0)
-        return time.isoformat().replace(':', '-')
 
     @cached_property
     def nplants(self):
@@ -775,96 +622,10 @@ class LayoutTask(TaskBase):
         assert out.shape[1] == 3
         return units.QuantityArray(out, pos_units0)
 
-    @classmethod
-    def parse_time(cls, x, args, timevar=None):
-        r"""Adjust the time related variables in a set of parsed
-        arguments.
-
-        Args:
-            x (str, datetime.datetime): Time to parse.
-            args (argparse.Namespace): Parsed arguments.
-            timevar (str, optional): Name of the variable that should be
-                updated on args.
-
-        Returns:
-            datetime.datetime: Parsed time.
-
-        """
-        x_str = None
-        x_solar = None
-        if x in utils._solar_times:
-            x_solar = x
-            if args.doy:
-                x = None
-            else:
-                x = '2024-06-17'
-        if x:
-            if isinstance(x, datetime):
-                pass
-            else:
-                x = datetime.fromisoformat(x)
-            if not (x.tzinfo or args.timezone):
-                args.timezone = "America/Chicago"
-            if not (x.hour or args.hour):
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not (x.year or args.year):
-                args.year = datetime.now().year
-        elif args.doy:
-            if not args.hour:
-                args.hour = cls._hour_defaults.get(timevar, None)
-            if not args.year:
-                args.year = datetime.now().year
-            if not args.timezone:
-                args.timezone = "America/Chicago"
-            x = datetime.strptime(args.year, args.doy, "%Y-%j")
-        if isinstance(args.timezone, str):
-            import pytz
-            args.timezone = pytz.timezone(args.timezone)
-        if x:
-            replacements = {}
-            if args.hour:
-                replacements['hour'] = args.hour
-            if args.year:
-                replacements['year'] = args.year
-            if replacements:
-                x = x.replace(**replacements)
-            reset = list(replacements.keys())
-            if args.timezone:
-                x = x.astimezone(args.timezone)
-                reset.append('timezone')
-            if reset and timevar is not None:
-                for k in reset:
-                    setattr(args, k, None)
-        if x_solar in utils._solar_times:
-            date = x.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            x = parse_solar_time(
-                x_solar, date, args.latitude, args.longitude,
-                altitude=args.altitude,
-            )
-            x_str = date.date().isoformat() + '-' + x_solar
-            assert ':' not in x_str
-        if x and timevar is not None and x != getattr(args, timevar):
-            if x_str is None:
-                x_str = x.replace(microsecond=0).isoformat().replace(
-                    ':', '-')
-            setattr(args, timevar, x)
-            setattr(args, f'{timevar}_str', x_str)
-            # print(f'Updated {timevar} to {x} ({x_str})')
-        return x
-
     def get_solar_model(self, time=None):
         if time is None:
             return self.solar_model
-        from canopy_factory.raytrace import SolarModel
-        if isinstance(time, str):
-            time = self.parse_time(time, self.args)
-        return SolarModel(
-            self.args.latitude, self.args.longitude, time,
-            altitude=self.args.altitude, pressure=self.args.pressure,
-            temperature=self.args.temperature,
-        )
+        return TimeArgument.parse(time, self.args).solar_model
 
     def get_solar_direction(self, time=None):
         if time is None:
@@ -898,7 +659,7 @@ class LayoutTask(TaskBase):
     def solar_model(self):
         if self.args.time is None:
             return None
-        return self.get_solar_model(self.args.time)
+        return self.args.time.solar_model
 
     @cached_property
     def solar_direction(self):
@@ -1104,89 +865,107 @@ class LayoutTask(TaskBase):
         )
         # Sun direction
         if self.args.time:
-            self.plot_sun(self.args.time, plant_min, plant_max,
+            self.plot_sun(self.args.time.time, plant_min, plant_max,
                           arrow_length=arrow_length)
         else:
             for t in ['sunrise', 'sunset', 'noon']:
                 self.plot_sun(t, plant_min, plant_max,
                               arrow_length=arrow_length)
 
-    @classmethod
-    def _run(cls, self, **kwargs):
-        self.plot_layout(self.scene_layout)
-        return self.figure
+    def generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name == 'layout':
+            self.plot_layout(self.scene_layout)
+            self.set_output('layout', self.figure)
+            return
+        super(LayoutTask, self).generate_output(name)
 
 
-class GenerateTask(LayoutTask):
+class GenerateTask(TaskBase):
     r"""Class for generating 3D canopies."""
 
     _name = 'generate'
-    _ext = None
     _help = 'Generate a canopy mesh'
-    _output_dir = os.path.join(utils._output_dir, 'meshes')
-    _time_vars = []
-    _arguments_suffix_ignore = [
-        'crop', 'id', 'canopy', 'color',
-        'overwrite_lpy_param', 'plantid', 'debug_param',
-        'debug_param_prefix',
-        'unful_leaves', 'mesh_format', 'overwrite_generate',
-        'plot_width', 'output_plantids', 'overwrite_plantids',
-    ]
-    _alternate_outputs_write_required = ['plantids']
-    _convert_to_color_tuple = [
-        'color',
-    ]
+    _output_info = {
+        'generate': {
+            'base': 'parametrize',
+            'description': 'mesh',
+            'upstream': ['parametrize', 'lpy_model'],
+        },
+        'geometryids': {
+            'ext': '.csv',
+            'base': 'generate',
+            'description': (
+                'the IDs of the plant/component each face '
+                'belongs to'
+            ),
+        },
+    }
+    _external_tasks = {
+        LayoutTask: {
+            'include': [
+                'canopy', 'plot_length', 'plot_width',
+                'nrows', 'ncols', 'row_spacing', 'plant_spacing',
+                'x', 'y', 'plantid', 'periodic_canopy',
+                'periodic_canopy_count', 'mesh_units',
+            ],
+            'modifications': {
+                'canopy': {'default': 'single'},
+            },
+            'optional': True,
+        },
+        ParametrizeCropTask: {
+            'include': [
+                'crop', 'id', 'data',
+                'debug_param', 'debug_param_prefix',
+            ],
+            'modifications': {
+                'id': {
+                    'append_choices': ['all', 'all_split'],
+                }
+            },
+        },
+    }
+    _composite_arguments = {
+        'age': {
+            'age': {
+                'description': ' to generate model for',
+                'ignore': ['planting_date'],
+            },
+        },
+        'color': {
+            'color': {
+                'description': (
+                    'that should be used for the generated plant. If '
+                    'a value of \'plantid\' is provided, colors will '
+                    'be used to identify individual plants by setting '
+                    'the blue channel to the plant ID.'
+                ),
+                'optional': True,
+            },
+        },
+    }
     _arguments = [
-        (('--age', ), {
-            'type': parse_quantity, 'default': 27, 'units': 'days',
-            'help': ('Plant age to generate model for (in days '
-                     'since planting)'),
-        }),
-        (('--data', ), {
-            'type': str,
-            'help': ('File containing raw data that should be used '
-                     'to set parameters'),
-        }),
-        (('--lpy-input', ), {
-            'type': str,
-            'help': 'File containing LPy L-system rules',
-        }),
-        (('--lpy-param', ), {
-            'type': str,
-            'help': 'File containing parameters for L-system rules',
-        }),
-        (('--overwrite-lpy-param', ), {
-            'action': 'store_true',
-            'help': 'Overwrite the existing lpy_param file',
-        }),
-        (('--niter', ), {
-            'type': int, 'default': 20,
-            'help': 'Number of iterations to generate',
-        }),
-        (('--color', ), {
-            'type': parse_color, 'default': 'green',
-            'help': ('Color that should be used for the generated plant. '
-                     'This can be a color name or 3 comma separated RGB '
-                     'values expressed as integers in the range '
-                     '[0, 255]. If a values of \'plantid\' is provided, '
-                     'colors will be used to identify individual plants '
-                     'by setting the blue channel to the plant ID.'),
-        }),
-        (('--debug-param', ), {
-            'action': 'append',
-            'help': ('Parameter(s) that debug mode should be enabled '
-                     'for (does not enable debugging for children of '
-                     'the named parameter(s). Use --debug-param-prefix '
-                     'to also enable debugging for children)'),
-        }),
-        (('--debug-param-prefix', ), {
-            'action': 'append',
-            'help': ('Prefix(es) of parameters that debug mode should '
-                     'be enabled for.'),
-        }),
-        # (('--unfurl-leaves', ), {
-        #     'action': 'store_true',
-        #     'help': 'Start leaves as cylinders and then unfurl them',
+        # (('--age', ), {
+        #     'type': parse_quantity, 'units': 'days',
+        #     'help': ('Plant age to generate model for (in days '
+        #              'since planting). Defaults to one day before the '
+        #              'age of senescence.'),
+        # }),
+        # (('--derivation-length', ), {
+        #     'type': int,
+        #     'help': ('Number of iterations that should be produced '
+        #              'for the L-system. If not provided, the derivation '
+        #              'length will be set to allow for the maximum '
+        #              'number of nodes to be achieved.'),
         # }),
         (('--location-stddev', ), {
             'type': float, 'default': 0.2,
@@ -1198,100 +977,63 @@ class GenerateTask(LayoutTask):
             'type': str, 'choices': utils._supported_3d_formats,
             'help': 'Format that mesh should be saved in',
         }),
-        (('--output-plantids', ), {
-            'nargs': '?', 'const': True, 'default': True,
-            'help': ('File where the IDs of the plant each face belongs '
-                     'to should be saved'),
-        }),
-        (('--overwrite-plantids', ), {
+        (('--verbose-lpy', ), {
             'action': 'store_true',
-            'help': ('Overwrite any existing plant IDs file '
-                     '"--output-plantids" is passed'),
+            'help': 'Enable debug messages within the lpy model',
         }),
+        # (('--animate', ), {
+        #     'action': 'store_true',
+        #     'help': 'Generate a geometry for each iteration',
+        # }),
     ]
-    _argument_modifications = {
-        '--output': {
-            'help': 'File where the generated mesh should be saved',
-        },
-        '--canopy': {
-            'default': 'single',
-        },
-    }
-    _excluded_arguments = [
-        '--axis-north', '--ground-height', '--latitude',
-        '--altitude', '--pressure', '--temperature', '--longitude',
-        '--time', '--doy', '--hour', '--year', '--timezone',
-        '--interior-plant-color', '--exterior-plant-color',
-        '--periodic-plant-color',
-        '--periodic-canopy', '--periodic-canopy-count',
-    ]
-
-    @staticmethod
-    def add_arguments_static(cls, parser, **kwargs):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            **kwargs: Additional keyword arguments are passed to the
-                parent class method.
-
-        """
-        ParametrizeCropTask.add_arguments_static(
-            cls, parser, only_crop_parameters=['id', 'LeafUnfurled'],
-            **kwargs)
-        subparser = parser.get_subparser(cls._registry_key, cls._name)
-        for k in get_class_registry().keys('crop'):
-            parser = subparser.get_subparser('crop', k)
-            action = parser.find_argument('id')
-            if not action.choices:
-                action.choices = []
-            action.choices += ['all', 'all_split']
 
     @classmethod
-    def _read_output(cls, args, name=None):
+    def _read_output(cls, args, name, fname):
         r"""Load an output file produced by this task.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Name of the output to read.
+            fname (str): Path of file that should be read from.
 
         Returns:
             object: Contents of the output file.
 
         """
-        if name is None:
-            name = cls._name
-        outputfile = getattr(args, f'output_{name}')
-        if name == 'plantids':
-            return utils.read_csv(outputfile, select='plantids')
-        return utils.read_3D(outputfile, file_format=args.mesh_format,
+        if name == 'geometryids':
+            with open(fname, 'r') as fd:
+                components = rapidjson.loads(fd.readline().lstrip('#'))
+            return components, utils.read_csv(fname)
+        if ((args.age.string != 'maturity'
+             and args.age.string not in fname)):
+            print(args.age.string, fname)
+            import pdb
+            pdb.set_trace()
+            raise AssertionError('Reading the wrong file')
+        return utils.read_3D(fname, file_format=args.mesh_format,
                              verbose=args.verbose)
 
     @classmethod
-    def _write_output(cls, output, args, name=None):
+    def _write_output(cls, args, name, fname, output):
         r"""Write to an output file.
 
         Args:
-            output (object): Output object to write to file.
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Name of the output to write.
+            fname (str): Path of the file that should be written to.
+            output (object): Output object to write to file.
 
         """
-        if args.id == 'all_split':
+        if args.id == 'all_split':  # or args.animate:
             return
-        if name is None:
-            name = cls._name
-        outputfile = getattr(args, f'output_{name}')
-        if name == 'plantids':
-            return utils.write_csv({'plantids': output}, outputfile)
-        utils.write_3D(output, outputfile, file_format=args.mesh_format,
+        if name == 'geometryids':
+            return utils.write_csv(output[1], fname,
+                                   comments=[rapidjson.dumps(output[0])])
+        utils.write_3D(output, fname, file_format=args.mesh_format,
                        verbose=args.verbose)
 
     @classmethod
-    def adjust_args(cls, args):
+    def adjust_args_internal(cls, args):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
@@ -1300,171 +1042,168 @@ class GenerateTask(LayoutTask):
 
         """
         args.save_all_plantids = False
-        if not args.output_generate:
-            if not args.mesh_format:
-                args.mesh_format = 'obj'
-        super(GenerateTask, cls).adjust_args(args)
-        args.plantids_in_blue = False
-        if not args.mesh_format:
-            args.mesh_format = utils.get_3D_format(args.output_generate)
-        if (not args.data) and args.crop:
-            generator = get_class_registry().get('crop', args.crop)
-            args.data = generator._default_data
-        if args.color_str == 'plantids':
-            args.plantids_in_blue = True
-        if args.lpy_input is None:
-            args.lpy_input = os.path.join(
-                utils._lpy_dir, f'{args.crop}.lpy')
-        if args.lpy_param is None:
-            args.lpy_param = os.path.join(
-                utils._param_dir, f'{args.crop}_{args.id}.json')
-
-    @cached_property
-    def lpy_param(self):
-        r"""dict: Runtime parameters for the lpy model."""
-        if not (self.args.lpy_param
-                and os.path.isfile(self.args.lpy_param)):
-            return {}
-        with open(self.args.lpy_param, 'r') as fd:
-            out = rapidjson.load(fd)
-        return out
+        if args.verbose:
+            args.verbose_lpy = True
+        if args.plantid > 0 and not args.save_all_plantids:
+            args.dont_write_generate = True
+            args.dont_write_geometryids = True
+        super(GenerateTask, cls).adjust_args_internal(args)
 
     @classmethod
-    def output_base(cls, args, name=None):
-        r"""Generate the base file name that should be used to generate
-        an output file name.
-
-        Args:
-
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: File base.
-
-        """
-        return f'{args.crop}_{args.id}'
-
-    @classmethod
-    def output_suffix(cls, args, name=None):
+    def _output_suffix(cls, args, name, wildcards=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
 
         Returns:
             str: Suffix.
 
         """
+        if name in ['geometryids']:
+            return f'_{name}'
         suffix = ''
-        if args.canopy != 'single':
-            suffix += f'_canopy{args.canopy.title()}'
-        # if args.LeafUnfurled:
-        #     suffix += '_unfurled'
-        if name not in ['plantids', 'layout']:
-            color_str = None
-            if isinstance(args.color, str):
-                color_str = args.color
-            elif getattr(args, 'color_str', None):
-                color_str = args.color_str
-            elif args.color:
-                return False
-            if color_str != 'green':
-                suffix += f'_{color_str}'
-        if args.plantid > 0:
-            if args.save_all_plantids:
-                suffix += f'_{args.plantid}'
-            else:
-                return False
+        suffix += cls._make_suffix(
+            args, 'canopy', prefix='_canopy', title=True,
+            noteq='single', wildcards=wildcards,
+        )
+        # suffix += cls._make_suffix(
+        #     args, 'animate', value='animate', wildcards=wildcards,
+        # )
+        suffix += cls._make_suffix(
+            args, 'age', noteq='maturity', wildcards=wildcards,
+        )
+        suffix += cls._make_suffix(
+            args, 'color', noteq=None, wildcards=wildcards,
+        )
+        if args.plantid > 0 and not args.save_all_plantids:
+            assert not cls._output_enabled(args, 'generate',
+                                           for_write=True)
+        suffix += cls._make_suffix(
+            args, 'plantid', cond=(args.plantid > 0),
+            wildcards=wildcards,
+        )
         return suffix
 
     @classmethod
-    def output_ext(cls, args, name=None):
+    def _output_ext(cls, args, name, wildcards=None):
         r"""Determine the extension that should be used for output files.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
 
         Returns:
             str: Output file extension.
 
         """
-        if name == 'plantids':
-            return '.csv'
-        ext = super(GenerateTask, cls).output_ext(args, name=name)
-        if ext is None and args.mesh_format:
-            ext = utils._inv_geom_ext[args.mesh_format]
-        return ext
+        if name == 'generate':
+            if not args.mesh_format:
+                args.mesh_format = 'obj'
+            return utils._inv_geom_ext[args.mesh_format]
+        return None
+
+    @cached_property
+    def generator_class(self):
+        r"""type: Plant generator class that should be parameterized."""
+        return get_class_registry().get('crop', self.args.crop)
 
     @cached_property
     def generator(self):
-        r"""PlantGenerator: Plant generator that should be parameterized."""
-        return get_class_registry().get('crop', self.args.crop)
+        r"""PlantGenerator: Parametrized plant generator."""
+        return self.generator_class(**self.parameters)
+
+    def get_parameters(self):
+        r"""Load/generate the parameter set for the model.
+
+        Returns:
+            dict: Loaded/generated parameter set.
+
+        """
+        if getattr(self.args, 'parameters', None) is None:
+            self.args.parameters = self.get_output('parametrize')
+        return self.args.parameters
+
+    @cached_property
+    def parameters(self):
+        r"""dict: Runtime parameters for the lpy model."""
+        return self.get_parameters()
+
+    @cached_property
+    def parameter_unit_system(self):
+        r"""UnitSet: Unit system used by parameters."""
+        return UnitSet.from_kwargs(self.parameters, suffix='_units')
 
     @readonly_cached_property
     def all_ids(self):
         r"""list: All crop classes for current data."""
-        return self.generator.ids_from_file(self.args.data)
+        return self.generator_class.ids_from_file(self.args.data)
 
-    @classmethod
-    def _run(cls, self):
-        r"""Run the process associated with this subparser."""
+    def generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name not in ['generate', 'geometryids']:
+            super(GenerateTask, self).generate_output(name)
+            return
         if self.args.id == 'all_split':
-            plantid = self.args.plantid
-            x = self.args.x
-            y = self.args.y
-            for i, id in enumerate(self.all_ids):
-                cls.run_class(
-                    self, dont_reset_alternate_output=True,
-                    dont_load_existing=True,
-                    args_overwrite={
-                        'x': x, 'y': y, 'plantid': plantid,
-                        'id': id,
-                        'lpy_param': None,
-                    },
-                )
-            mesh = None
-            self.add_alternate_output('plantids', None)
+            per_iter = {
+                'x': self.args.x, 'y': self.args.y,
+                'plantid': self.args.plantid,
+            }
+            for x in self.run_series(self.args,
+                                     over={'id': self.all_ids},
+                                     per_iter=per_iter,
+                                     output_name='instance'):
+                pass
+            self.set_output('generate', None)
+            self.set_output('geometryids', (None, None))
         elif self.args.id == 'all':
             mesh = None
-            plantids = self.pop_alternate_output('plantids', None)
-            if plantids is None:
-                plantids = []
-            else:
-                plantids = [plantids]
-            plantid = self.args.plantid
-            x = self.args.x
-            y = self.args.y
-            for i, id in enumerate(self.all_ids):
-                print("IMESH", i, id)
-                imesh = cls.run_class(
-                    self, dont_reset_alternate_output=True,
-                    args_overwrite={
-                        'x': x, 'y': y, 'plantid': plantid,
-                        'id': id,
-                        'lpy_param': None,
-                    },
-                )
-                if i == 0:
-                    mesh = imesh
+            geometryids = []
+            components = None
+            per_iter = {
+                'x': self.args.x, 'y': self.args.y,
+                'plantid': self.args.plantid,
+            }
+            mesh = None
+            for x in self.run_series(self.args,
+                                     over={'id': self.all_ids},
+                                     per_iter=per_iter,
+                                     output_name='instance'):
+                if mesh is None:
+                    mesh = x.get_output('generate')
                 else:
-                    mesh.append(imesh)
-                x += self.args.row_spacing * (self.args.nrows + 2)
-                plantid += (self.args.nrows * self.args.ncols)
-                plantids.append(self.pop_alternate_output('plantids'))
+                    mesh.append(x.get_output('generate'))
+                per_iter['x'] += (
+                    x.args.row_spacing * (x.args.nrows + 2)
+                )
+                per_iter['plantid'] += (x.args.nrows * x.args.ncols)
+                icomponents, igeometryids = x.get_output('geometryids')
+                if components is None:
+                    components = icomponents
+                geometryids.append(igeometryids)
                 # TODO: Labels
-            self.add_alternate_output('plantids', np.hstack(plantids))
+            geometryids = {k: np.hstack([x[k] for x in geometryids])
+                           for k in geometryids[0].keys()}
+            self.set_output('generate', mesh)
+            self.set_output('geometryids', (components, geometryids))
         elif self.args.canopy == 'single':
-            mesh = cls._generate_single_plant(self)
+            self._generate_single_plant()
         else:
-            mesh = cls._generate_field(self)
-        return mesh
+            self._generate_field()
 
     def shift_mesh(self, mesh, x, y, plantid=None):
         r"""Shift a mesh.
@@ -1484,8 +1223,7 @@ class GenerateTask(LayoutTask):
         yo = y.to(self.args.mesh_units).value
         return utils.shift_mesh(mesh, xo, yo, plantid=plantid,
                                 axis_up=self.args.axis_up,
-                                axis_x=self.args.axis_rows,
-                                plantids_in_blue=self.args.plantids_in_blue)
+                                axis_x=self.args.axis_rows)
 
     def generate_single_plant(self, **kwargs):
         r"""Generate a 3D mesh for a single plant.
@@ -1499,14 +1237,10 @@ class GenerateTask(LayoutTask):
 
         """
         kwargs.setdefault('canopy', 'single')
-        return self.run_class(self, args_overwrite=kwargs)
+        return self.run_iteration(args_overwrite=kwargs)
 
-    @classmethod
-    def _generate_single_plant(cls, self):
+    def _generate_single_plant(self):
         r"""Generate a 3D mesh for a single plant.
-
-        Args:
-            self (object): Task instance that is running.
 
         Returns:
             ObjDict: Generated mesh.
@@ -1515,37 +1249,74 @@ class GenerateTask(LayoutTask):
         x = self.args.x
         y = self.args.y
         plantid = self.args.plantid
-        self.log(f'generate_single_plant: {x}, {y}, {plantid}', cls=cls)
+        self.log(f'generate_single_plant: {x}, {y}, {plantid}')
         if ((((x.value > 0) or (y.value > 0))
              and (plantid == 0 or self.args.save_all_plantids))):
-            mesh = self.shift_mesh(
-                cls.run_class(
-                    self, args_overwrite={'x': 0.0, 'y': 0.0},
-                ), x, y, plantid,
+            inst = self.run_iteration(
+                args_overwrite={'x': 0.0, 'y': 0.0},
+                output_name='instance',
             )
-            return mesh
-        self.lpy_param['RUNTIME_PARAM'].update(
-            seed=plantid,
-            verbose=self.args.verbose,
-            debug=self.args.debug,
-            debug_param=self.args.debug_param,
-            debug_param_prefix=self.args.debug_param_prefix,
-            no_class_defaults=True,
-        )
-        color = self.args.color
-        if self.args.color_str == 'plantids':
+            mesh = self.shift_mesh(
+                inst.get_output('generate'), x, y, plantid,
+            )
+            self.set_output(
+                'generate', self.shift_mesh(
+                    inst.get_output('generate'), x, y, plantid,
+                )
+            )
+            self.set_output(
+                'geometryids', inst.get_output('geometryids')
+            )
+            return
+        assert 'RUNTIME_PARAM' not in self.parameters
+        # derivation_length = self.args.derivation_length
+        # if derivation_length is None:
+        assert self.args.age is not None
+        if isinstance(self.args.age.crop_age_string, str):
+            age = ParametrizeCropTask.get_age_from_parameters(
+                self.args.age.crop_age_string, self.parameters)
+        else:
+            age = self.args.age.value
+        derivation_length = int(min(
+            self.parameters['NMax'] * self.parameters['Plastocron']
+            / self.parameters['AgeInc'],
+            age / self.parameters['AgeInc']
+        ))
+        lpy_param = {
+            'RUNTIME_PARAM': dict(
+                self.parameters,
+                seed=plantid,
+                verbose=self.args.verbose,
+                verbose_lpy=self.args.verbose_lpy,
+                debug=self.args.debug,
+                debug_param=self.args.debug_param,
+                debug_param_prefix=self.args.debug_param_prefix,
+                no_class_defaults=True,
+            ),
+            'OUTPUT_TIME': self.parameter_unit_system.convert(
+                age, strip=True,
+            ),
+            'DERIVATION_LENGTH': derivation_length,
+        }
+        if self.args.color.string == 'plantids':
             color = [0, 255, plantid]
-        lsys = Lsystem(self.args.lpy_input, self.lpy_param)
-        tree = lsys.axiom
-        for i in range(self.args.niter):
-            tree = lsys.iterate(tree, 1)
-        lsys_units = lsys.context().globals()['generator'].unit_system
+        elif self.args.color.string == 'componentids':
+            raise NotImplementedError
+        else:
+            color = self.args.color.value
+        lsys = Lsystem(self.output_file('lpy_model'), lpy_param)
+        tree = lsys.derive()
+        # print(f"LSTRING: {tree}")
+        generator = lsys.context().globals()['generator']
         scene = lsys.sceneInterpretation(tree)
+        lsys_units = generator.unit_system
+        components = {}
         mesh = utils.scene2geom(
             scene, self.args.mesh_format,
             axis_up=self.args.axis_up,
             axis_x=self.args.axis_rows,
             color=color,
+            components=components,
         )
         mesh = utils.scale_mesh(mesh, 1.0,
                                 from_units=lsys_units.length,
@@ -1556,8 +1327,18 @@ class GenerateTask(LayoutTask):
             )
         plantids = plantid * np.ones(
             (mesh.count_elements('face'), ), dtype=np.uint32)
-        self.add_alternate_output('plantids', plantids)
-        return mesh
+        componentids = np.zeros(
+            (mesh.count_elements('face'), ), dtype=np.uint32)
+        component_order = sorted(list(components.keys()))
+        for i, k in enumerate(component_order):
+            for prev, count in components[k]:
+                componentids[prev:(prev + count)] = i
+        self.set_output('generate', mesh)
+        self.set_output('geometryids', (
+            component_order, {
+                'plantids': plantids, 'componentids': componentids,
+            }
+        ))
 
     def generate_field(self, **kwargs):
         r"""Generate a 3D mesh for a field of plants.
@@ -1571,40 +1352,41 @@ class GenerateTask(LayoutTask):
 
         """
         kwargs.setdefault('canopy', 'unique')
-        return self.run_class(self, args_overwrite=kwargs)
+        return self.run_iteration(args_overwrite=kwargs)
 
-    @classmethod
-    def _generate_field(cls, self):
+    def _generate_field(self):
         r"""Generate a 3D mesh for a field of plants.
-
-        Args:
-            self (object): Task instance that is running.
 
         Returns:
             ObjDict: Generated mesh.
 
         """
+        self.get_parameters()
         x = self.args.x
         y = self.args.y
         plantid = self.args.plantid
-        plantids = self.pop_alternate_output('plantids', None)
-        if plantids is None:
-            plantids = []
-        else:
-            plantids = [plantids]
-        self.log(f'generate_field: {x}, {y}, {plantid}', cls=cls)
+        geometryids = []
+        components = None
+        self.log(f'generate_field: {x}, {y}, {plantid}')
         # Generate the unshifted field so it can be reused
         if x.value > 0 or y.value > 0 or plantid > 0:
-            mesh = self.shift_mesh(
-                cls.run_class(
-                    self, dont_reset_alternate_output=True,
-                    args_overwrite={'x': 0.0, 'y': 0.0, 'plantid': 0},
-                ), x, y, plantid,
+            inst = self.run_iteration(
+                output_name='instance',
+                args_overwrite={'x': 0.0, 'y': 0.0, 'plantid': 0},
             )
-            plantids.append(self.pop_alternate_output('plantids')
-                            + plantid)
-            self.add_alternate_output('plantids', np.hstack(plantids))
-            return mesh
+            mesh = self.shift_mesh(
+                inst.get_output('generate'), x, y, plantid,
+            )
+            icomponents, igeometryids = inst.get_output('geometryids')
+            if components is None:
+                components = icomponents
+            igeometryids['plantids'] += plantid
+            geometryids.append(igeometryids)
+            geometryids = {k: np.hstack([x[k] for x in geometryids])
+                           for k in geometryids[0].keys()}
+            self.set_output('generate', mesh)
+            self.set_output('geometryids', (components, geometryids))
+            return
 
         generator = np.random.default_rng(seed=plantid)
 
@@ -1616,35 +1398,42 @@ class GenerateTask(LayoutTask):
             )
 
         # First plant
-        mesh = cls.run_class(
-            self, dont_reset_alternate_output=True,
+        inst = self.run_iteration(
+            output_name='instance',
             args_overwrite={
                 'x': x, 'y': y, 'plantid': plantid,
                 'canopy': 'single', 'nrows': 1, 'ncols': 1,
             },
         )
-        plantids.append(self.pop_alternate_output('plantids'))
+        mesh = inst.get_output('generate')
+        icomponents, igeometryids = inst.get_output('geometryids')
+        if components is None:
+            components = icomponents
+        geometryids.append(igeometryids)
         plantid += 1
 
         # Remainder of field
         if self.args.canopy == 'unique':
+            inst_prev = inst
             for i in range(self.args.nrows):
                 ix = i * self.args.row_spacing
                 for j in range(self.args.ncols):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
-                    mesh.append(cls.run_class(
-                        self, dont_reset_alternate_output=True,
+                    inst = self.run_iteration(
+                        output_name='instance',
                         args_overwrite={
                             'x': ix + posdev(), 'y': iy + posdev(),
                             'plantid': plantid, 'canopy': 'single',
                             'nrows': 1, 'ncols': 1,
                         },
-                    ))
-                    plantids.append(
-                        self.pop_alternate_output('plantids'))
+                        copy_outputs_from=inst_prev,
+                    )
+                    mesh.append(inst.get_output('generate'))
+                    geometryids.append(inst.get_output('geometryids')[-1])
                     plantid += 1
+                    inst_prev = inst
         elif self.args.canopy == 'tile':
             mesh_single = type(mesh)(mesh)
             for i in range(self.args.nrows):
@@ -1659,17 +1448,17 @@ class GenerateTask(LayoutTask):
                             plantid=plantid,
                         )
                     )
-                    plantids.append(
-                        plantid
-                        * np.ones((mesh_single.count_elements('face'), ),
-                                  dtype=np.uint32)
-                    )
+                    igeometryids = copy.deepcopy(geometryids[0])
+                    igeometryids['plantids'][:] = plantid
+                    geometryids.append(igeometryids)
                     plantid += 1
         else:
             raise ValueError(
                 f"Unsupported canopy type: {self.args.canopy}")
-        self.add_alternate_output('plantids', np.hstack(plantids))
-        return mesh
+        geometryids = {k: np.hstack([x[k] for x in geometryids])
+                       for k in geometryids[0].keys()}
+        self.set_output('generate', mesh)
+        self.set_output('geometryids', (components, geometryids))
 
 
-__all__ = ["monocot", "maize"]
+__all__ = ["monocot", "maize", "dicot"]

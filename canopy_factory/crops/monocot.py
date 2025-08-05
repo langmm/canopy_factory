@@ -9,14 +9,18 @@ class MonocotGenerator(PlantGenerator):
 
     _plant_name = 'monocot'
     _components = {
-        'Leaf': {},
+        'Apex': {},
+        'Leaf': {
+            'defaults': {
+                'WMax': 1,
+            },
+        },
         'Internode': {},
+        'Node': {},
     }
     _defaults = dict(
         PlantGenerator._defaults,
-        AgeMature=20,
-        AgeSenesce=30,
-        NMax=20,
+        NMax=10,
         LeafMethod='sweep',
         LeafLength=60.0,
         LeafLengthRelStdDev=0.2,
@@ -28,7 +32,6 @@ class MonocotGenerator(PlantGenerator):
         LeafWidthXFuncIntercept=1.0,
         LeafThickness=0.1,  # relative to leaf width
         InternodeLength=0.0,
-        InternodeMethod='cylinder',
         InternodeWidth=1.0,
         InternodeWidthNFunc='linear',
         InternodeWidthNFuncSlope=-1.0,

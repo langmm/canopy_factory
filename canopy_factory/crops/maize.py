@@ -19,6 +19,7 @@ class MaizeGenerator(MonocotGenerator):
     _defaults = dict(
         MonocotGenerator._defaults,
         id='WT',
+        NMax=20,
         LeafAngle=90,
         LeafAngleRelStdDev=0.1,
         LeafAngleAgeFuncAgeMature=4.2,
@@ -26,12 +27,12 @@ class MaizeGenerator(MonocotGenerator):
         LeafAngleNFuncSlope=-0.4,
         LeafAngleNFuncIntercept=0.5,
         LeafAgeSenesce=27,
+        LeafAgeMature=6.3,
         LeafBend=1.0,
         LeafBendRelStdDev=0.1,
         LeafBendXFuncMethod='LeafBendX',
         LeafLength=60.0,
         LeafLengthRelStdDev=0.2,
-        LeafLengthAgeMature=6.3,
         LeafUnfurledLength=0.3,   # relative to leaf length
         LeafProfileCurveClosed=False,
         LeafProfileCurveSymmetry=[0],
@@ -57,14 +58,24 @@ class MaizeGenerator(MonocotGenerator):
             0.27, 0.30, 0.42, 0.73, 0.88, 1.0, 0.91, 0.76, 0.55, 0,
             # 0.09, 0.1, 0.14, 0.24, 0.29, 0.33, 0.3, 0.25, 0.18, 0
         ]),
-        InternodeAgeMature=1.0,
+        InternodeMethod='cylinder',
+        InternodeNDivide=10,
         InternodeLength=8.5,
         InternodeLengthRelStdDev=0.2,
+        # InternodeLengthAgeFunc='logistic',
+        # InternodeLengthAgeFuncXOffset=0.5,
+        # InternodeLengthAgeFuncYOffset=1.0,
+        # InternodeLengthAgeFuncAmplitude=(1 + np.exp(-1)),
+        InternodeWidthAgeFunc='one',
         InternodeWidthFuncExp=0.15,  # 1.5 in Cieslak
         InternodeWidthFuncVar='InternodeLength',
         InternodeWidthNFunc='linear',
         InternodeWidthNFuncSlope=-0.5,
         InternodeWidthNFuncIntercept=0.9,
+        InternodeAngle=0.0,
+        InternodeAngleStdDev=0.5,
+        InternodeAgeMature=1.0,
+        InternodeWidthXFuncSlopeAgeFuncAgeMature=8.0,
         InternodeRotationAngle=180,
         InternodeRotationAngleRelStdDev=0.1,
     )
@@ -141,7 +152,7 @@ class MaizeGenerator(MonocotGenerator):
                 param_values['RelStdDev'] = param_values.pop(
                     'StdDev') / param_values['Mean']
             for kdist, v in param_values.items():
-                if kunits is not None:
+                if kunits is not None and kdist != 'RelStdDev':
                     v = units.QuantityArray(v, kunits)
                 if profile != 'normal':
                     kdst = f'{kleaf}Dist{kdist}'
@@ -149,7 +160,7 @@ class MaizeGenerator(MonocotGenerator):
                     kdst = kleaf
                 else:
                     kdst = f'{kleaf}{kdist}'
-                out[f'{kdst}'] = 0.5 if p.title() == 'Width' else 1.0
+                out[f'{kdst}'] = 1.0
                 out[f'{kdst}NFunc'] = 'interp'
                 out[f'{kdst}NFuncXVals'] = nvals / nmax
                 out[f'{kdst}NFuncYVals'] = v

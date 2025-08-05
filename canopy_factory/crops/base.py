@@ -5,839 +5,21 @@ import functools
 import numpy as np
 import pandas as pd
 import scipy
+import uuid
 import contextlib
-from abc import abstractmethod
-from collections.abc import MutableMapping
 import openalea.plantgl.all as pgl
 import openalea.plantgl.math as pglmath
 from openalea.plantgl.math import Vector2, Vector3, Vector4
 from openalea.plantgl.scenegraph import (
     NurbsCurve2D, NurbsCurve, NurbsPatch)
 from yggdrasil import rapidjson
+from canopy_factory.cli import SubparserBase
 from canopy_factory.utils import (
-    RegisteredMetaClass, RegisteredClassBase, get_class_registry,
+    RegisteredMetaClass, get_class_registry,
     NoDefault, jsonschema2argument, format_list_for_help, UnitSet,
+    cached_property,
+    DictWrapper, DictSet, PrefixedDict, SimpleWrapper, temporary_prefix,
 )
-
-
-class ImmutableDictException(BaseException):
-    pass
-
-
-class DictWrapper(MutableMapping):
-    r"""Abstract base class for dictionary wrappers."""
-
-    def __init__(self, logger=None, logger_prefix=''):
-        self.logger = logger
-        self._logger_prefix = logger_prefix
-        self._original_keys = set(self.keys(raw=True))
-        # TODO: Remove this check
-        # allkeys = list(self.keys())
-        # if len(allkeys) != len(set(allkeys)):
-        #     pdb.set_trace()
-        # assert len(allkeys) == len(set(allkeys))
-
-    @property
-    @abstractmethod
-    def dest(self):
-        r"""DictWrapper: Destination dictionary for added keys."""
-        raise ImmutableDictException("Immutable")
-
-    @property
-    def mutable(self):
-        r"""bool: True if keys can be added to the dictionary."""
-        try:
-            self.dest
-            return True
-        except ImmutableDictException:
-            return False
-
-    @property
-    def flattened(self):
-        r"""dict: Flattened version of the members."""
-        return dict(self.items())
-
-    @property
-    def raw_flattened(self):
-        r"""dict: Copy of raw destination dictionary (with prefix)"""
-        return dict(self.items(raw=True))
-
-    def __repr__(self):
-        return self.flattened.__repr__()
-
-    def __len__(self):
-        return len(list(self._get_iterator()))
-
-    def __iter__(self):
-        for k, v in self._get_iterator():
-            yield k
-
-    def keys(self, raw=False):
-        r"""Wrapped dictionary keys with prefixes removed.
-
-        Args:
-            raw (bool, optional): If True, the raw dictionary keys will
-                be returned without the prefix removed.
-
-        Returns:
-            dict_keys: Keys view.
-
-        """
-        if not raw:
-            return super(DictWrapper, self).keys()
-        return [k for k, v in self._get_iterator(raw=raw)]
-
-    def items(self, raw=False):
-        r"""Wrapped dictionary items with prefixes removed from keys.
-
-        Args:
-            raw (bool, optional): If True, the raw dictionary items will
-                be returned without the prefix removed.
-
-        Returns:
-            dict_items: Items view.
-
-        """
-        if not raw:
-            return super(DictWrapper, self).items()
-        return [x for x in self._get_iterator(raw=raw)]
-
-    def setdefault(self, k, v):
-        if k in self:
-            return
-        self[k] = v
-
-    @property
-    def added(self):
-        r"""set: Keys added to the dictionary."""
-        return set(self.keys()) - self._original_keys
-
-    @property
-    def removed(self):
-        r"""set: Keys removed from the dictionary."""
-        return self._original_keys - set(self.keys())
-
-    @classmethod
-    def select_keys(cls, x, prefix=''):
-        return {
-            k: copy.deepcopy(v) for k, v in x.items()
-            if (not prefix) or k.startswith(prefix)
-        }
-
-    @classmethod
-    def remove_prefixed_keys(cls, x, prefix):
-        for k in list(x.keys()):
-            if k.startswith(prefix):
-                del x[k]
-
-    def _forward_key(self, k):
-        return k
-
-    def _reverse_key(self, k):
-        return k
-
-    def copy_src2dst(self, kdst, ksrc=NoDefault, overwrite=False):
-        r"""Copy a key/value pair from the source dictionary to the
-        destination dictionary if it is present in the source dictionary
-        and not present in the destination dictionary.
-
-        Args:
-            kdst (str): Key that should be assigned to in the destination.
-            ksrc (str, optional): Key that should be copyied from the
-                source dictionary. If not provided, kdst is used.
-            overwrite (bool, optional): If True, overwrite any existing
-                value in the destination dictionary.
-
-        """
-        if ksrc == NoDefault:
-            ksrc = kdst
-        val = NoDefault
-        if ksrc in self:
-            val = self[ksrc]
-        elif kdst in self:
-            val = self[kdst]
-        kdst_raw = self._forward_key(kdst)
-        if (overwrite or kdst_raw not in self.dest) and val is not NoDefault:
-            self.dest[kdst_raw] = val
-
-    def remove_cond(self, fcond):
-        r"""Remove key/value pairs from this dictionary based on the
-        value of a provided function.
-
-        Args:
-            fcond (callable): Function that takes a single raw key/value
-                pair and returns True when the pair should be removed.
-
-        """
-        for k, v in list(self.items(raw=True)):
-            if not fcond(k, v):
-                del self[self._reverse_key(k)]
-
-    def select_cond(self, fcond, transform=False, deepcopy=False):
-        r"""Create a new PrefixedDict instance that only includes
-        key/value pairs selected by the provided function.
-
-        Args:
-            fcond (callable): Selection function that takes a single
-                key/value pair and returns True or False to indicate
-                if the pair is selected.
-            transform (bool, callable, optional): A function that should
-                be used to transform raw keys for inclusion in the
-                returned dictionary. If True, self._reverse_key will be
-                used.
-            deepcopy (bool, optional): If True, deepcopy values.
-
-        Returns:
-            dict: Dictionary containing selected members.
-
-        """
-        if transform is True:
-            transform = self._reverse_key
-        wrapped = {}
-        for k, v in self.items(raw=True):
-            if fcond(k, v):
-                kx = transform(k) if transform else k
-                if deepcopy:
-                    wrapped[kx] = copy.deepcopy(v)
-                else:
-                    wrapped[kx] = v
-        return wrapped
-
-    def remove_prefix(self, prefix, **kwargs):
-        r"""Remove keys that start with the provided prefix.
-
-        Args:
-            prefix (str): Prefix to remove keys with.
-            **kwargs: Additional keyword arguments are passed to
-                remove_cond.
-
-        """
-
-        def fcond(k, v):
-            return ((not prefix) or k.startswith(prefix))
-
-        self.remove_cond(fcond, **kwargs)
-
-    def select_prefix(self, prefix, strip=False, **kwargs):
-        r"""Create a new PrefixedDict instance that only includes keys
-        that start with a given prefix.
-
-        Args:
-            prefix (str): Prefix to filter on.
-            strip (bool, optional): If True, the prefix should be
-                stripped in the returned dictionary.
-            **kwargs: Additional keyword arguments are passed to
-                select_cond.
-
-        Returns:
-            dict: Dictionary containing selected members.
-
-        """
-
-        def fcond(k, v):
-            return ((not prefix) or k.startswith(prefix))
-
-        def fstrip(k):
-            if not prefix:
-                return k
-            return k.split(prefix, 1)[-1]
-
-        if strip:
-            assert 'transform' not in kwargs
-            kwargs['transform'] = fstrip
-        return self.select_cond(fcond, **kwargs)
-
-    def strip_prefix(self, prefix, keys=None):
-        r"""Remove a prefix from keys in the dictionary.
-
-        Args:
-            prefix (str): Prefix to strip.
-            keys (list, optional): Set of keys to remove the prefix from.
-                If not provided, all keys will be used and an error will
-                be raised if any keys do not start with the prefix.
-
-        """
-        if not prefix:
-            return
-        if keys is None:
-            keys = list(self.keys())
-        for k in keys:
-            if not k.startswith(prefix):
-                raise KeyError(f"Key \"{k}\" does not "
-                               f"start with prefix \"{prefix}\"")
-            ky = k.split(prefix, 1)[-1]
-            self[ky] = self.pop(k)
-
-    def update_missing(self, other):
-        r"""Update the dictionary only will values that are not present.
-
-        Args:
-            other (dict): Values to update the dictionary with.
-
-        """
-        for k, v in other.items():
-            self.setdefault(k, v)
-
-    @classmethod
-    def coerce(cls, x, **kwargs):
-        r"""Coerce an object to be a DictWrapper compatible instance.
-
-        Args:
-            x (dict, DictWrapper, tuple, list): Object that can be
-                interpreted as a DictWrapper instance.
-            **kwargs: Additional keyword arguments are passed to the
-                constructor for the interpreted instance.
-
-        Returns:
-            DictWrapper: Coerced instance.
-
-        """
-        if isinstance(x, tuple):
-            assert len(x) == 2
-            return PrefixedDict(x, **kwargs)
-        elif isinstance(x, list):
-            x = DictSet(x)
-        if isinstance(x, (dict, DictWrapper)):
-            if kwargs:
-                return PrefixedDict(x, **kwargs)
-            return x
-        raise TypeError(type(x))
-
-    @abstractmethod
-    def _get_iterator(self, raw=False, prev=None):
-        r"""Yields member key/item pairs.
-
-        Args:
-            raw (bool, optional): If True, raw keys should be yielded.
-            prev (list, optional): Set of keys already yielded.
-
-        Yields:
-            tuple: Member items.
-
-        """
-        raise NotImplementedError
-
-    @contextlib.contextmanager
-    def temporary_prefix(self, prefix, append=False, report_change=False):
-        r"""Temporarily set a prefix for the dictionary with the context.
-        When the context exits, any previous prefix will be restored and
-        any added parameters will be maintained.
-
-        Args:
-            prefix (str): Prefix to use within the context.
-            append (bool, optional): If True, the prefix should be
-                appended to the end of the current prefix.
-            report_change (str, bool, optional): If True, changes
-                that occur in the context will be reported. If a string
-                is provided, it will be used as a prefix for the log
-                message.
-
-        Yields:
-            DictWrapper: View of the dictionary with the provided prefix.
-
-        """
-        assert not append
-        if report_change is True:
-            report_change = ''
-        if isinstance(report_change, str):
-            cm = self.report_change(prefix=report_change)
-        else:
-            cm = contextlib.nullcontext()
-        with cm:
-            yield PrefixedDict(self, prefix=prefix)
-
-    @classmethod
-    def assert_keys_match(cls, x, keys0, logger=None):
-        if not list(x.keys()) == keys0:
-            message = (
-                f'ADDED:   {set(x.keys()) - set(keys0)}\n'
-                f'REMOVED: {set(keys0) - set(x.keys())}'
-            )
-            if logger:
-                logger.log(message, force=True)
-            else:
-                print(message)
-            pdb.set_trace()
-        assert list(x.keys()) == keys0
-
-    @property
-    def logger_prefix(self):
-        r"""str: Prefix for log messages."""
-        return self._logger_prefix
-
-    def report_diff(self, keys0, keys1, prefix='', suffix=''):
-        r"""Report on a difference between two key sets.
-
-        Args:
-            keys0 (set): Set of keys from a prior state.
-            keys1 (set): Set of keys from a state after keys0.
-            prefix (str, optional): Prefix for report message.
-            suffix (str, optional): Suffix for report message.
-
-        """
-        added = keys1 - keys0
-        removed = keys0 - keys1
-        msg = ''
-        if added:
-            msg += f'ADDED {added}.'
-        if removed:
-            msg += ' ' if added else ''
-            msg += f'REMOVED {removed}.'
-        if not (added or removed):
-            msg += 'NO CHANGE'
-            return
-        self.logger.log(f'{self.logger_prefix}[{self.prefix}]: '
-                        f'{prefix}{msg}{suffix}')
-
-    @contextlib.contextmanager
-    def report_change(self, prefix='', suffix='',
-                      assert_no_change=False, **kwargs):
-        r"""Report on how the dictionary changed within the context.
-
-        Args:
-            prefix (str, optional): Prefix for report message.
-            suffix (str, optional): Suffix for report message.
-            assert_no_change (bool, optional): If True, assert that the
-                keys did not change.
-            **kwargs: Additional keyword arguments are passed to the
-                keys method to get the set of keys before & after the
-                context.
-
-        """
-        kwargs.setdefault('raw', True)
-        keys0 = set(self.keys(**kwargs))
-        try:
-            yield
-        finally:
-            keys1 = set(self.keys(**kwargs))
-            if assert_no_change:
-                assert keys0 == keys1
-            self.report_diff(keys0, keys1, prefix=prefix, suffix=suffix)
-
-
-pprint.PrettyPrinter._dispatch[DictWrapper.__repr__] = (
-    pprint.PrettyPrinter._pprint_dict
-)
-
-
-class PrefixedDict(DictWrapper):
-    r"""Dictionary wrapper that allows for adding a prefix to keys when
-    accessing the wrapped dictionary.
-
-    Args:
-        wrapped (dict): Wrapped dictionary.
-        prefix (str, optional): Prefix to add to keys.
-        immutable (bool, optional): If True, the dictionary should not
-            be modified.
-        **kwargs: Additional keyword arguments are passed to the parent
-            constructor.
-
-    """
-
-    def __init__(self, wrapped, prefix=None, immutable=False, **kwargs):
-        if wrapped is None:
-            wrapped = {}
-        if isinstance(wrapped, tuple):
-            if prefix is None:
-                prefix = wrapped[0]
-                wrapped = wrapped[1]
-            else:
-                wrapped = PrefixedDict(wrapped[1], prefix=wrapped[0])
-        if prefix is None:
-            prefix = ''
-        self._wrapped = wrapped
-        self._immutable = immutable
-        self.prefix = prefix
-        super(PrefixedDict, self).__init__(**kwargs)
-
-    @property
-    def logger_prefix(self):
-        r"""str: Prefix for log messages."""
-        return f'{self._logger_prefix}[{self.prefix}]'
-
-    @property
-    def dest(self):
-        r"""DictWrapper: Destination dictionary for added keys."""
-        if self._immutable:
-            raise ImmutableDictException("Immutable")
-        return self._wrapped
-
-    def _get_iterator(self, raw=False, prev=None):
-        r"""Yields member key/item pairs.
-
-        Args:
-            raw (bool, optional): If True, raw keys should be yielded.
-            prev (list, optional): Set of keys already yielded.
-
-        Yields:
-            tuple: Member items.
-
-        """
-        if prev is None:
-            prev = []
-        for k, v in self._wrapped.items():
-            try:
-                kx = self._reverse_key(k)
-            except KeyError:
-                continue
-            if kx in prev:
-                continue
-            if raw:
-                yield (k, v)
-            else:
-                yield (kx, v)
-            prev.append(kx)
-
-    def _forward_key(self, k):
-        if not self.prefix:
-            return k
-        return f'{self.prefix}{k}'
-
-    def _reverse_key(self, k):
-        if not self.prefix:
-            return k
-        if not k.startswith(self.prefix):
-            raise KeyError(f'Key \"{k}\" does not start with prefix '
-                           f'\"{self.prefix}\"')
-        try:
-            assert k.startswith(self.prefix)
-        except AssertionError:
-            print(k, self.prefix)
-            pdb.set_trace()
-            raise
-        return k.split(self.prefix, 1)[-1]
-
-    def __getitem__(self, k):
-        return self._wrapped[self._forward_key(k)]
-
-    def __setitem__(self, k, v):
-        self.dest[self._forward_key(k)] = v
-
-    def __delitem__(self, k):
-        del self.dest[self._forward_key(k)]
-        assert k not in self
-
-    def select_prefix(self, prefix=None, strip=False, **kwargs):
-        r"""Create a new PrefixedDict instance that only includes keys
-        that start with a given prefix.
-
-        Args:
-            prefix (str, optional): Prefix to filter on. If not provided,
-                the prefix for the target will be used.
-            strip (bool, optional): If True, the prefix should be
-                stripped in the returned dictionary.
-            **kwargs: Additional keyword arguments are passed to the
-                parent method.
-
-        Returns:
-            PrefixedDict: Dictionary containing selected members.
-
-        """
-        if prefix is None:
-            prefix = self.prefix
-        out = super(PrefixedDict, self).select_prefix(prefix, **kwargs)
-        out_prefix = prefix if not kwargs.get('strip', False) else ''
-        return PrefixedDict(out, prefix=out_prefix)
-
-    @contextlib.contextmanager
-    def temporary_prefix(self, prefix, append=False, report_change=False):
-        r"""Temporarily set a prefix for the dictionary with the context.
-        When the context exits, any previous prefix will be restored and
-        any added parameters will be maintained.
-
-        Args:
-            prefix (str): Prefix to use within the context.
-            append (bool, optional): If True, the prefix should be
-                appended to the end of the current prefix.
-            report_change (str, bool, optional): If True, changes
-                that occur in the context will be reported. If a string
-                is provided, it will be used as a prefix for the log
-                message.
-
-        Yields:
-            DictWrapper: View of the dictionary with the provided prefix.
-
-        """
-        # if isinstance(self._wrapped, DictWrapper) and not self.prefix:
-        #     old_wrapped = self._wrapped
-        #     with (self._wrapped.temporary_prefix(prefix, append=append)
-        #           as new_wrapped):
-        #         self._wrapped = new_wrapped
-        #         try:
-        #             yield self
-        #         finally:
-        #             self._wrapped = old_wrapped
-        #     return
-        if append:
-            prefix = self.prefix + prefix
-        if report_change is True:
-            report_change = ''
-        if isinstance(report_change, str):
-            cm = self.report_change(prefix=report_change)
-        else:
-            cm = contextlib.nullcontext()
-        old_prefix = self.prefix
-        with cm:
-            self.prefix = prefix
-            try:
-                yield self
-            finally:
-                self.prefix = old_prefix
-
-    # Methods for nested DictSet
-    @property
-    def members(self):
-        r"""list: Members of the wrapped dictionary. Only valid if
-        the wrapped dictionary is a DictSet."""
-        return self._wrapped.members
-
-    @members.setter
-    def members(self, x):
-        self._wrapped.members = x
-
-    def insert(self, idx, member, add_prefix=False, **kwargs):
-        r"""Add a new member to the set.
-
-        Args:
-            idx (index): Index to insert the new member add.
-            member (dict): New member.
-            add_prefix (str, bool, optional): Prefix that should be added
-                to the keys in x. If True, the current prefix should be
-                added.
-            **kwargs: Additional keyword arguments are passed to
-                coerce_member.
-
-        """
-        if add_prefix is True:
-            add_prefix = self.prefix
-        return self._wrapped.insert(idx, member, add_prefix=add_prefix,
-                                    **kwargs)
-
-    def append(self, member, add_prefix=False, **kwargs):
-        r"""Add a new member to the end of the set.
-
-        Args:
-            member (dict): New member.
-            add_prefix (str, bool, optional): Prefix that should be added
-                to the keys in x. If True, the current prefix should be
-                added.
-            **kwargs: Additional keyword arguments are passed to
-                coerce_member.
-
-        """
-        if add_prefix is True:
-            add_prefix = self.prefix
-        return self._wrapped.append(member, add_prefix=add_prefix,
-                                    **kwargs)
-
-
-@contextlib.contextmanager
-def temporary_prefix(x, prefix, **kwargs):
-    r"""Create a wrapper around a dictionary with a temporary prefix that
-    should be added when accessing dictionary elements.
-
-    Args:
-        x (dict, DictWrapper): Dictionary to wrap with a prefix.
-        prefix (str): Prefix to use within the context.
-        **kwargs: Additional keyword arguments are passed to the
-            temporary_prefix PrefixedDict method.
-
-    Yields:
-        PrefixedDict: Dictionary with prefix wrapper.
-
-    """
-    if not isinstance(x, DictWrapper):
-        x = PrefixedDict(x)
-    with x.temporary_prefix(prefix, **kwargs):
-        yield x
-
-
-class DictSet(DictWrapper):
-    r"""Container for chaining multiple dictionaries.
-
-    Args:
-        members (list): Set of dictionaries that should be accessed in
-            the order provided.
-        **kwargs: Additional keyword arguments are passed to the parent
-            constructor.
-
-    """
-
-    def __init__(self, members, **kwargs):
-        assert isinstance(members, list)
-        self.members = []
-        for x in members:
-            self.append(x)
-        super(DictSet, self).__init__(**kwargs)
-
-    @classmethod
-    def coerce_member(cls, x, add_prefix=False, **kwargs):
-        r"""Coerce an object to a DictWrapper instance.
-
-        Args:
-            x (object): Dictionary-like object.
-            add_prefix (str, optional): Prefix that should be added to the
-                keys in x.
-            **kwargs: Additional keyword arguments are passed to
-                DictWrapper.coerce.
-
-        """
-        if add_prefix:
-            assert isinstance(x, dict)
-            x = {add_prefix + k: v for k, v in x.items()}
-        if isinstance(x, DictWrapper) and not kwargs:
-            return x
-        kwargs.setdefault('immutable', True)
-        return DictWrapper.coerce(x, **kwargs)
-
-    @property
-    def dest(self):
-        r"""DictWrapper: Destination dictionary for added keys."""
-        for x in self.members:
-            if x.mutable:
-                return x
-        raise ImmutableDictException("No immutable members")
-
-    def __getitem__(self, k):
-        for x in self.members:
-            if k in x:
-                return x[k]
-        raise KeyError(k)
-
-    def __setitem__(self, k, v):
-        dest = self.dest
-        for x in self.members:
-            if x is dest:
-                dest[k] = v
-                return
-            if k in x:
-                raise ImmutableDictException(
-                    f'Setting \"{k}\" will not change the contents as '
-                    f'it is present in an immutable member proceeding '
-                    f'the first mutable member'
-                )
-
-    def __delitem__(self, k):
-        for x in self.members:
-            if k not in x:
-                continue
-            if not x.mutable:
-                raise ImmutableDictException(
-                    f'Cannot delete \"{k}\". It is present in an '
-                    f'immutable member.'
-                )
-            del x[k]
-
-    def __iter__(self):
-        prev = []
-        for x in self.members:
-            for k, v in x.items():
-                if k in prev:
-                    continue
-                yield k
-                prev.append(k)
-
-    def _get_iterator(self, raw=False, prev=None):
-        if prev is None:
-            prev = []
-        for x in self.members:
-            for k, v in x._get_iterator(raw=raw, prev=prev):
-                yield (k, v)
-
-    @contextlib.contextmanager
-    def temporary_prefix(self, prefix, per_member=False, **kwargs):
-        r"""Temporarily set a prefix for the dictionary with the context.
-        When the context exits, any previous prefix will be restored and
-        any added parameters will be maintained.
-
-        Args:
-            prefix (str): Prefix to use within the context.
-            per_member (bool, optional): If True, add prefixes on a
-                member-by-member basis.
-            **kwargs: Additional keyword arguments are passed to
-                temporary_prefix for each member if per_member is True,
-                and the parent method otherwise.
-
-        Yields:
-            DictWrapper: View of the dictionary with the provided prefix.
-
-        """
-        if not per_member:
-            with super(DictSet, self).temporary_prefix(
-                    prefix, **kwargs) as child:
-                yield child
-            return
-        with contextlib.ExitStack() as stack:
-            for x in self.members:
-                stack.enter_context(x.temporary_prefix(prefix, **kwargs))
-            yield self
-
-    def insert(self, idx, member, **kwargs):
-        r"""Add a new member to the set.
-
-        Args:
-            idx (index): Index to insert the new member add.
-            member (dict): New member.
-            **kwargs: Additional keyword arguments are passed to
-                coerce_member.
-
-        """
-        self.members.insert(idx, self.coerce_member(member, **kwargs))
-
-    def append(self, member, **kwargs):
-        r"""Add a new member to the end of the set.
-
-        Args:
-            member (dict): New member.
-            **kwargs: Additional keyword arguments are passed to
-                coerce_member.
-
-        """
-        self.members.append(self.coerce_member(member, **kwargs))
-
-
-# class SplitDict(DictSet):
-#     r"""Dictionary where updates are made to a separate destination
-#     dictionary.
-
-#     Args:
-#         src (dict): Dictionary that keys should be drawn from.
-#         dst (dict): Dictionary that assignment should be performed on.
-#             If not provided, assignment will be to src, but with the
-#             provided dst_prefix string as a prefix. If True, a new
-#             destination dictionary will be created and populated with all
-#             of the keys from src. If False, assignment will not be
-#             allowed.
-
-#     """
-
-#     def __init__(self, src, dst=None, src_prefix=None, dst_prefix=None):
-#         if dst_prefix is None:
-#             dst_prefix
-#         src = PrefixedDict(src, prefix=src_prefix, immutable=True)
-#         if dst_prefix is None and dst is not False:
-#             dst_prefix = src.prefix
-#         if dst is None:
-#             dst = PrefixedDict(src, prefix=dst_prefix)
-#         elif dst is True:
-#             dst = PrefixedDict(
-#                 {
-#                     k: v for k, v in src._get_iterator(raw=True)
-#                     if k.startswith(dst_prefix)
-#                 },
-#                 prefix=dst_prefix,
-#             )
-#         self._src = src
-#         self._dst = dst
-#         members = [x for x in [dst, src] if x is not False]
-#         super(SplitDict, self).__init__(members)
-
-#     @property
-#     def dest(self):
-#         r"""DictWrapper: Destination dictionary for added keys."""
-#         if self._dst is False:
-#             raise ImmutableDictException("No destination provided")
-#         return self._dst
 
 
 ############################################################
@@ -847,7 +29,7 @@ class DictSet(DictWrapper):
 ############################################################
 
 
-class PlantParameterBase(RegisteredClassBase):
+class PlantParameterBase(SubparserBase):
     r"""Base class for managing architecture parameters."""
 
     _registry_key = 'plant_parameter'
@@ -855,15 +37,6 @@ class PlantParameterBase(RegisteredClassBase):
     _defaults = {}
     _property_dependencies = {}
     _property_dependencies_defaults = {}
-    _length_parameters = [
-        'Length', 'Width', 'Thickness',
-    ]
-    _area_parameters = [
-        'Area',
-    ]
-    _angle_parameters = [
-        'Angle',
-    ]
     _unit_dimension = None
 
     @staticmethod
@@ -909,12 +82,16 @@ class PlantParameterBase(RegisteredClassBase):
     def _property2argument(cls, dst, name, k, json,
                            dependencies=None, parents=None, **kws):
         kname = name if name.endswith(k) else name + k
-        kwargs = jsonschema2argument(json)
-        if kname in dst._defaults:
-            kwargs['default'] = dst._defaults[kname]
+        kwargs = jsonschema2argument(json, no_defaults=True)
+        # if kname in dst._defaults:
+        #     kwargs['default'] = dst._defaults[kname]
+        # else:
+        #     kwargs.pop('default', None)
         if 'help' not in kwargs and cls._help:
             kwargs['help'] = cls._help
         kwargs.update(**kws)
+        assert 'default' not in kwargs
+        # kwargs.pop('default', None)
         dependencies = cls._get_property_dependencies(
             k, prefix=name, existing=dependencies,
         )
@@ -997,6 +174,29 @@ class PlantParameterBase(RegisteredClassBase):
         return out
 
 
+def schema2parameter(name, schema):
+    r"""Convert a schema into a parameter class.
+
+    Args:
+        name (str): Name of the schema the property belongs to.
+        schema (dict): JSON schema.
+
+    Returns:
+        type: Specialized plant parameter class.
+
+    """
+    spec_name = f"{name}_{schema['type']}"
+    kws = {}
+    if 'default' in schema:
+        kws['defaults'] = {'': schema['default']}
+    if 'description' in schema:
+        kws['_help'] = schema['description']
+    cls = get_class_registry().get('plant_parameter', schema['type'])
+    if kws:
+        cls = cls.specialize(spec_name, **kws)
+    return cls
+
+
 def DelayedPlantParameter(name, **kwargs):
     r"""Class factory for creating a plant parameter class on
     registration.
@@ -1018,7 +218,6 @@ def DelayedPlantParameter(name, **kwargs):
         cls = get_class_registry().get('plant_parameter', name)
         if spec_name is not None:
             cls = cls.specialize(spec_name, **kwargs)
-            # TODO: Prevent duplication?
         return cls
 
     class DelayedPlantParameterMeta(type):
@@ -1033,6 +232,121 @@ def DelayedPlantParameter(name, **kwargs):
         pass
 
     return _DelayedPlantParameter
+
+
+class ParameterValues(DictSet):
+    r"""Class for managing a set of finalized parameter values.
+
+    Args:
+        instance (PlantParameterBase): Instance responsible for
+            generating a parameter from the member parameters.
+
+    """
+
+    def __init__(self, instance):
+        self.instance = instance
+        self.index = instance.cache.index
+        self.cache = PrefixedDict(instance.cache,
+                                  prefix=instance.fullname,
+                                  immutable=True)
+        self.simple = PrefixedDict({})
+        self.nested = PrefixedDict({})
+        self.local = DictSet([self.simple, self.nested])
+        members = [
+            self.instance._constants,
+            self.local,
+        ]
+        super(ParameterValues, self).__init__(members)
+
+    @property
+    def dest(self):
+        r"""DictWrapper: Destination dictionary for added keys."""
+        return self.simple
+
+    def clear(self):
+        r"""Clear the set parameters."""
+        self.simple.clear()
+        self.nested.clear()
+
+    def __setitem__(self, k, v):
+        if isinstance(v, PlantParameterBase):
+            self.nested[k] = v
+        else:
+            self.simple[k] = v
+
+    @property
+    def current_param(self):
+        r"""str: Current parameter being generated."""
+        return self.instance.current_param
+
+    def get(self, k, default=NoDefault, return_other=None, **kwargs):
+        r"""Get a parameter value.
+
+        Args:
+            k (str): Name of parameter to return, without any prefixes.
+            default (object, optional): Default to return if the
+                parameter is not set.
+            return_other (str, optional): Name of what should be
+                returned instead of the parameter value.
+            **kwargs: Additional keyword arguments are passed to any
+                nested calls to get or generate.
+
+        Returns:
+            object: Parameter value.
+
+        """
+        if k in ParameterIndex.parameter_names:
+            v = self.index[k]
+            if v is None:
+                if default is NoDefault:
+                    raise KeyError(f'Null index parameter \"{k}\"')
+                v = default
+            return v
+        v = NoDefault
+        if return_other not in [None, 'instance']:
+            v = self.get(k, default=default, return_other='instance',
+                         **kwargs)
+            if isinstance(v, PlantParameterBase):
+                v = getattr(v, return_other)
+            return v
+        try:
+            if k == '' and self.current_param != self.instance.fullname:
+                v = self.instance
+            else:
+                v = self[k]
+        except KeyError:
+            if v is NoDefault and k in self.instance.component_parameters:
+                try:
+                    v = self.instance.component.get(
+                        k, return_other=return_other, **kwargs)
+                except KeyError:
+                    pass
+            if v is NoDefault and k in self.instance.external_parameters:
+                if k in self.instance.component.parameters:
+                    src = self.instance.component
+                else:
+                    src = self.instance.root
+                try:
+                    v = src.get(k, return_other='instance')
+                except KeyError:
+                    pass
+            if v is NoDefault:
+                for kk, vv in self.nested.items():
+                    if vv.prefixes(k):
+                        v = vv.get(
+                            vv.remove_prefix(k), return_other='instance')
+                        break
+            if v is NoDefault:
+                if default is NoDefault:
+                    raise KeyError(k)
+                v = default
+        if isinstance(v, PlantParameterBase) and return_other != 'instance':
+            if not v.initialized:
+                self.error(KeyError, f"Parameter not initialized \"{k}\"")
+            v = v.generate(**kwargs)
+        elif kwargs:
+            raise AssertionError(f"Kwargs unused: {kwargs}")
+        return v
 
 
 class ParameterDict(DictSet):
@@ -1116,10 +430,9 @@ class ParameterDict(DictSet):
                     self.defaults.append(cls._defaults, add_prefix=True,
                                          logger=self.logger)
                 if getattr(cls, 'parameters', None):
-                    self.previous.append(cls.parameters, add_prefix=True,
+                    self.previous.append(cls.parameters.local,
+                                         add_prefix=True,
                                          logger=self.logger)
-                self.copy_external_properties(cls)
-                self.copy_component_properties(cls)
                 self.add_property_dependency_defaults(cls)
                 cls.add_class_defaults(self)
                 yield self
@@ -1170,9 +483,16 @@ class ParameterDict(DictSet):
         """
         if not cls._external_properties:
             return
+        missing = []
+        for k in cls._external_properties:
+            self.copy_src2dst(k)
+            if k not in self:
+                missing.append(k)
+        if not missing:
+            return
         with self.temporary_source_prefix(
                 '', report_change='External properties: '):
-            for k in cls._external_properties:
+            for k in missing:
                 self.copy_src2dst(k)
 
     def copy_component_properties(self, cls):
@@ -1186,9 +506,16 @@ class ParameterDict(DictSet):
         component = self.component
         if not (isinstance(component, str) and cls._component_properties):
             return
+        missing = []
+        for k in cls._component_properties:
+            self.copy_src2dst(k)
+            if k not in self:
+                missing.append(k)
+        if not missing:
+            return
         with self.temporary_source_prefix(
                 '', report_change='Component properties: '):
-            for k in cls._component_properties:
+            for k in missing:
                 self.copy_src2dst(k, f'{component}{k}')
 
     @property
@@ -1196,7 +523,210 @@ class ParameterDict(DictSet):
         r"""dict: Parameters with the current prefix."""
         # TODO: Remove keys based on property dependencies?
         out = self.select_prefix(self.prefix, strip=True)
+        out = PrefixedDict(out)
         return out
+
+
+class ParameterCache(SimpleWrapper):
+    r"""Container for a cache of calculated parameters.
+
+    Attributes:
+         param (str): Name of parameter being generated.
+         index (ParameterIndex): Index parameters are being generated for.
+
+    """
+
+    def __init__(self):
+        self.param = None
+        self.index = ParameterIndex()
+        self._index_stack = []
+        self._param_stack = []
+        super(ParameterCache, self).__init__()
+
+    def push_index(self, idx):
+        r"""Update the index, pushing the current index onto the stack.
+
+        Args:
+            idx (ParameterIndex): New index.
+
+        """
+        self._index_stack.append(self.index.__copy__())
+        self.index.update(**idx)
+
+    def pop_index(self):
+        r"""Revert the index to the last index in the stack, discarding
+        the current index.
+
+        Returns:
+            ParameterIndex: Index replaced by the last index in the
+                stack.
+
+        """
+        out = self.index.__copy__()
+        self.index.update(**self._index_stack.pop())
+        return out
+
+    def push_param(self, param):
+        r"""Update the parameter name, pushing the current parameter name
+        onto the stack.
+
+        Args:
+            param (str): New parameter.
+
+        """
+        self._param_stack.append(self.param)
+        self.param = param
+
+    def pop_param(self):
+        r"""Revert the parameter name to the last name in the stack,
+        discarding the current name.
+
+        Returns:
+            str: Parameter name replaced by the last name in the stack.
+
+        """
+        out = self.param
+        self.param = self._param_stack.pop()
+        return out
+
+    @contextlib.contextmanager
+    def temporary_index(self, idx):
+        r"""Context with an updated index.
+
+        Args:
+            idx (ParameterIndex): New index to use within the context.
+
+        """
+        self.push_index(idx)
+        try:
+            yield
+        finally:
+            self.pop_index()
+
+    @contextlib.contextmanager
+    def temporary_param(self, param, idx=None):
+        r"""Context with an updated parameter name.
+
+        Args:
+            param (str): New parameter name to use within the context.
+            idx (ParameterIndex, optioinal): New index to use within the
+                context.
+
+        """
+        self.push_param(param)
+        if idx is not None:
+            self.push_index(idx)
+        try:
+            yield
+        finally:
+            self.pop_param()
+            if idx is not None:
+                self.pop_index()
+
+    def _forward_key(self, k):
+        return (k, self.index)
+
+    def _reverse_key(self, k):
+        return k[0]
+
+
+class ParameterIndex(SimpleWrapper):
+    r"""Container for index variables.
+
+    Args:
+        time (float, units.Quantity): Time since planting.
+        age (float, units.Quantity): Age.
+        n (int): Phytomer number.
+        x (float): Distance along current component.
+        w (int): Index within component whorl.
+        unit_system (, optional): Unit system that should be used.
+
+    ClassAttributes:
+        parameter_names (list): Variables that are used by the index.
+
+    """
+
+    universal_param = ['Time', 'Age', 'N']
+    parameter_names = ['Time', 'Age', 'N', 'X', 'W']
+    parameter_names_units = {
+        'Time': 'time',
+        'Age': 'time',
+    }
+
+    def __init__(self, *args, **kwargs):
+        unit_system = kwargs.pop('unit_system', None)
+        wrapped = {}
+        for k, v in zip(self.parameter_names, args):
+            wrapped[k] = v
+        for k in self.parameter_names[len(args):]:
+            wrapped[k] = kwargs.pop(k.lower(), None)
+        for k in self.parameter_names:
+            if isinstance(wrapped[k], tuple):
+                wrapped[k] = rapidjson.units.Quantity(*wrapped[k])
+        for k, kunit in self.parameter_names_units.items():
+            if ((wrapped[k] is not None and unit_system is not None
+                 and not isinstance(wrapped[k], rapidjson.units.Quantity))):
+                wrapped[k] = rapidjson.units.Quantity(
+                    wrapped[k], getattr(unit_system, kunit))
+        if kwargs:
+            raise ValueError(f'Invalid keyword arguments: {kwargs}')
+        wrapped = {k.lower(): v for k, v in wrapped.items()}
+        super(ParameterIndex, self).__init__(wrapped)
+
+    def __repr__(self):
+        out = []
+        for k in self.parameter_names:
+            v = self._wrapped[k.lower()]
+            if k not in self.universal_param:
+                if v is not None:
+                    out.append(f'{k.lower()}={v}')
+            else:
+                out.append(str(v))
+        return ','.join(out)
+
+    def __getitem__(self, k):
+        if k.title() not in self.parameter_names:
+            raise KeyError(k)
+        return super(ParameterIndex, self).__getitem__(k.lower())
+
+    def __setitem__(self, k, v):
+        if k.title() not in self.parameter_names:
+            raise KeyError(k)
+        super(ParameterIndex, self).__setitem__(k.lower(), v)
+
+    def __copy__(self):
+        return ParameterIndex(**{k.lower(): v for k, v in self.items()})
+
+    @property
+    def tuple(self):
+        r"""tuple: Tuple representation of the index."""
+        out = {k.title(): self[k] for k in self.keys()}
+        for k in self.parameter_names_units.keys():
+            if isinstance(out[k], rapidjson.units.Quantity):
+                out[k] = (float(out[k]), str(out[k].units))
+        return tuple([out[k] for k in self.parameter_names])
+
+    def __hash__(self):
+        return hash(self.tuple)
+
+
+class ParameterKey:
+    r"""Container for parameter key for caching the current search.
+
+    Args:
+        param (str): Parameter being generated.
+        idx (ParameterIndex): Parameter index.
+
+    """
+
+    def __init__(self, param=None, idx=None):
+        self.param = param
+        if idx is None:
+            idx = ParameterIndex()
+        self.index = idx
+
+    def __hash__(self):
+        return hash((self.param, self.index))
 
 
 class SimplePlantParameter(PlantParameterBase):
@@ -1244,16 +774,14 @@ class SimplePlantParameter(PlantParameterBase):
         _required (list): Set of properties that are required by this
             parameter.
         _variables (list): Properties that reference other variables.
+        _constants (dict): Properties that should be added to parsed
+            parameters.
         _dependencies (list): Root level properties that this parameter
             uses.
         _subschema_keys (list): JSON schema properties that contain
             schemas.
         _component_properties (list): Properties that can be defined for
             all parameters associated with a component.
-        _attribute_properties (list): Properties that should be
-            accessible directly as class attributes.
-        _index_var (list): Variables that will be supplied as input to
-            calls to generate parameters.
         _components (list): Plant components that may be used with
             _component_properties.
 
@@ -1269,36 +797,38 @@ class SimplePlantParameter(PlantParameterBase):
     _aliases = {}
     _required = []
     _variables = []
+    _constants = {}
     _specialized = []
     _dependencies = []
     _subschema_keys = ['oneOf', 'allOf']
     _external_properties = []
     _component_properties = []
-    _attribute_properties = []
-    _index_var = ['X', 'N', 'Age']
+    _index_properties = []
     _components = {}
 
     def __init__(self, name, param, parent, required=False):
         super(SimplePlantParameter, self).__init__()
         assert isinstance(param, ParameterDict)
-        self._key_stack = []
-        self._cache = {}
         self._generators = {}
+        self.initialized_lpy_context = False
         self.name = name
-        self.parameters = {}
         self.parent = parent
         self.required = required
         self.initialized = False
-        self.child_parameters = self.parameter_names(self.fullname, 'children')
-        self.core_paremeters = self.parameter_names(self.fullname, 'core')
-        self.valid_parameters = self.child_parameters + self.core_paremeters
+        self.child_parameters = self.parameter_names(
+            self.fullname, 'children')
+        self.core_paremeters = self.parameter_names(
+            self.fullname, 'core')
+        self.valid_parameters = (
+            self.child_parameters + self.core_paremeters
+        )
+        self.parameters = ParameterValues(self)
         self.update(param)
 
     def clear(self):
         r"""Clear the parameter class."""
         self.initialized = False
         self.parameters.clear()
-        self.defaults.clear()
 
     def update(self, param):
         r"""Update the parameters.
@@ -1307,15 +837,16 @@ class SimplePlantParameter(PlantParameterBase):
             param (dict): New parameters.
 
         """
-        in_init = (len(self.parameters) == 0)
+        # in_init = (len(self.parameters.local) == 0)
         if not isinstance(param, ParameterDict):
             param = ParameterDict(param)
         param0 = param.provided.flattened
         keys0 = list(param0.keys())
         schema = self.schema()
         self.initialization_error = None
+        self.log(f'PROVIDED:\n{pprint.pformat(param)}')
         with param.updating(self):
-            self.parameters = {}
+            self.parameters.clear()
             self.initialized = self._parse_single(param, schema)
         if self.initialized:
             self.log(f'Parsed param:\n{pprint.pformat(self.parameters)}')
@@ -1338,8 +869,8 @@ class SimplePlantParameter(PlantParameterBase):
                        f'Unparsed param:\n{pprint.pformat(param.provided)}')
         if self.initialized:
             msg = f'INITIALIZED:\n{pprint.pformat(self.contents)}'
-            debug = ((not in_init) or self.parent == self.root)
-            self.log(msg, debug=debug)
+            # debug = ((not in_init) or self.parent == self.root)
+            self.log(msg, debug=self.is_debug_param)
 
     @classmethod
     def _get_default(cls, name, param=None):
@@ -1457,14 +988,19 @@ class SimplePlantParameter(PlantParameterBase):
 
         """
         exclude = exclude + cls._specialized
+        if 'constants' in kwargs:
+            exclude += list(kwargs['constants'].keys())
         class_dict = copy.deepcopy(kwargs)
         class_dict.setdefault('_name', name)
+        class_dict.setdefault('_registry_name', f'{name}{uuid.uuid4()}')
         update_attr = [
-            'properties', 'required', 'defaults',
+            'properties', 'required', 'variables', 'constants',
+            'dependencies', 'defaults',
             'property_dependencies',
             'property_dependencies_defaults',
             'component_properties',
             'external_properties',
+            'index_properties',
         ]
         for k in update_attr:
             kattr = f'_{k}'
@@ -1501,9 +1037,7 @@ class SimplePlantParameter(PlantParameterBase):
                 class_dict[kattr].update(**v)
             else:
                 raise TypeError(type(v))
-        created = RegisteredMetaClass(
-            f'Created{name}', (cls,), class_dict)
-        return created
+        return RegisteredMetaClass(f'Created{name}', (cls,), class_dict)
 
     @property
     def prefix(self):
@@ -1567,7 +1101,7 @@ class SimplePlantParameter(PlantParameterBase):
 
     @property
     def component(self):
-        r"""PlantComponent: Component that this property belongs to."""
+        r"""ComponentBase: Component that this property belongs to."""
         if self.parent:
             return self.parent.component
         return None
@@ -1586,6 +1120,48 @@ class SimplePlantParameter(PlantParameterBase):
         if self.parent is not None:
             return self.parent.root
         return self
+
+    @property
+    def cache(self):
+        r"""ParameterCache: Cache of computed parameters."""
+        if self.parent is not None:
+            return self.root._cache
+        return self._cache
+
+    @contextlib.contextmanager
+    def temporary_index(self, *args, **kwargs):
+        r"""Context with an updated index.
+
+        Args:
+            *args, **kwargs: Arguments are used to create a
+                ParameterIndex instance for the context.
+
+        """
+        idx = ParameterIndex(*args, **kwargs)
+        for k, v in self.current_index.items():
+            if idx[k] is None:
+                idx[k] = v
+        with self.cache.temporary_index(idx):
+            yield
+
+    @property
+    def current_param(self):
+        r"""str: Current parameter being generated."""
+        return self.cache.param
+
+    @property
+    def current_index(self):
+        r"""ParameterIndex: Current parameter index."""
+        return self.cache.index
+
+    @property
+    def local_index(self):
+        r"""ParameterIndex: Local parameter index with unused parameters
+        nullified."""
+        out = copy.copy(self.current_index)
+        for k in self.constants_index:
+            out[k] = None
+        return out
 
     @property
     def verbose(self):
@@ -1617,11 +1193,18 @@ class SimplePlantParameter(PlantParameterBase):
         return self._debug_param_prefix
 
     @property
-    def debugging(self):
-        r"""bool: True if debugging is active."""
+    def is_debug_param(self):
+        r"""bool: True if this is a parameter being debugged."""
         if self.fullname.startswith(tuple(self.debug_param_prefix)):
             return True
         if self.fullname in self.debug_param:
+            return True
+        return False
+
+    @property
+    def debugging(self):
+        r"""bool: True if debugging is active."""
+        if self.is_debug_param:
             return True
         if self.parent is not None:
             return self.root._debugging
@@ -1653,6 +1236,36 @@ class SimplePlantParameter(PlantParameterBase):
             return
         pdb.set_trace()
 
+    def lsystem_args(self, ageinc=False, for_rule=False):
+        r"""Get the arguments that should be used for Lsystem rules.
+
+        Args:
+            ageinc (bool, optional): If True, increment age in the
+                arguments.
+            for_rule (bool, optional): If True, all parameters are
+                positional.
+
+        Returns:
+            str: Arguments.
+
+        """
+        try:
+            args = [k.lower() for k in ParameterIndex.universal_param]
+            args_opt = [k.lower() for k in self.dependencies_index
+                        if k.lower() not in args + ['x']]
+            if ageinc:
+                args[args.index('age')] += '+ageinc'
+            if for_rule:
+                args += args_opt
+            else:
+                args += [f'{k}={k}' for k in args_opt]
+            return ','.join(args)
+        except AttributeError:
+            import traceback
+            print("LSYSTEM_ARGS")
+            print(traceback.format_exc())
+            raise
+
     # Methods for generating parameters
     def hasmethod(self, k):
         r"""Check if there is an explicit method for a parameter.
@@ -1671,14 +1284,11 @@ class SimplePlantParameter(PlantParameterBase):
             raise AttributeError(f'{self}: {k}')
         if self.parent is not None:
             self.error(AttributeError, f'{self}: {k}')
-        if k in self._attribute_properties:
-            return self.parameters.get(k, None)
         if k not in self.valid_parameters:
-            pprint.pprint(self.valid_parameters)
             self.error(AttributeError, f'{self}: {k}')
-        return functools.partial(self.getfull, k, k0=k)
+        return functools.partial(self.getfull, k, strip_units=True)
 
-    def getfull(self, k, age=None, n=None, x=None, **kwargs):
+    def getfull(self, k, *args, **kwargs):
         r"""Get a parameter value with the index fully specified as
         arguments.
 
@@ -1686,28 +1296,39 @@ class SimplePlantParameter(PlantParameterBase):
             k (str): Name of parameter to return without any prefixes.
             age (float): Age of the component that the parameter should
                 be returned for.
-            n (int):  Phytomer count of the component that the parameter
+            n (int): Phytomer count of the component that the parameter
                 should be returned for.
             x (float, optional): Position along the component that the
                 parameter should be returned for.
+            w (int, optional): Whorl index of repeated component that the
+                parameter should be returned for.
+            strip_units (bool, optional): If True, strip units from
+                quantities after converting to the desired unit system.
             **kwargs: Additional keyword arguments are passed to get.
 
         Returns:
             object: Parameter value.
 
         """
-        idx = (age, n, x)
-        return self.get(k, idx=idx, **kwargs)
+        strip_units = kwargs.pop('strip_units', False)
+        kws_index = {
+            k.lower(): kwargs.pop(k.lower()) for k in
+            ParameterIndex.parameter_names
+            if k.lower() in kwargs
+        }
+        kws_index['unit_system'] = self.unit_system
+        with self.temporary_index(*args, **kws_index):
+            out = self.get(k, **kwargs)
+        if strip_units:
+            out = self.unit_system.convert(out, strip=True)
+        return out
 
-    def set(self, k, value, k0=None):
+    def set(self, k, value):
         r"""Set a parameter value.
 
         Args:
             k (str): Name of parameter to set, without any prefixes.
             value (object): Value to set parameter to.
-            k0 (str): Full name of the parameter including any parent
-                prefixes. If not provided, the full name will be
-                created based on the current prefix.
 
         """
         raise NotImplementedError
@@ -1715,21 +1336,69 @@ class SimplePlantParameter(PlantParameterBase):
     @property
     def children(self):
         r"""iterable: Child parameter instances."""
-        for v in self.parameters.values():
-            if isinstance(v, PlantParameterBase) and v.initialized:
-                yield v
+        for v in self.parameters.nested.values():
+            yield v
 
-    @property
+    @cached_property
+    def component_parameters(self):
+        r"""list: Set of variables that this parameter uses from the
+        parent component."""
+        return copy.deepcopy(self._component_properties)
+
+    @cached_property
+    def variable_parameters(self):
+        r"""list: Set of external parameters identified by variables."""
+        out = []
+        for k in self._variables:
+            if k not in self.parameters:
+                continue
+            kv = self.parameters[k]
+            if isinstance(kv, list):
+                out += kv
+            else:
+                out.append(kv)
+        return out
+
+    @cached_property
+    def index_parameters(self):
+        r"""list: Set of index parameters that this parameter uses."""
+        out = copy.deepcopy(self._index_properties)
+        out += [k for k in self.variable_parameters
+                if k in ParameterIndex.parameter_names]
+        for k in self.external_parameters:
+            v = self.get(k, return_other='instance')
+            if isinstance(v, PlantParameterBase):
+                out += v.index_parameters
+        for child in self.children:
+            out += child.index_parameters
+        return list(set(out))
+
+    @cached_property
+    def external_parameters(self):
+        r"""list: Set of variables that this parameter uses from the
+        root generator."""
+        out = copy.deepcopy(self._external_properties)
+        out += [k for k in self.variable_parameters
+                if k not in ParameterIndex.parameter_names]
+        out += [
+            f'{self.component_name}{k}'
+            for k in self.component_parameters
+        ]
+        return list(set(out))
+
+    @cached_property
     def dependencies(self):
         r"""list: Set of variables that this parameter is dependent on."""
-        out = copy.deepcopy(self._dependencies)
-        out += [self.parameters.get(k, None) for k in self._variables
-                if k in self.parameters]
+        out = copy.deepcopy(self.external_parameters)
+        for k in self.external_parameters:
+            v = self.get(k, return_other='instance')
+            if isinstance(v, PlantParameterBase):
+                out += v.dependencies
         for child in self.children:
             out += child.dependencies
         return list(set(out))
 
-    @property
+    @cached_property
     def all_parameters(self):
         r"""dict: Set of all parameters, including children."""
         out = PrefixedDict({}, prefix=self.prefix)
@@ -1741,33 +1410,35 @@ class SimplePlantParameter(PlantParameterBase):
                 out[k] = v
         return out.raw_flattened
 
-    @property
-    def constant_var(self):
+    @cached_property
+    def constants_index(self):
         r"""list: Set of index variables that this parameter is
         independent of."""
-        dependencies = self.dependencies
-        return [k for k in self._index_var if k not in dependencies]
+        return [k for k in ParameterIndex.parameter_names
+                if k not in self.index_parameters]
 
-    def _nullify_constant_var(self, idx, var=None, context=None):
+    @cached_property
+    def dependencies_index(self):
+        r"""list: Set of index variables that this parameter is
+        dependent on."""
+        return [k for k in ParameterIndex.parameter_names
+                if k in self.index_parameters]
+
+    def _nullify_constant_var(self, idx, var=None, context=None,
+                              make_copy=False):
+        if make_copy:
+            idx = copy.copy(idx)
         if var is None:
-            var = self.constant_var
+            var = self.constants_index
+        if var is None:
+            return idx
         if isinstance(var, list):
             for v in var:
                 idx = self._nullify_constant_var(idx, var=v,
                                                  context=context)
             return idx
-        elif var is None:
-            return idx
-        age, n, x = idx[:]
-        if var == 'Age':
-            age = None
-        elif var == 'X':
-            x = None
-        elif var == 'N':
-            n = None
-        else:
-            raise ValueError(f"Unsupported constant var \"{var}\"")
-        return (age, n, x)
+        idx[var] = None
+        return idx
 
     @classmethod
     def get_class(cls, k, prefix=''):
@@ -1775,9 +1446,6 @@ class SimplePlantParameter(PlantParameterBase):
 
         Args:
             k (str): Name of parameter to return, without any prefixes.
-            k0 (str, optional): Full name of the parameter including any
-                parent prefixes. If not provided, the full name will be
-                created based on the current prefix.
 
         Returns:
             PlantParameterBase: Parameter class.
@@ -1799,17 +1467,34 @@ class SimplePlantParameter(PlantParameterBase):
                 pass
         raise KeyError(k)
 
-    def get(self, k, default=NoDefault, idx=None, cache_key=None,
-            k0=None, return_other=None, **kwargs):
+    def get(self, k, default=NoDefault, **kwargs):
         r"""Get a parameter value.
 
         Args:
             k (str): Name of parameter to return, without any prefixes.
             default (object, optional): Default to return if the
                 parameter is not set.
-            idx (tuple, optional): Simulation index to get the parameter
-                value for. If not provided, the current index will be
-                used based on the last parameter accessed with an index.
+            **kwargs: Additional keyword arguments are passed to
+                parameters.get.
+
+        Returns:
+            object: Parameter value.
+
+        """
+        return self.parameters.get(k, default=default, **kwargs)
+
+    def getold(self, k, default=NoDefault, idx=None, cache_key=None,
+               k0=None, return_other=None, **kwargs):
+        r"""Get a parameter value.
+
+        Args:
+            k (str): Name of parameter to return, without any prefixes.
+            default (object, optional): Default to return if the
+                parameter is not set.
+            idx (ParameterIndex, optional): Simulation index to get the
+                parameter value for. If not provided, the current index
+                will be used based on the last parameter accessed with an
+                index.
             cache_key (tuple, optional): Key to use to cache any
                 generated values if different than the default.
             k0 (str, optional): Full name of the parameter including any
@@ -1826,8 +1511,11 @@ class SimplePlantParameter(PlantParameterBase):
         """
         if idx is None:
             idx = self._current_idx(cache_key=cache_key)
-        kidx = self._nullify_constant_var(idx, context=k)
-        age, n, x = kidx[:]
+        if return_other:
+            kidx = idx
+        else:
+            self.log(f'dependencies = {self.dependencies}')
+            kidx = self._nullify_constant_var(idx, context=k, make_copy=True)
         if k0 is None:
             is_child = True
             k0 = f'{self.fullname}{k}'
@@ -1835,15 +1523,13 @@ class SimplePlantParameter(PlantParameterBase):
             is_child = self.prefixes(k)
             if is_child:
                 k = self.remove_prefix(k)
-        if k == 'Age':
-            assert age is not None
-            return age
-        elif k == 'N':
-            assert n is not None
-            return n
-        elif k == 'X':
-            assert x is not None
-            return x
+        if k in kidx.parameter_names:
+            try:
+                return kidx[k]
+            except BaseException as e:
+                self.error(KeyError, str(e))
+        elif k in self._constants:
+            return self._constants[k]
         elif k0 not in self.valid_parameters:
             if is_child:
                 if default is not NoDefault:
@@ -1865,7 +1551,7 @@ class SimplePlantParameter(PlantParameterBase):
                     return default
                 self.error(KeyError, f"Unsupported var \"{k0}\"")
         if not return_other:
-            out = self._push_key(k0, *kidx, cache_key=cache_key)
+            out = self._push_key(k0, kidx, cache_key=cache_key)
             if out is not None:
                 return out
         try:
@@ -1881,10 +1567,10 @@ class SimplePlantParameter(PlantParameterBase):
                 if return_other is None:
                     self.log(f'Generating \"{k0}\"')
                     v = v.generate(kidx, **kwargs)
-                elif return_other == 'parameters':
-                    v = v.parameters
                 elif return_other == 'instance':
                     pass
+                elif hasattr(v, return_other):
+                    v = getattr(v, return_other)
                 else:
                     raise ValueError(f'Invalid return_other = '
                                      f'\"{return_other}\"')
@@ -1896,12 +1582,10 @@ class SimplePlantParameter(PlantParameterBase):
             self._pop_key(v)
         return v
 
-    def generate(self, idx, **kwargs):
-        r"""Generate this parameter.
+    def generate(self, **kwargs):
+        r"""Generate this parameter, updating the cache as necessary.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -1909,9 +1593,34 @@ class SimplePlantParameter(PlantParameterBase):
             object: Generated parameter value.
 
         """
-        out = self.parameters['']
-        self.log(f'{self.fullname} = {out}')
-        return out
+        with self.cache.temporary_param(self.fullname, self.local_index):
+            if kwargs or self.fullname not in self.cache:
+                try:
+                    self.log('GENERATING')
+                    v = self._generate(**kwargs)
+                    if kwargs:
+                        self.log(f'GENERATED [UNCACHED]: {v}')
+                        return v
+                    self.cache[self.fullname] = v
+                    self.log(f'GENERATED: {v}')
+                except BaseException as e:
+                    self.debug('ERROR IN GENERATE', force=True,
+                               exception=e)
+                    raise
+            return self.cache[self.fullname]
+
+    def _generate(self, **kwargs):
+        r"""Generate this parameter.
+
+        Args:
+            **kwargs: Additional keyword arguments are passed to get and
+                generate calls for nested parameters.
+
+        Returns:
+            object: Generated parameter value.
+
+        """
+        return self.get('')
 
     @classmethod
     def schema(cls):
@@ -1951,6 +1660,7 @@ class SimplePlantParameter(PlantParameterBase):
         out = []
         if scope in ['all', 'core']:
             out += [f'{name}{k}' for k in cls._properties.keys()]
+            out += [f'{name}{k}' for k in cls._constants.keys()]
             if name not in out:
                 out.insert(0, name)
         if scope in ['all', 'children']:
@@ -1960,7 +1670,7 @@ class SimplePlantParameter(PlantParameterBase):
                     out += v.parameter_names(kname)
         return out
 
-    def _extract_parameters(self, schema):
+    def _extract_parameters(self, schema, param):
         parameters = {'properties': {}, 'required': []}
         for k in list(schema.get('properties', {}).keys()):
             if isinstance(schema['properties'][k], type):
@@ -1968,6 +1678,16 @@ class SimplePlantParameter(PlantParameterBase):
                 if k in schema.get('required', []):
                     parameters['required'].append(k)
                     schema['required'].remove(k)
+            elif k:
+                keys = [k for k in param.keys(prefix=k)
+                        if (k not in parameters['properties']
+                            and k not in schema['properties'])]
+                if len(keys) > 1:
+                    parameters['properties'][k] = schema2parameter(
+                        k, schema['properties'].pop(k))
+                    if k in schema.get('required', []):
+                        parameters['required'].append(k)
+                        schema['required'].remove(k)
         if not schema.get('properties', {}):
             schema.pop('properties', None)
         if not schema.get('required', []):
@@ -1999,7 +1719,8 @@ class SimplePlantParameter(PlantParameterBase):
                     for x in schema[k]:
                         keys_all
                 kparam = [
-                    self._extract_parameters(x) for x in schema[k]
+                    self._extract_parameters(x, child_param)
+                    for x in schema[k]
                 ]
                 if not any(kparam):
                     continue
@@ -2045,7 +1766,7 @@ class SimplePlantParameter(PlantParameterBase):
             # Split schema & param into regular parameters and parameter
             #   classes
             if parameters is None:
-                parameters = self._extract_parameters(schema)
+                parameters = self._extract_parameters(schema, child_param)
             child_param_schema = {
                 k: v for k, v in child_param.items()
                 if self.schema_contains(schema, k, value=v)
@@ -2129,18 +1850,16 @@ class SimplePlantParameter(PlantParameterBase):
     def log_prefix_stack(self):
         r"""str: Prefix to use for log messages describing the current
         stack."""
-        prefix = ''
-        key = self._current_key
-        if key is not None:
-            k, age, n, x = key[:]
-            if x is None:
-                x_str = ''
-            else:
-                x_str = f',x={x}'
-            prefix = f'{k}[{age},{n}{x_str}]: '
-        return prefix
+        if self.current_param is None:
+            return ''
+        return f'{self.current_param}[{self.current_index}]: '
 
-    def log(self, message='', force=False, debug=False):
+    @property
+    def log_prefix(self):
+        r"""str: Prefix to add to messages emitted by this instance."""
+        return f'{self.log_prefix_instance}: {self.log_prefix_stack}'
+
+    def log(self, message='', debug=False, **kwargs):
         r"""Emit a log message.
 
         Args:
@@ -2149,67 +1868,30 @@ class SimplePlantParameter(PlantParameterBase):
                 if self.verbose is False.
             debug (bool, optional): If True, set a debug break point if
                 debugging enabled.
+            **kwargs: Additional keyword arguments are passed to the
+                parent method.
 
         """
         return super(SimplePlantParameter, self).log(
-            message=message, force=force,
-            debug=(debug and self.debugging),
-            prefix=f'{self.log_prefix_instance}: {self.log_prefix_stack}'
+            message=message, debug=(debug and self.debugging), **kwargs
         )
 
-    def error(self, error_cls, message='', debug=False):
+    def error(self, error_cls, message='', debug=False, **kwargs):
         r"""Raise an error, adding context to the message.
 
         Args:
             error_cls (type): Error class.
             message (str, optional): Error message.
             debug (bool, optional): If True, set a debug break point.
+            **kwargs: Additional keyword arguments are passed to the
+                parent method.
 
         """
         return super(SimplePlantParameter, self).error(
             error_cls, message=message,
             debug=(debug or self.debugging),
-            prefix=f'{self.log_prefix_instance}: {self.log_prefix_stack}'
+            **kwargs
         )
-
-    # Methods for tracking things
-    def _current_idx(self, cache_key=None):
-        current_key = cache_key
-        if current_key is None:
-            current_key = self._current_key
-        if current_key is None:
-            current_key = (None, None, None, None)
-        idx = current_key[1:]
-        return idx
-
-    def _push_key(self, param, age, n, x, cache_key=None):
-        if self.parent:
-            return self.parent._push_key(param, age, n, x,
-                                         cache_key=cache_key)
-        if cache_key is None:
-            key = (param, age, n, x)
-        else:
-            key = cache_key
-        if key in self._cache:
-            # self.log(f"Using cached ({key})")
-            return self._cache[key]
-        self._key_stack.append(key)
-
-    def _pop_key(self, out=None):
-        if self.parent:
-            return self.parent._pop_key(out=out)
-        if out is not None:
-            self._cache[self._current_key] = out
-        self.log(str(out))
-        self._key_stack.pop()
-
-    @property
-    def _current_key(self):
-        if self.parent:
-            return self.parent._current_key
-        if self._key_stack:
-            return self._key_stack[-1]
-        return None
 
     @property
     def generator(self):
@@ -2217,8 +1899,8 @@ class SimplePlantParameter(PlantParameterBase):
         if self.parent:
             return self.parent.generator
         seed = self.seed
-        if self._current_key and (self._current_key[2] is not None):
-            seed += self._current_key[2]
+        if self.current_index['N'] is not None:
+            seed += self.current_index['N']
         if seed not in self._generators:
             self.log(f"Creating generator for seed = {seed}")
             self._generators[seed] = np.random.default_rng(
@@ -2239,6 +1921,29 @@ class SimplePlantParameter(PlantParameterBase):
             args = None
         return DistributionPlantParameter.sample_generator_dist(
             self.generator, profile=profile, args=args, **kwargs)
+
+    def initialize_lpy_context(self, context):
+        r"""Initialize the lpy context for this instance.
+
+        Args:
+            context (lpy.LsysContext): Context to initialize.
+
+        """
+        if self.initialized_lpy_context:
+            return
+        for child in self.children:
+            child.initialize_lpy_context(context)
+        self.initialized_lpy_context = True
+
+    def initialize_lpy_turtle(self, turtle):
+        r"""Initialize a PglTurtle instance.
+
+        Args:
+            turtle (plantgl.PglTurtle): Turtle to update.
+
+        """
+        for child in self.children:
+            child.initialize_lpy_turtle(turtle)
 
 
 class OptionPlantParameter(SimplePlantParameter):
@@ -2405,15 +2110,20 @@ class OptionPlantParameter(SimplePlantParameter):
         }
         if vopt is NoDefault:
             choices = {}
+            empty = []
             for k, unique in unique_keys.items():
                 count = sum([
                     x in param for x in unique
                 ])
                 if unique and count:
                     choices[k] = count
+                elif len(cls._option_dependencies[k]) == 0:
+                    empty.append(k)
             if choices:
                 vopt = max(choices, key=lambda x: choices[x])
                 kwargs.setdefault(opt, vopt)
+            elif len(empty) == 1:
+                kwargs.setdefault(opt, empty[0])
         super(OptionPlantParameter, cls).add_class_defaults(
             param, **kwargs)
 
@@ -2424,64 +2134,68 @@ class FunctionPlantParameter(OptionPlantParameter):
     _name = 'Func'
     _help = 'Function producing {parent}'
     _properties = {
-        'Var': {
-            'type': 'string',
-            'description': ('Parameter that serves as the {parent} '
+        'VarName': {
+            'type': ['string', 'array'],
+            'description': ('Parameter(s) that serves as the {parent} '
                             'function\'s independent variable'),
         },
         'VarNorm': {
             'type': 'string',
-            'description': ('Parameter that {parent}Var '
+            'description': ('Parameter that {parent}VarName variable '
                             'should be normalized by before applying '
-                            'the {parent} function'),
+                            'the {parent} function. If not provided, '
+                            'but VarMin & VarMax are, the difference '
+                            'between the two will be used.'),
         },
         'VarMin': {
             'type': 'string',
             'description': ('Parameter that specifies the minimum '
-                            '{parent}Var value for which the {parent} '
-                            'function is applied.'),
+                            '{parent}VarName value for which the '
+                            '{parent} function is applied.'),
         },
         'VarMax': {
             'type': 'string',
             'description': ('Parameter that specifies the maximum '
-                            '{parent}Var value for which the {parent} '
-                            'function is applied.'),
+                            '{parent}VarName value for which the '
+                            '{parent} function is applied.'),
         },
         'Slope': {
-            'type': 'number',
+            'type': 'scalar', 'subtype': 'float',
             'description': 'Slope of the {parent} function',
         },
         'Intercept': {
-            'type': 'number',
+            'type': 'scalar', 'subtype': 'float',
             'description': ('Value of the {parent} function when '
-                            '{parent}Var is 0'),
+                            '{parent}VarName variable is 0'),
         },
         'Amplitude': {
-            'type': 'number', 'default': 1.0,
+            'type': 'scalar', 'subtype': 'float', 'default': 1.0,
             'description': 'Scale factor for {parent} function',
         },
         'Period': {
-            'type': 'number', 'default': 2.0 * np.pi,
+            'type': 'scalar', 'subtype': 'float', 'default': 2.0 * np.pi,
             'description': 'Period of {parent} sinusoid function',
         },
         'XOffset': {
-            'type': 'number', 'default': 0.0,
+            'type': 'scalar', 'subtype': 'float', 'default': 0.0,
             'description': ('Offset added to independent variable '
                             'before scaling for the period and applying '
                             'the sinusoid function'),
         },
         'YOffset': {
-            'type': 'number', 'default': 0.0,
+            'type': 'scalar', 'subtype': 'float', 'default': 0.0,
             'description': ('Offset added to the function result'),
         },
         'Exp': {
-            'type': 'number',
+            'type': 'scalar', 'subtype': 'float',
             'description': 'Exponent',
         },
         'XVals': {
             'oneOf': [
                 {'type': 'ndarray', 'subtype': 'float'},
-                {'type': 'array', 'items': {'type': 'number'},
+                {'type': 'array', 'items': {
+                    'type': 'scalar', 'subtype': 'float'
+                },
                  'minItems': 2, 'maxItems': 2},
             ],
             'description': ('Independent variable values or range that '
@@ -2506,50 +2220,61 @@ class FunctionPlantParameter(OptionPlantParameter):
                             'class that should be called')
         },
         'Function': {'type': 'function'},
+        'Expression': {
+            'type': 'string',
+            'description': ('Python expression that should be evaluated '
+                            'with variables defined'),
+        },
     }
     _option_dependencies = {
+        'zero': [],
+        'one': [],
+        'alias': [],
         'linear': ['Slope', 'Intercept'],
         'sin': ['Amplitude', 'Period', 'XOffset', 'YOffset'],
         'cos': ['Amplitude', 'Period', 'XOffset', 'YOffset'],
         'tan': ['Amplitude', 'Period', 'XOffset', 'YOffset'],
         'pow': ['Amplitude', 'Exp', 'XOffset', 'YOffset'],
+        'logistic': ['Amplitude', 'Exp', 'XOffset', 'YOffset'],
         'interp': ['XVals', 'YVals'],
         'curve': ['Curve'],
         'curve_patch': ['CurvePatch'],
         'method': ['Method'],
         'user': ['Function'],
+        'expression': ['Expression']
     }
-    _required = ['Var']
-    _variables = ['Var']
+    _required = ['VarName']
+    _variables = ['VarName', 'VarNorm', 'VarMin', 'VarMax']
 
     @property
-    def xvar(self):
+    def namevar(self):
         r"""str: Variable that this function parameter takes as input."""
-        return self.parameters['Var']
+        out = self.get('VarName')
+        if isinstance(out, list) and len(out) == 1:
+            return out[0]
+        return out
 
     @property
     def normvar(self):
         r"""str: Variable that should be used to normalize the input."""
-        return self.parameters.get('VarNorm', None)
+        return self.get('VarNorm', None)
 
     @property
     def maxvar(self):
         r"""str: Variable that contains the maximum value under which
         the function applies."""
-        return self.parameters.get('VarMax', None)
+        return self.get('VarMax', None)
 
     @property
     def minvar(self):
         r"""str: Variable that contains the minimum value under which
         the function applies."""
-        return self.parameters.get('VarMin', None)
+        return self.get('VarMin', None)
 
-    def generate(self, idx, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -2557,46 +2282,75 @@ class FunctionPlantParameter(OptionPlantParameter):
             object: Generated parameter value.
 
         """
-        kwargs['idx'] = idx
-        func = self.parameters['']
-        v = self.root.get(self.xvar, k0=self.xvar, **kwargs)
+        func = self.get('')
+        if func == 'one':
+            return 1.0
+        elif func == 'zero':
+            return 0.0
+        elif func == 'expression':
+            expression = self.get('Expression')
+            variables = {
+                k: self.get(k, None) for k in self.variable_parameters
+            }
+            return eval(expression, globals={}, locals=variables)
+        v = self.get(self.namevar)
+        if func == 'alias':
+            return v
+        v0 = v
+        vmin = None
+        vmax = None
+        vnorm = None
         if self.maxvar is not None:
-            vmax = self.get(self.maxvar, k0=self.maxvar, **kwargs)
+            vmax = self.get(self.maxvar)
             if v > vmax:
-                return 1.0
+                v = vmax
         if self.minvar is not None:
-            vmin = self.get(self.minvar, k0=self.minvar, **kwargs)
+            vmin = self.get(self.minvar)
             if v < vmin:
-                return 1.0
+                v = vmin
         if self.normvar is not None:
-            v /= float(self.get(self.normvar, k0=self.normvar, **kwargs))
+            vnorm = self.get(self.normvar)
+        elif vmin is not None and vmax is not None:
+            v = v - vmin
+            vnorm = vmax - vmin
+        if vnorm is not None:
+            v = v / vnorm
         if callable(func):
             out = func(v)
         elif func == 'linear':
-            slope = self.parameters['Slope']
-            intercept = self.parameters['Intercept']
+            slope = self.get('Slope')
+            intercept = self.get('Intercept')
             out = slope * v + intercept
         elif func in ['sin', 'cos', 'tan']:
-            A = self.parameters['Amplitude']
-            period = self.parameters['Period']
-            xoffset = self.parameters['XOffset']
-            yoffset = self.parameters['YOffset']
+            A = self.get('Amplitude')
+            period = self.get('Period')
+            xoffset = self.get('XOffset')
+            yoffset = self.get('YOffset')
             ftrig = getattr(np, func)
             out = (
                 (A * ftrig(2.0 * np.pi * (v + xoffset) / period))
                 + yoffset)
         elif func == 'pow':
-            A = self.parameters['Amplitude']
-            exp = self.parameters['Exp']
-            xoffset = self.parameters['XOffset']
-            yoffset = self.parameters['YOffset']
+            A = self.get('Amplitude')
+            exp = self.get('Exp')
+            xoffset = self.get('XOffset')
+            yoffset = self.get('YOffset')
             out = (A * pow(v + xoffset, exp)) + yoffset
+        elif func == 'logistic':
+            A = self.get('Amplitude')
+            xoffset = self.get('XOffset')
+            yoffset = self.get('YOffset')
+            out = (A / (1.0 + np.exp(-(v + xoffset)))) + yoffset
         elif func == 'interp':
-            xvals = self.parameters['XVals']
-            yvals = self.parameters['YVals']
+            xvals = self.get('XVals')
+            yvals = self.get('YVals')
             if isinstance(xvals, (tuple, list)):
+                # self.log(f"BEFORE: {xvals}", force=True)
                 xvals = np.linspace(xvals[0], xvals[1], len(yvals))
-            f = scipy.interpolate.interp1d(xvals, yvals)
+            # self.log(f"INTERP: {xvals}", force=True)
+            # out = np.interp(xval, yvals
+            f = scipy.interpolate.interp1d(xvals, yvals,
+                                           fill_value="extrapolate")
             out = f(v)
         elif func == 'curve':
             curve = self.get('Curve', **kwargs)
@@ -2613,7 +2367,10 @@ class FunctionPlantParameter(OptionPlantParameter):
             out = function(v)
         else:
             raise ValueError(f"Unsupported function name \"{func}\"")
-        self.log(f'{self.fullname} = {out}')
+        self.log(f'{self.fullname}[{self.namevar}={v0} (v={v})] = {out} '
+                 f'(MIN: {self.minvar} = {vmin}, '
+                 f'MAX: {self.maxvar} = {vmax}, '
+                 f'NORM: {self.normvar} = {vnorm})')
         return out
 
     @classmethod
@@ -2633,12 +2390,13 @@ class FunctionPlantParameter(OptionPlantParameter):
                 base class's specialize method.
 
         """
-        kwargs.setdefault('xvar', var)
+        kwargs.setdefault('namevar', var)
         kwargs.setdefault('normvar', normvar)
         kwargs.setdefault('minvar', minvar)
         kwargs.setdefault('maxvar', maxvar)
-        var = kwargs['xvar']
+        var = kwargs['namevar']
         descriptions = {
+            'name': 'Indepdendent variable',
             'norm': f'Value used to normalize {var.lower()} for {{parent}}',
             'min': f'Minimum {var.lower()} over which {{parent}} is valid',
             'max': f'Maximum {var.lower()} over which {{parent}} is valid',
@@ -2646,25 +2404,28 @@ class FunctionPlantParameter(OptionPlantParameter):
         kwargs.setdefault('required', [])
         kwargs.setdefault('properties', {})
         kwargs.setdefault('exclude', [])
-        kwargs['exclude'] += [
-            'Var', 'VarNorm', 'VarMin', 'VarMax',
-        ]
+        kwargs.setdefault('external_properties', [])
+        kwargs.setdefault('index_properties', [])
         for k in descriptions.keys():
+            xVar = f'Var{k.title()}'
+            kwargs['exclude'].append(xVar)
             x = kwargs[f'{k}var']
             if x is None:
                 continue
-            if x not in kwargs['required']:
-                kwargs['required'].append(x)
-            if x not in kwargs['properties']:
-                kwargs['properties'][x] = {
-                    'type': 'number',
-                    'description': descriptions[k],
-                }
-        out = FunctionPlantParameter.specialize(f'{var}Func', **kwargs)
-        if var not in out._dependencies:
-            out._dependencies = copy.deepcopy(out._dependencies)
-            out._dependencies.append(var)
-        return out
+            if x in ParameterIndex.parameter_names:
+                if x not in kwargs['index_properties']:
+                    kwargs['index_properties'].append(x)
+            else:
+                # if x not in kwargs['required']:
+                #     kwargs['required'].append(x)
+                if x not in kwargs['external_properties']:
+                    kwargs['external_properties'].append(x)
+                if x not in kwargs['properties']:
+                    kwargs['properties'][x] = {
+                        'type': 'scalar', 'subtype': 'float',
+                        'description': descriptions[k],
+                    }
+        return FunctionPlantParameter.specialize(f'{var}Func', **kwargs)
 
 
 class DistributionPlantParameter(OptionPlantParameter):
@@ -2699,14 +2460,12 @@ class DistributionPlantParameter(OptionPlantParameter):
     @property
     def profile(self):
         r"""str: Distribution profile."""
-        return self.parameters['']
+        return self.get('')
 
-    def generate(self, idx, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -2718,11 +2477,9 @@ class DistributionPlantParameter(OptionPlantParameter):
         kws = {k: self.get(k, **kwargs) for k in
                self._option_dependencies[profile]}
         kwargs = dict(kws, **kwargs)
-        out = self.sample_generator_dist(
+        return self.sample_generator_dist(
             self.generator, profile=profile, **kwargs
         )
-        self.log(f'{self.fullname} = {out}')
-        return out
 
     @classmethod
     def sample_generator_dist(cls, generator, profile='normal',
@@ -2783,9 +2540,141 @@ class DistributionPlantParameter(OptionPlantParameter):
         return param
 
 
+class ColorPlantParameter(SimplePlantParameter):
+    r"""Class for color parameters."""
+
+    _name = 'color'
+    _unit_dimension = None
+    _properties = {
+        '': {
+            'oneOf': [
+                {'type': 'string'},
+                {
+                    'type': 'array', 'minItems': 3, 'maxItems': 3,
+                    'items': {
+                        'type': 'integer', 'minimum': 0, 'maximum': 255
+                    },
+                },
+            ],
+            # 'default': (0,255,20),
+            'default': 'summer',
+            'description': ('Matplotlib colormap name or initial RGB '
+                            'color tuple for {parent}'),
+        },
+        'Final': {
+            'type': 'array', 'minItems': 3, 'maxItems': 3,
+            'items': {'type': 'integer', 'minimum': 0, 'maximum': 255},
+            'description': 'Final RGB color tuple for {parent}.'
+        },
+        'Func': FunctionPlantParameter.specialize(
+            'color_func',
+            _help=('Function to map between parameter values and the '
+                   'distance along the color map or between the initial '
+                   'and final colors '),
+            _default='linear',
+            defaults={
+                'VarName': 'Age',
+                'VarMin': 'AgeSenesce',
+                'VarMax': 'AgeRemove',
+                'Slope': 1.0,
+                'Intercept': 0.0,
+            },
+        ),
+    }
+    _required = ['']
+
+    def __init__(self, *args, **kwargs):
+        self._starting_color_idx = None
+        super(ColorPlantParameter, self).__init__(*args, **kwargs)
+
+    def _generate(self, **kwargs):
+        r"""Generate this parameter.
+
+        Args:
+            **kwargs: Additional keyword arguments are passed to get and
+                generate calls for nested parameters.
+
+        Returns:
+            object: Generated parameter value.
+
+        """
+        if self._starting_color_idx is None:
+            self.initialize_lpy_turtle(self.root.context.turtle)
+        v = self.get('Func', **kwargs)
+        c0 = self.get('')
+        c1 = self.get('Final', None)
+        out = self._starting_color_idx
+        if isinstance(c0, str) or c1 is not None:
+            out += int(255 * v)
+        return out
+
+    def initialize_lpy_context(self, context):
+        r"""Initialize the lpy context for this instance.
+
+        Args:
+            context (lpy.LsysContext): Context to initialize.
+
+        """
+        if self.initialized_lpy_context:
+            return
+        super(ColorPlantParameter, self).initialize_lpy_context(context)
+
+    def initialize_lpy_turtle(self, turtle):
+        r"""Initialize a PglTurtle instance.
+
+        Args:
+            turtle (plantgl.PglTurtle): Turtle to update.
+
+        """
+        import openalea.plantgl.all as pgl
+        c0 = self.get('')
+        c1 = self.get('Final', None)
+        cmap = None
+        if isinstance(c0, str):
+            import matplotlib as mpl
+            cmap = mpl.colormaps[c0]
+        elif c1 is not None:
+            from matplotlib.colors import LinearSegmentedColormap
+            cmap = LinearSegmentedColormap.from_list(
+                self.fullname, [c0, c1])
+        colors = [c0] if cmap is None else [
+            tuple(int(255 * x) for x in cmap(v)[:-1])
+            for v in np.linspace(0, 1, 256)
+        ]
+        self._starting_color_idx = len(turtle.getColorList())
+        for i, color in enumerate(colors):
+            idx = len(turtle.getColorList())
+            name = self.component2colorname(self.component_name, i)
+            material = pgl.Material(name, ambient=color)
+            material.name = name
+            turtle.setMaterial(idx, material)
+        super(ColorPlantParameter, self).initialize_lpy_turtle(turtle)
+
+    @classmethod
+    def component2colorname(cls, component, idx):
+        r"""Create a color name based on the component and color index.
+
+        Args:
+            component (str): Name of component.
+            idx (int): Color index.
+
+        """
+        return f'{component}_{idx}'
+
+    @classmethod
+    def colorname2component(cls, name):
+        r"""Extract the component name from a color name.
+
+        Args:
+            name (str): Color name.
+
+        """
+        return name.rsplit('_', 1)[0]
+
+
 class ScalarPlantParameter(SimplePlantParameter):
     r"""Class for scalar parameters that will have a spread by default
-    and can have a dependence on age, n, or x."""
+    and can have a dependence on age, n, x, or w."""
 
     _name = 'scalar'
     _unit_dimension = None
@@ -2794,11 +2683,33 @@ class ScalarPlantParameter(SimplePlantParameter):
             'type': 'number',
             'description': 'Mean of {parent}',
         },
+        'Min': {
+            'type': 'number',
+            'description': ('Minimum allowed value. Samples of '
+                            'distributions that push the value below '
+                            'this value will be clipped to the minimum'),
+        },
+        'Max': {
+            'type': 'number',
+            'description': ('Maximum allowed value. Samples of '
+                            'distributions that push the value above '
+                            'this value will be clipped to the maximum'),
+        },
         'StdDev': DelayedPlantParameter(
             'scalar', specialize_name='StdDev',
             exclude=['Dist', 'StdDev', 'RelStdDev'],
             _help=('Standard deviation of {parents[1]} normal '
                    'distribution'),
+            # properties={
+            #     'Var': {
+            #         'type': 'array', 'items': {'type': 'string'},
+            #         'description': ('Names of index variables that the '
+            #                         'variance should be dependent on'),
+            #     },
+            # },
+            # defaults={
+            #     'Var': ['N'],
+            # },
         ),
         'RelStdDev': DelayedPlantParameter(
             'scalar', specialize_name='RelStdDev',
@@ -2809,7 +2720,8 @@ class ScalarPlantParameter(SimplePlantParameter):
         'Dist': DistributionPlantParameter.specialize(
             'scalar_dist',
             _help='Distribution that {parents[0]} should be scaled by',
-            _dependencies=['X', 'N', 'Age'],  # Force update for each set
+            _dependencies=['N'],
+            # ['X', 'N', 'Age'],  # Force update for each set
             exclude_options=['normal'],
         ),
         'Func': FunctionPlantParameter.specialize(
@@ -2829,28 +2741,30 @@ class ScalarPlantParameter(SimplePlantParameter):
         ),
         'AgeFunc': FunctionPlantParameter.specialize_var(
             'Age', normvar='AgeMature', maxvar='AgeMature',
+            component_properties=['AgeMature'],
+            _help=('Dependence of {parents[0]} on the {component} age'),
             properties={
-                'AgeSenesce': {
-                    'type': 'number',
-                    'description': (
-                        'Maximum age over which {parent} is valid'
-                    ),
+                'AgeMature': {
+                    'type': 'scalar', 'subtype': 'float', 'units': 'days',
+                    'description': 'Age after which {component} matures',
                 },
             },
-            component_properties=['AgeSenesce', 'AgeMature'],
-            # defaults={'Slope': 1.0, 'Intercept': 0.0},
-            # _default='linear',
-            _help=('Dependence of {parents[0]} on the {component} age'),
+        ),
+        'WFunc': FunctionPlantParameter.specialize_var(
+            'W', normvar='WMax',
+            component_properties=['WMax'],
+            _help=('Dependence of {parents[0]} on the {component} '
+                   'internal iterator count'),
         ),
     }
     _required = ['']
     _modifiers = [
-        'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc'
+        'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
     ]
     _property_dependencies = dict(
         SimplePlantParameter._property_dependencies,
         **{k: {'': True} for k in [
-            'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc'
+            'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
         ]}
     )
     _property_dependencies_defaults = dict(
@@ -2859,27 +2773,29 @@ class ScalarPlantParameter(SimplePlantParameter):
             'value': 1.0,
             'conditions': {
                 k: True for k in [
-                    'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc'
+                    'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
                 ]
             },
         }}
     )
 
-    @property
-    def dependencies(self):
-        r"""list: Set of variables that this parameter is dependent on."""
-        out = super(ScalarPlantParameter, self).dependencies
+    @cached_property
+    def index_parameters(self):
+        r"""list: Set of index parameters that this parameter uses."""
+        out = copy.deepcopy(
+            super(ScalarPlantParameter, self).index_parameters)
+        # TODO: Allow this to be specified
         if 'StdDev' in self.parameters or 'RelStdDev' in self.parameters:
             # Force update for each set
-            out += [k for k in ['X', 'N', 'Age'] if k not in out]
+            out += [
+                k for k in ['N'] if k not in out
+            ]
         return out
 
-    def generate(self, idx, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -2887,18 +2803,23 @@ class ScalarPlantParameter(SimplePlantParameter):
             object: Generated parameter value.
 
         """
-        base = self.parameters.get('', 1.0)
+        base = self.get('', 1.0)
         self.log(f'base = {base}')
-        stddev = self.get('StdDev', None, idx=idx)
+        stddev = self.get('StdDev', None)
+        vmin = self.get('Min', None)
+        vmax = self.get('Max', None)
         out = base
         for k in self._modifiers:
-            v = self.parameters.get(k, None)
-            if v and v.initialized:
-                ifactor = v.generate(idx, **kwargs)
-                self.log(f'{k} = {ifactor}')
-                out *= ifactor
+            v = self.get(k, None)
+            if v is not None:
+                self.log(f'{k} = {v}')
+                out *= v
+        if vmin is not None:
+            assert out >= vmin
+        if vmax is not None:
+            assert out <= vmax
         if stddev is None:
-            relstddev = self.get('RelStdDev', None, idx=idx)
+            relstddev = self.get('RelStdDev', None)
             if relstddev is not None:
                 stddev = np.abs(relstddev * out)
         if stddev is not None:
@@ -2908,7 +2829,10 @@ class ScalarPlantParameter(SimplePlantParameter):
             except BaseException:
                 self.log(f"SAMPLE STDDEV: {out}, {stddev}", force=True)
                 raise
-        self.log(f'{self.fullname} = {out}')
+        if vmin is not None and out < vmin:
+            out = vmin
+        if vmax is not None and out > vmax:
+            out = vmax
         return out
 
 
@@ -3058,14 +2982,10 @@ class CurvePlantParameter(SimplePlantParameter):
                 for kchild in ['Start', 'End']:
                     param.setdefault(f'Patch{kchild}Curve{k}', v)
 
-    def generate(self, idx, return_points=False, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
-            return_points (bool, optional): If True, the control points
-                for the curve will be returned instead of the curve.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -3073,38 +2993,28 @@ class CurvePlantParameter(SimplePlantParameter):
             object: Generated parameter value.
 
         """
-        kwargs['idx'] = idx
-        if ((self._allow_patch and 'Patch' in self.parameters
-             and self.parameters['Patch'].initialized)):
-            if return_points:
-                kwargs.pop('idx')
-                patch = self.parameters['Patch']
+        if self._allow_patch and 'Patch' in self.parameters:
+            if kwargs:
+                patch = self.get('Patch', return_other='instance')
                 return (
-                    patch.parameters('StartCurve').generate(
-                        idx, return_points=return_points, **kwargs),
-                    patch.parameters('EndCurve').generate(
-                        idx, return_points=return_points, **kwargs),
+                    patch.get('StartCurve', **kwargs),
+                    patch.get('EndCurve', **kwargs),
                 )
-            patch = self.get('Patch', **kwargs)
-            tvar = self.get('PatchVar', **kwargs)
-            tnorm = self.parameters.get('PatchNorm', None)
-            tmin = self.parameters.get('PatchMin', None)
-            tmax = self.parameters.get('PatchMax', None)
-            t = self.get(tvar, **kwargs)
+            patch = self.get('Patch')
+            tvar = self.get('PatchVar')
+            tnorm = self.get('PatchNorm', None)
+            tmin = self.get('PatchMin', None)
+            tmax = self.get('PatchMax', None)
+            t = self.get(tvar)
             curve = CurvePatchPlantParameter.sample_curve_patch(
                 patch, t, tnorm=tnorm, tmin=tmin, tmax=tmax)
         else:
-            points = self.get('ControlPoints', **kwargs)
-            symmetry = self.parameters.get('Symmetry', None)
-            closed = self.parameters.get('Closed', False)
-            reverse = self.parameters.get('Reverse', False)
-            thickness = self.get('Thickness', None)
-            curve = self.create_curve(
-                points, symmetry=symmetry, closed=closed,
-                reverse=reverse, thickness=thickness,
-                return_points=return_points,
-            )
-        self.log(f'{self.fullname} = {curve}')
+            points = self.get('ControlPoints')
+            kwargs.setdefault('symmetry', self.get('Symmetry', None))
+            kwargs.setdefault('closed', self.get('Closed', False))
+            kwargs.setdefault('reverse', self.get('Reverse', False))
+            kwargs.setdefault('thickness', self.get('Thickness', None))
+            curve = self.create_curve(points, **kwargs)
         return curve
 
     @classmethod
@@ -3145,10 +3055,31 @@ class CurvePlantParameter(SimplePlantParameter):
         raise NotImplementedError("Sampling curve")
 
     @classmethod
+    def normalize_points(cls, points, closed=False):
+        r"""Normalize a set of points so that the maximum length of the
+        curve (if open) or area inside the polygon (if closed) is 1.
+
+        Args:
+            points (np.ndarray): Points to scale.
+            closed (bool, optional): If True, the curve is closed.
+
+        Returns:
+            np.ndarray: Scaled points.
+
+        """
+        if closed:
+            diff = points - points[:, None]
+            dist = np.max(np.sqrt(np.einsum('ijk,ijk->ij', diff, diff)))
+        else:
+            diff = points[1:, :] - points[:-1, :]
+            dist = np.sum(np.sqrt(diff ** 2))
+        return points / dist
+
+    @classmethod
     def create_curve(cls, points, knots=None, uniform=False,
                      stride=60, degree=3, symmetry=None, closed=False,
                      reverse=False, thickness=None, factor=None,
-                     return_points=False):
+                     return_points=False, return_area=False):
         r"""Create a PlantGL NURBS curve.
 
         Args:
@@ -3171,6 +3102,8 @@ class CurvePlantParameter(SimplePlantParameter):
                 be applied to points.
             return_points (bool, optional): If True, the control points
                 for the curve will be returned instead of the curve.
+            return_area (bool, optional): If True, return the area
+                contained by the curve.
 
         Returns:
             NurbsCurve: Curve instance.
@@ -3183,10 +3116,13 @@ class CurvePlantParameter(SimplePlantParameter):
                 points = cls.reflect_points(points, ax)
         if reverse:
             points = points[::-1, :]
+        area = None
         if thickness is not None:
+            assert thickness < 1
             closed = True
             if points.shape[1] != 2:
                 raise NotImplementedError('Thickness for 3D curve')
+            points = cls.normalize_points(points)
             nthickness1 = int(np.ceil(points.shape[0] / 2))
             nthickness2 = int(np.floor(points.shape[0] / 2))
             assert (nthickness1 + nthickness2) == points.shape[0]
@@ -3195,6 +3131,13 @@ class CurvePlantParameter(SimplePlantParameter):
             thickness0 = np.concatenate([thickness1, thickness2[::-1]])
             points_bottom = points.copy()
             points_bottom[:, 1] -= thickness0
+            if return_area:
+                area_top = np.prod(points[1:, :] - points[:-1, :]) / 2
+                area_bot = np.prod(points_bottom[1:, :]
+                                   - points_bottom[:-1, :]) / 2
+                out = area_top - area_bot
+                assert len(out) == len(thickness0 - 1)
+                area = sum(out)
             points_bottom = points_bottom[::-1, :]
             points = np.concatenate([
                 points[:1, :], points,
@@ -3207,6 +3150,21 @@ class CurvePlantParameter(SimplePlantParameter):
             ])
         if closed and not np.allclose(points[0, :], points[-1, :]):
             points = np.concatenate([points, points[:1, :]])
+        if thickness is None:
+            points = cls.normalize_points(points, closed=closed)
+        if return_area:
+            assert closed
+            out = 0.5 * np.abs(np.dot(points[:, 0],
+                                      np.roll(points[:, 1], 1))
+                               - np.dot(points[:, 1],
+                                        np.roll(points[:, 0], 1)))
+            if area is not None:
+                print("COMPARE CALCS")
+                print(area)
+                print(out)
+                pdb.set_trace()
+                out = area
+            return out
         if return_points:
             return points
         use2D = False
@@ -3283,11 +3241,11 @@ class CurvePatchPlantParameter(SimplePlantParameter):
 
         """
         if tnorm is not None:
-            t /= tnorm
+            t = t / tnorm
             if tmin is not None:
-                tmin /= tnorm
+                tmin = tmin / tnorm
             if tmax is not None:
-                tmax /= tnorm
+                tmax = tmax / tnorm
         if tmin is not None and t < tmin:
             t = 0.0
         elif tmax is not None and t > tmax:
@@ -3330,12 +3288,10 @@ class CurvePatchPlantParameter(SimplePlantParameter):
         ppts = pgl.Point4Matrix(pts)
         return NurbsPatch(ppts, udegree=degree, vdegree=curves[0].degree)
 
-    def generate(self, idx, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -3343,12 +3299,9 @@ class CurvePatchPlantParameter(SimplePlantParameter):
             object: Generated parameter value.
 
         """
-        kwargs['idx'] = idx
         start = self.get('Start', **kwargs)
         end = self.get('End', **kwargs)
-        patch = self.create_curve_patch([start, end])
-        self.log(f'{self.fullname} = {patch}')
-        return patch
+        return self.create_curve_patch([start, end])
 
 
 class Template1DPlantParameter(SimplePlantParameter):
@@ -3374,12 +3327,10 @@ class Template1DPlantParameter(SimplePlantParameter):
         ),
     }
 
-    def generate(self, idx, **kwargs):
+    def _generate(self, **kwargs):
         r"""Generate this parameter.
 
         Args:
-            idx (tuple): Index variables that should be used to generate
-                this parameter.
             **kwargs: Additional keyword arguments are passed to get and
                 generate calls for nested parameters.
 
@@ -3388,8 +3339,7 @@ class Template1DPlantParameter(SimplePlantParameter):
 
         """
         import shapefile
-        shp = shapefile.Reader(self.parameters['']).shapes()[
-            self.parameters['Index']]
+        shp = shapefile.Reader(self.get('')).shapes()[self.get('Index')]
         pts = np.array(shp.points)
         assert pts.ndim == 2
         assert pts.shape[-1] == self._ndim
@@ -3397,7 +3347,6 @@ class Template1DPlantParameter(SimplePlantParameter):
             if i >= self._ndim:
                 break
             pts[:, i] *= self.get(f'{x}Scale', **kwargs)
-        self.log(f'{self.fullname} = {pts}')
         return pts
 
 
@@ -3463,15 +3412,20 @@ class ParameterCollection(SimplePlantParameter):
 # COMPONENTS
 ###############################################
 
-class PlantComponent(OptionPlantParameter):
+class ComponentBase(OptionPlantParameter):
     r"""Base class for generating plant components."""
 
     _registry_key = 'plant_component'
     _name = None
     _name_option = 'Method'
     _help = None
+    _subcomponents = []
     _properties = dict(
         ParameterCollection._properties,
+        WMax={
+            'type': 'integer',
+            'description': 'Number of components in a whorl',
+        },
         Method={
             'type': 'string',
             'description': ('Method that should be used to generate '
@@ -3481,11 +3435,27 @@ class PlantComponent(OptionPlantParameter):
             'length',
             _help='{Component} length',
             _unit_dimension='length',
+            constants={
+                'Min': 0,
+            },
+            defaults={
+                'AgeFunc': 'linear',
+                'AgeFuncSlope': 1.0,
+                'AgeFuncIntercept': 0.0,
+            },
         ),
         Width=ScalarPlantParameter.specialize(
             'width',
             _help='{Component} width',
             _unit_dimension='length',
+            constants={
+                'Min': 0,
+            },
+            defaults={
+                'AgeFunc': 'linear',
+                'AgeFuncSlope': 1.0,
+                'AgeFuncIntercept': 0.0,
+            },
         ),
         Angle=ScalarPlantParameter.specialize(
             'polar_angle',
@@ -3499,7 +3469,65 @@ class PlantComponent(OptionPlantParameter):
             _defaults={'': 0},
             _unit_dimension='angle',
         ),
+        Bend=ScalarPlantParameter.specialize(
+            'bend',
+            _help=('Angle that {component} bends per distance along its '
+                   'length'),
+            _unit_dimension='angle/length',
+            defaults={
+                '': 0,
+            }
+        ),
+        Twist=ScalarPlantParameter.specialize(
+            'twist',
+            _help=('Angle that {component} twists per distance along '
+                   'its length'),
+            _unit_dimension='angle/length',
+            defaults={
+                '': 0,
+            }
+        ),
+        NDivide={
+            'type': 'integer', 'default': 10,
+            'description': ('The number of segments that {component} '
+                            'will be dividied into'),
+        },
+        Thickness=ScalarPlantParameter.specialize(
+            'thickness',
+            _help='Thickness of each {component}',
+            _unit_dimension='length',
+        ),
+        Profile=CurvePlantParameter.specialize(
+            'profile',
+            _help='Profile of {component} cross section',
+            component_properties=['Thickness'],
+        ),
+        Template2D=Template2DPlantParameter,
+        Template3D=Template3DPlantParameter,
+        Color=ColorPlantParameter.specialize(
+            'component_color',
+            _help='{Component} color',
+        ),
+        Density={
+            'type': 'scalar', 'subtype': 'float', 'units': 'g/cm**3',
+            'description': ('Density of the component tissue that '
+                            'should be used to calculate the component '
+                            'mass based on its volume.'),
+        },
     )
+    _option_dependencies = {
+        'cylinder': [
+            # 'Bend', 'Twist',
+            'NDivide',
+        ],
+        'sweep': [
+            'Profile', 'Thickness',  # 'Bend', 'Twist',
+            'NDivide',
+        ],
+        'template2d': ['Template2D', 'Thickness'],
+        'template3d': ['Template3D'],
+        # 'compound': [],
+    }
 
     @staticmethod
     def _on_registration(cls):
@@ -3512,56 +3540,257 @@ class PlantComponent(OptionPlantParameter):
         r"""str: Component that this property belongs to."""
         return self
 
+    @cached_property
+    def index_parameters(self):
+        r"""list: Set of index parameters that this parameter uses."""
+        out = copy.deepcopy(super(ComponentBase, self).index_parameters)
+        if 'NDivide' in self.parameters and 'X' not in out:
+            out.append('X')
+        return out
 
-class LeafComponent(PlantComponent):
+    def XIterator(self):
+        r"""Iterator over X values."""
+        assert 'X' in self.index_parameters
+        DX = 1.0 / self.get("NDivide")
+        assert self.current_index['x'] is None
+        try:
+            x = 0
+            while x <= 1:
+                self.current_index['x'] = x
+                yield x
+                if x == 1:
+                    break
+                x = min(x + DX, 1)
+        finally:
+            self.current_index['x'] = None
+
+    def Volume(self):
+        r"""units.Quantity: The volume contained within the component."""
+        out = None
+        method = self.get('Method')
+        if method in ['cylinder', 'sweep']:
+            if 'NDivide' in self.parameters:
+                length = self.get('Length')
+                out = []
+                xprev = 0.0
+                for x in self.XIterator():
+                    r = self.get('Width') / 2
+                    if 'Profile' in self.parameters:
+                        area = self.get('Profile', return_area=True)
+                    else:
+                        area = np.pi
+                    out.append(length * (x - xprev) * area * (r ** 2))
+                    xprev = x
+                return sum(out)
+            else:
+                length = self.get('Length')
+                r = self.get('Width') / 2
+                if 'Profile' in self.parameters:
+                    area = self.get('Profile', return_area=True)
+                else:
+                    area = np.pi
+                return length * area * (r ** 2)
+        else:
+            raise NotImplementedError(method)
+
+    @property
+    def production(self):
+        r"""list: Lsystem production rule lines."""
+        args = self.lsystem_args(for_rule=True)
+        args_inc = self.lsystem_args(ageinc=True, for_rule=True)
+        prefix = f'generator.{self.name}'
+        out = [
+            f'if age >= {prefix}AgeRemove():',
+            '    if generator.verbose_lpy:',
+            f'        print(f"Removing {self.name}[{{age}},{{n}}]")',
+            '    produce *',
+            'elif (time + age) >= OUTPUT_TIME:',
+            f'    produce {self.name}({args})',
+            'else:',
+            '    if generator.verbose_lpy:',
+            f'        print(f"Ageing {self.name}[{{age}},{{n}}]")',
+            '    ageinc = min(generator.AgeInc(),',
+            '                 OUTPUT_TIME - (time + age))',
+            f'    produce {self.name}({args_inc})',
+        ]
+        return out
+
+    @property
+    def homomorphism(self):
+        r"""list: Lsystem homomorphism rule lines."""
+        args = self.lsystem_args()
+        prefix = f'generator.{self.name}'
+        out = [
+            'if generator.verbose_lpy:',
+            f'    print(f"Homomorphism {self.name}[{{age}},{{n}}]")',
+        ]
+        if 'Color' in self.parameters:
+            out += [
+                f'nproduce SetColor({prefix}Color({args}))',
+            ]
+        if 'RotationAngle' in self.parameters:
+            out += [
+                f'nproduce /({prefix}RotationAngle({args}))',
+            ]
+        if 'Angle' in self.parameters:
+            out += [
+                f'nproduce &({prefix}Angle({args}))',
+            ]
+        for k in self._subcomponents:
+            if k not in self.root.parameters:
+                continue
+            kargs = self.root.parameters[k].lsystem_args(for_rule=True)
+            kout = [
+                f'nproduce {k}({kargs})'
+            ]
+            if 'Profile' in self.parameters:
+                kout[0] += ' @Ge @Gc'
+            out += kout
+        method = self.get('Method')
+        if method in ['cylinder', 'sweep']:
+            if 'Profile' in self.parameters:
+                out.append(
+                    f'nproduce SetContour({prefix}Profile({args},x=0))'
+                )
+            out += [
+                f'length = {prefix}Length({args})',
+                'nproduce F(0.001 * length)',
+            ]
+            if 'NDivide' in self.parameters:
+                args_x = f'{args},x=x'
+                out += [
+                    'xprev = 0.0',
+                    'for x in component.XIterator():',
+                ]
+                out_x = [
+                    'DX = length * (x - xprev)',
+                    'xprev = x',
+                    f'nproduce _({prefix}Width({args_x}))'
+                ]
+                if 'Bend' in self.parameters:
+                    out_x.append(
+                        f'nproduce &({prefix}Bend({args_x})*DX)'
+                    )
+                if 'Twist' in self.parameters:
+                    out_x.append(
+                        f'nproduce /({prefix}Twist({args_x})*DX)'
+                    )
+                if 'Profile' in self.parameters:
+                    out_x.append(
+                        f'nproduce SetContour({prefix}Profile({args_x}))'
+                    )
+                out_x += [
+                    'if x == 1:',
+                    '    produce F(DX)',
+                    'else:',
+                    '    nproduce F(DX)',
+                ]
+                out += ['    ' + x for x in out_x]
+            else:
+                if 'Profile' in self.parameters:
+                    out.append(
+                        f'nproduce SetContour({prefix}Profile({args}))'
+                    )
+                out += [
+                    f'nproduce _({prefix}Width({args}))',
+                    'produce F(length)',
+                ]
+        else:
+            raise NotImplementedError(method)
+        out = [
+            f'component = generator.parameters[\"{self.name}\"]',
+            f'with component.temporary_index({args}):'
+        ] + ['    ' + x for x in out]
+        return out
+
+
+class PetioleComponent(ComponentBase):
+    r"""Petiole component."""
+
+    _name = 'Petiole'
+    _properties = {
+        k: v for k, v in ComponentBase._properties.items()
+        if k not in ['Angle', 'RotationAngle']
+    }
+    _defaults = dict(
+        ComponentBase._defaults,
+        Method='cylinder',
+    )
+
+
+class WhorlComponent(SimplePlantParameter):
+
+    _registry_key = 'plant_component'
+    _name = 'Whorl'
+    _properties = {
+        'Element': {
+            'type': 'string',
+            'description': 'Component that is repeated.'
+        },
+        # 'ElementCount': {
+        #     'type': 'integer',
+        #     'description': 'Number of times that element is repeated',
+        # },
+    }
+    _required = ['Element']
+
+    @property
+    def component(self):
+        r"""str: Component that this property belongs to."""
+        return self
+
+    @property
+    def production(self):
+        r"""list: Lsystem production rule lines."""
+        element = self.get('Element')
+        args = self.root.parameters[element].lsystem_args(for_rule=True)
+        # if 'w' not in args:
+        #     self.log(f'element = {element}, args = {args}', force=True)
+        #     pdb.set_trace()
+        # assert 'w' in args
+        out = [
+            f'for w in range(generator.{element}WMax() - 1):',
+            f'    nproduce [{element}({args})]',
+            f'w = generator.{element}WMax() - 1',
+            f'produce [{element}({args})]',
+        ]
+        return out
+
+    @property
+    def homomorphism(self):
+        r"""list: Lsystem homomorphism rule lines."""
+        return []
+
+
+class NodeComponent(WhorlComponent):
+    r"""Node component."""
+
+    _name = 'Node'
+    _properties = {}
+    _required = []
+    _constants = {'Element': 'Leaf'}
+
+    @property
+    def production(self):
+        r"""list: Lsystem production rule lines."""
+        out = super(NodeComponent, self).production
+        if 'Cotyledon' in self.root.parameters:
+            out_leaf = out
+            out_cot = [x.replace('Leaf', 'Cotyledon') for x in out_leaf]
+            out = [
+                'if n == 0:',
+            ] + ['    ' + x for x in out_cot] + [
+                'else:',
+            ] + ['    ' + x for x in out_leaf]
+        return out
+
+
+class LeafComponent(ComponentBase):
     r"""Leaf component."""
 
     _name = 'Leaf'
     _properties = dict(
-        PlantComponent._properties,
-        Thickness=ScalarPlantParameter.specialize(
-            'leaf_thickness',
-            _help='Thickness of each leaf',
-            _unit_dimension='length',
-        ),
-        Profile=CurvePlantParameter.specialize(
-            'leaf_profile',
-            _help='Profile of leaf cross section',
-            defaults={
-                'Closed': False,
-                'Symmetry': [0],
-                'Reverse': True,
-                'ControlPoints': np.array([
-                    [+0.0,  0.0],
-                    [+0.1,  0.0],
-                    [+0.2,  0.0],
-                    [+0.5,  0.1],
-                    [+1.0,  0.2],
-                ])
-            },
-            component_properties=['Thickness'],
-        ),
-        Bend=ScalarPlantParameter.specialize(
-            'leaf_bend',
-            _help='Angle that a leaf bends per distance along its length',
-            _unit_dimension='angle/length',
-            defaults={
-                '': 0,
-            }
-        ),
-        Twist=ScalarPlantParameter.specialize(
-            'leaf_twist',
-            _help='Angle that a leaf twists per distance along its length',
-            _unit_dimension='angle/length',
-            defaults={
-                '': 0,
-            }
-        ),
-        NDivide={
-            'type': 'integer', 'default': 10,
-            'description': ('The number of segments that the leaf will '
-                            'be dividied into'),
-        },
+        ComponentBase._properties,
         Unfurled={
             'type': 'boolean', 'default': False,
             'description': ('The leaf should be unfurled, starting as a '
@@ -3573,38 +3802,120 @@ class LeafComponent(PlantComponent):
             'description': ('The fraction of the leaf that should be '
                             'unfurled'),
         },
-        Template2D=Template2DPlantParameter,
-        Template3D=Template3DPlantParameter,
     )
+    _subcomponents = ['Petiole']
     _option_dependencies = dict(
-        PlantComponent._option_dependencies,
-        sweep=[
-            'Profile', 'Thickness', 'NDivide', 'Unfurled',
-            'UnfurledLength', 'Bend', 'Twist',
+        ComponentBase._option_dependencies,
+        sweep=ComponentBase._option_dependencies['sweep'] + [
+            'Unfurled', 'UnfurledLength',
         ],
-        template2d=['Template2D', 'Thickness'],
-        template3d=['Template3D'],
     )
     _property_dependencies = dict(
-        PlantComponent._property_dependencies,
+        ComponentBase._property_dependencies,
         UnfurledLength={'Unfurled': [True]},
+    )
+    _defaults = dict(
+        ComponentBase._defaults,
+        ProfileClosed=False,
+        ProfileSymmetry=[0],
+        ProfileReverse=True,
+        ProfileControlPoints=np.array([
+            [+0.0,  0.0],
+            [+0.1,  0.0],
+            [+0.2,  0.0],
+            [+0.5,  0.1],
+            [+1.0,  0.2],
+        ]),
     )
 
 
-class InternodeComponent(PlantComponent):
+class CotyledonComponent(LeafComponent):
+    r"""Cotyledon component."""
+
+    _name = 'Cotyledon'
+
+
+class InternodeComponent(ComponentBase):
     r"""Internode component."""
 
     _name = 'Internode'
-    _option_dependencies = dict(
-        PlantComponent._option_dependencies,
-        cylinder=[],
+    _defaults = dict(
+        ComponentBase._defaults,
+        Method='cylinder',
+        NDivide=10,
+        WidthXFunc='linear',
+        WidthXFuncIntercept=1.0,
+        WidthXFuncSlope=1.0,
+        WidthXFuncSlopeAgeFunc='linear',
+        WidthXFuncSlopeAgeFuncIntercept=-1.0,
+        WidthXFuncSlopeAgeFuncSlope=1.0,
     )
 
 
-class BudComponent(PlantComponent):
+class ApexComponent(ComponentBase):
+    r"""Apex component."""
+
+    _name = 'Apex'
+    _properties = {}
+    _defaults = {}
+    _required = []
+    _option_dependencies = {}
+
+    @property
+    def production(self):
+        r"""list: Lsystem production rule lines."""
+        out = super(ApexComponent, self).production
+        for idx, x in enumerate(out):
+            if x.startswith('else'):
+                break
+        else:
+            raise Exception("Couldn't locate the else")
+        out = out[:idx] + [
+            'elif ((age >= PLASTOCHRON and n < NMax)',
+            '      or ((time + age) == 0 and n == 0)):',
+            '    time = time + age',
+            '    if age >= PLASTOCHRON:'
+            '        age = age - PLASTOCHRON',
+            '    if generator.verbose_lpy:',
+            '        print(f"Node: {n} (t = {time})")',
+            '    nproduce @Ge @Gc Internode(time,age,n)',
+            '    nproduce [Node(time,age,n)]',
+            '    if generator.verbose_lpy:',
+            '        print(f"Next apex: {n + 1}")',
+            '    produce Apex(time,age,n+1)',
+        ] + out[idx:]
+        return out
+
+    @property
+    def homomorphism(self):
+        r"""list: Lsystem homomorphism rule lines."""
+        return ['produce &(90)@o^(90)']
+
+
+class BudComponent(ComponentBase):
     r"""Bud component."""
 
     _name = 'Bud'
+
+
+class PedicelComponent(ComponentBase):
+    r"""Pedicel component."""
+
+    _name = 'Pedicel'
+    _properties = {
+        k: v for k, v in ComponentBase._properties.items()
+        if k not in ['Angle', 'RotationAngle']
+    }
+    _defaults = dict(
+        ComponentBase._defaults,
+        Method='cylinder',
+    )
+
+
+class FlowerComponent(ComponentBase):
+    r"""Flower component."""
+
+    _name = 'Flower'
 
 
 ###############################################
@@ -3628,10 +3939,25 @@ class PlantGenerator(ParameterCollection):
     _arguments = []
     _properties = dict(
         ParameterCollection._properties,
+        data={
+            'type': 'string',
+            'description': (
+                'File containing raw data that should be used '
+                'to set parameters'
+            ),
+        },
         id={
             'type': 'string',
             'description': ('ID string to be associated with this set of '
                             'property values (e.g. genotype or line)'),
+        },
+        Plastocron={
+            'type': 'scalar', 'subtype': 'float', 'units': 'days',
+            'description': 'Time between creation of leaves',
+        },
+        AgeInc={
+            'type': 'scalar', 'subtype': 'float', 'units': 'days',
+            'description': 'Increment that should be used to age the plant',
         },
         AgeMature={
             'type': 'scalar', 'subtype': 'float', 'units': 'days',
@@ -3641,13 +3967,30 @@ class PlantGenerator(ParameterCollection):
             'type': 'scalar', 'subtype': 'float', 'units': 'days',
             'description': 'Age after which {class_name} senesces',
         },
+        AgeRemove={
+            'type': 'scalar', 'subtype': 'float', 'units': 'days',
+            'description': 'Age after which {class_name} is removed',
+        },
         NMax={
             'type': 'integer',
             'description': 'Maximum photomer number',
         },
     )
-    _inherited_properties = ['AgeMature', 'AgeSenesce', 'NMax']
-    _components = {}
+    _defaults = dict(
+        ParameterCollection._defaults,
+        Plastocron=rapidjson.units.Quantity(3.0, 'days'),
+        AgeInc=rapidjson.units.Quantity(1.0, 'days'),
+        AgeMature=rapidjson.units.Quantity(20.0, 'days'),
+        AgeSenesce=rapidjson.units.Quantity(30.0, 'days'),
+        AgeRemove=rapidjson.units.Quantity(np.inf, 'days'),
+        NMax=20,
+    )
+    _inherited_properties = [
+        'AgeMature', 'AgeSenesce', 'AgeRemove', 'NMax',
+    ]
+    _components = {
+        'Apex': {},
+    }
     _skip_arguments = {}
     _unit_dimensions = ['length', 'mass', 'time']
 
@@ -3679,9 +4022,11 @@ class PlantGenerator(ParameterCollection):
         cls._arguments = []
         cls._add_parameter_arguments(cls, cls)
 
-    def __init__(self, param=None, seed=0, verbose=False, debug=False,
-                 debug_param=None, debug_param_prefix=None,
-                 unit_system=None, no_class_defaults=False, **kwargs):
+    def __init__(self, param=None, seed=0, verbose=False,
+                 verbose_lpy=False, debug=False, debug_param=None,
+                 debug_param_prefix=None, unit_system=None,
+                 no_class_defaults=False,
+                 context=None, **kwargs):
         self.seed = seed
         if debug_param is None:
             debug_param = []
@@ -3690,6 +4035,7 @@ class PlantGenerator(ParameterCollection):
         self._debug_param = debug_param
         self._debug_param_prefix = debug_param_prefix
         self._verbose = verbose
+        self.verbose_lpy = verbose_lpy
         self._debugging = debug
         self._no_class_defaults = no_class_defaults
         self.unit_system = UnitSet.from_kwargs(
@@ -3703,6 +4049,8 @@ class PlantGenerator(ParameterCollection):
                          f'{pprint.pformat(kwargs)}')
             assert not kwargs
         param = ParameterDict(param, logger=self)
+        self.context = context
+        self._cache = ParameterCache()
         super(PlantGenerator, self).__init__(
             '', param, None, required=True,
         )
@@ -3748,31 +4096,21 @@ class PlantGenerator(ParameterCollection):
 
     @property
     def crop_class(self):
+        r"""str: Crop class."""
         return self.get("id")
 
     @classmethod
-    def add_arguments(cls, parser, only_crop_parameters=False, **kwargs):
+    def add_arguments(cls, parser, **kwargs):
         r"""Add arguments associated with this subparser to a parser.
 
         Args:
             parser (InstrumentedParser): Parser that the arguments
                 should be added to.
-            only_crop_parameters (list, optional): Set of crop parameters
-                that should be added to the parser.
-            **kwargs: Additional keyword arguments are passed to
-                SubparserBase.add_arguments_static.
+            **kwargs: Additional keyword arguments are passed to parent
+                method.
 
         """
-        from canopy_factory.cli import SubparserBase
-        if only_crop_parameters:
-            kwargs.setdefault('include', [])
-            kwargs['include'] += only_crop_parameters
-        SubparserBase.add_arguments_static(cls, parser, **kwargs)
-        if only_crop_parameters:
-            for k in only_crop_parameters:
-                vparser = parser.get_subparser('crop', cls._name)
-                kaction = vparser.find_argument(k)
-                kaction.dependencies = None
+        super(PlantGenerator, cls).add_arguments(parser, **kwargs)
         if not kwargs.get('only_subparser', False):
             cls._add_ids_from_file(parser)
 
@@ -3790,3 +4128,90 @@ class PlantGenerator(ParameterCollection):
             ids + ids_action.choices if ids_action.choices
             else ids
         )
+        ids_action.default = ids[0]
+        data_action = vparser.find_argument('data')
+        data_action.default = cls._default_data
+
+    @property
+    def lsystem(self):
+        r"""str: Lsystem for the generator."""
+
+        try:
+
+            def header(msg):
+                return '\n'.join([
+                    '',
+                    60 * '#',
+                    f'## {msg}',
+                    60 * '#',
+                    '',
+                ])
+
+            out = [
+                header("External parameters"),
+                'extern(RUNTIME_PARAM = {})',
+                'extern(OUTPUT_TIME = 27)',
+                'extern(DERIVATION_LENGTH = OUTPUT_TIME)'
+                '',
+                header('Python functions'),
+                'from canopy_factory.utils import get_class_registry',
+                f'generator_cls = get_class_registry().get('
+                f'"crop", "{self._name}")',
+                'generator = generator_cls('
+                'context=context(), **RUNTIME_PARAM)',
+                'NMax = generator.NMax()',
+                'PLASTOCHRON = generator.Plastocron()',
+                'StartingAngle = generator.sample_dist(\"uniform\", 0, 360)',
+                'if generator.verbose_lpy:',
+                '    print(f"OUTPUT_TIME = {OUTPUT_TIME}")',
+                '    print(f"DERIVATION_LENGTH = {DERIVATION_LENGTH}")',
+                '    print(f"PLASTOCHRON = {PLASTOCHRON}")',
+                '',
+                header('Begin LSystem syntax'),
+                'module A',
+            ]
+            out += [f'module {k}' for k in self._components.keys()]
+            out += [
+                '',
+                'Axiom: @Gc/(StartingAngle)Apex(0,0,0)@Ge',
+                'derivation length: DERIVATION_LENGTH',
+                '',
+                'production:',
+                '',
+            ]
+            for k in self._components.keys():
+                if k not in self.parameters:
+                    continue
+                v = self.parameters[k]
+                args = v.lsystem_args(for_rule=True)
+                vrule = ['    ' + x for x in v.production]
+                if not vrule:
+                    continue
+                out += [
+                    f'{v.name}({args}):',
+                ] + vrule + ['']
+            out += [
+                'homomorphism:',
+                'maximum depth: 3',
+                '',
+            ]
+            for k in self._components.keys():
+                if k not in self.parameters:
+                    continue
+                v = self.parameters[k]
+                args = v.lsystem_args(for_rule=True)
+                vrule = ['    ' + x for x in v.homomorphism]
+                if not vrule:
+                    continue
+                out += [f'{v.name}({args}):'] + vrule + ['']
+            out += [
+                'interpretation:',
+                '',
+                'endlsystem',
+                '',
+            ]
+        except AttributeError:
+            import traceback
+            print(traceback.format_exc())
+            raise
+        return '\n'.join(out)

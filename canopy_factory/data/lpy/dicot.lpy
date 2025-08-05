@@ -1,0 +1,175 @@
+# Adapted from:
+# Mikolaj Cieslak, Nazifa Khan, Pascal Ferraro, Raju Soolanayakanahally,
+#   Stephen J Robinson, Isobel Parkin, Ian McQuillan, Przemyslaw
+#   Prusinkiewicz, L-system models for image-based phenomics: case
+#   studies of maize and canola, in silico Plants, Volume 4, Issue 1,
+#   2022, diab039, https://doi.org/10.1093/insilicoplants/diab039
+
+
+############################################################
+## WARNING: THE FOLLOWING SECTION IS GENERATED AND SHOULD 
+##   NOT BE MODIFIED DIRECTLY
+############################################################
+
+extern(RUNTIME_PARAM = {})
+from canopy_factory.utils import get_class_registry
+generator_cls = get_class_registry().get("crop", "dicot")
+generator = generator_cls(context=context(), **RUNTIME_PARAM)
+
+############################################################
+## WARNING: THE PREVIOUS SECTION IS GENERATED AND SHOULD 
+##   NOT BE MODIFIED DIRECTLY
+############################################################
+
+
+############################################################
+## External parameters
+############################################################
+
+extern(PLASTOCHRON = 3)  # 3 days
+extern(OUTPUT_TIME = 27)
+extern(START_TIME = OUTPUT_TIME)
+
+
+############################################################
+## Python functions
+############################################################
+
+StartingAngle = generator.sample_dist('uniform', 0, 360)
+ApexNMax = generator.NMax()
+InternodeRotationAngle = generator.InternodeRotationAngle
+InternodeLength = generator.InternodeLength
+InternodeWidth = generator.InternodeWidth
+PetioleLength = generator.PetioleLength
+PetioleWidth = generator.PetioleWidth
+LeafAngle = generator.LeafAngle
+LeafLength = generator.LeafLength
+LeafWidth = generator.LeafWidth
+LeafBend = generator.LeafBend
+LeafTwist = generator.LeafTwist
+LeafProfile = generator.LeafProfile
+LeafRotationAngle = generator.LeafRotationAngle
+LeavesPerNode = generator.LeafWMax()
+DX = 1.0 / generator.LeafNDivide()
+
+from canopy_factory.utils import units
+ageinc = generator.AgeInc()
+# ageinc = units.Quantity(1, 'day')
+# PLASTOCHRON = units.Quantity(PLASTOCHRON, 'day')
+# OUTPUT_TIME = units.Quantity(OUTPUT_TIME, 'day')
+# START_TIME = units.Quantity(START_TIME, 'day')
+
+
+############################################################
+## Begin LSystem syntax
+############################################################
+
+# TODO: Include time in LSystem?
+
+module A  # Apex
+module I  # Internode
+module N  # Node
+module P  # Petiole
+module C  # Cotyledon
+module L  # Leaf
+
+Axiom: @Gc /(StartingAngle)_(0.01)A(START_TIME,0)&(90)@o^(90) @Ge
+
+derivation length: ApexNMax
+production:
+
+# Apex
+A(age,n):
+    if (age <= OUTPUT_TIME and n <= ApexNMax):
+        if (age > generator.AgeSenesce()):
+            produce *
+        elif (age >= PLASTOCHRON):
+            age = age - PLASTOCHRON  # decrement apex age
+            produce I(age,n) [N(age,n)] /(InternodeRotationAngle(age,n)) A(age,n+1)
+        else:
+            produce A(age+ageinc,n)
+
+# Internode
+I(age,n):
+    if age <= generator.InternodeAgeSenesce():
+        produce I(age+ageinc,n)
+    else:
+        produce *
+
+# Node w/ whorl of leaves
+N(age,n):
+    # TODO: Fix transition between petiole and leaf blade
+    if n == 0:
+        for i in range(2):
+            nproduce [/(i * 180) &(LeafAngle(age,n,w=i)) P(age,n,i) @Ge @Gc C(age,i)]
+    else:
+        for i in range(LeavesPerNode):
+            nproduce [/(LeafRotationAngle(age,n,w=i)) &(LeafAngle(age,n,w=i)) P(age,n,i) @Ge @Gc L(age,n,i)]
+
+# Petiole
+P(age,n,i):
+    if age <= generator.PetioleAgeSenesce():
+        produce P(age+ageinc,n,i)
+    else:
+        produce *
+
+# Cotyledon
+C(age,i):
+   if age <= generator.CotyledonAgeSenesce():
+       produce C(age+ageinc,i)
+   else:
+       produce *
+
+# Leaf
+L(age,n,i):
+    if age <= generator.LeafAgeSenesce():
+        produce L(age+ageinc,n,i)
+    else:
+        produce *
+
+homomorphism:
+
+maximum depth: 3
+
+# Internode
+I(age,n):
+    nproduce SetColor(*generator.InternodeColor(age,n))
+    produce F(InternodeLength(age,n),InternodeWidth(age,n))
+
+# Petiole
+P(age,n,i):
+    nproduce SetColor(*generator.PetioleColor(age,n,w=i))
+    produce F(PetioleLength(age,n,w=i),PetioleWidth(age,n,w=i))
+
+# Cotyledon
+C(age,i):
+    # TODO: Allow for different characteristics of cotyledons
+    produce L(age, 0, i)
+
+# Leaf
+L(age,n,i):
+    nproduce SetColor(*generator.LeafColor(age,n,w=i))
+    length = LeafLength(age,n,w=i)
+    x = 0
+    nproduce _(LeafWidth(age,n,x,i))
+    while x < 1:
+        nproduce SetContour(LeafProfile(age,n,x)) F(length*DX)
+        x = x + DX
+        # set width and orientation of next segment
+        if x > 1:
+            x = 1
+        nproduce _(LeafWidth(age,n,x,i)) &(LeafBend(age,n,x,i)*length*DX) /(LeafTwist(age,n,x,i)*length*DX)
+    # generate last segment
+    produce F(length*(1-x))
+
+interpretation:
+
+
+endlsystem
+
+###### INITIALISATION ######
+
+# __lpy_code_version__ = 1.1
+
+# def __initialiseContext__(context):
+#     generator.initialize_lpy_context(context)

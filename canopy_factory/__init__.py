@@ -1,11 +1,12 @@
 from canopy_factory.crops import LayoutTask, GenerateTask
 from canopy_factory.raytrace import (
-    RayTraceTask, RenderTask, AnimateTask, LightTask,
+    RayTraceTask, RenderTask, AnimateTask, TotalsTask,
 )
 
 #################################################################
 # Functions for accessing tasks
 #################################################################
+
 
 def layout(**kwargs):
     r"""Plot the layout of a generated canopy.
@@ -75,17 +76,18 @@ def animate(**kwargs):
     return AnimateTask(**kwargs)
 
 
-def light(**kwargs):
-    r"""Plot the light intercepted by a canopy mesh over a period of time.
+def totals(**kwargs):
+    r"""Compute the total light intercepted by a canopy mesh over a
+    period of time.
 
     Args:
-        **kwargs: Keyword arguments are passed to LightTask.
+        **kwargs: Keyword arguments are passed to TotalsTask.
 
     Returns:
         matplotlib.pyplot.Figure: Figure.
 
     """
-    return LightTask(**kwargs)
+    return TotalsTask(**kwargs)
 
 
 __all__ = []

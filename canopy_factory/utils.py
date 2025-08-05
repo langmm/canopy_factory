@@ -1,11 +1,17 @@
 import os
 import pdb
 import copy
+import pprint
 import numpy as np
 import pandas as pd
 import functools
 import warnings
 import subprocess
+import traceback
+import contextlib
+from abc import abstractmethod
+from collections import OrderedDict
+from collections.abc import MutableMapping
 from datetime import timedelta
 import openalea.plantgl.all as pgl
 from openalea.plantgl.all import Tesselator
@@ -52,7 +58,6 @@ _axis_map = {
     'y': 1,
     'z': 2,
 }
-_solar_times = ['sunrise', 'noon', 'transit', 'sunset']
 
 
 class NoDefault(object):
@@ -64,6 +69,7 @@ class ClassRegistry(object):
     r"""A place to register classes."""
 
     def __init__(self):
+        self._base_registry = {}
         self._registry = {}
         self._properties = {}
 
@@ -77,9 +83,24 @@ class ClassRegistry(object):
         if hasattr(cls, '_on_registration'):
             cls._on_registration(cls)
         key = getattr(cls, '_registry_key', None)
-        name = getattr(cls, '_name', None)
-        if name is not None:
+        if key is None:
+            return
+        name = getattr(cls, '_registry_name', None)
+        if name is None:
+            name = getattr(cls, '_name', None)
+        if name is None:
+            if key in self._base_registry:
+                # raise AssertionError(
+                #     f'Duplicate base ({cls}) registered '
+                #     f'as {key} (existing is {self._base_registry[key]})'
+                # )
+                return
+            self._base_registry[key] = cls
+        else:
             self._registry.setdefault(key, {})
+            if name in self._registry[key]:
+                raise AssertionError(f'Duplicate {name} registered '
+                                     f'as {key}')
             self._registry[key][name] = cls
 
     @classmethod
@@ -303,6 +324,27 @@ class ClassRegistry(object):
         """
         return self.registry(key).items()
 
+    def getbase(self, key, default=NoDefault):
+        r"""Get a base class for a registry key.
+
+        Args:
+            key (str): Sub-registry that should be accessed.
+            default (type, optional): Value that should be returned if
+                the requested entry is not present.
+
+        Returns:
+            type: Registry entry.
+
+        Raises:
+            KeyError: If the requested entry is not present and a default
+                is not provided.
+
+        """
+        out = self._base_registry.get(key, default)
+        if out is NoDefault:
+            raise KeyError(key)
+        return out
+
     def get(self, key, name, default=NoDefault):
         r"""Get a registry entry.
 
@@ -441,6 +483,7 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
 
     _name = None
     _registry_key = None
+    _registry_name = None
     _registered_base_classes = []
 
     def __init__(self):
@@ -455,9 +498,30 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                 base._registered_base_classes + [base])
 
     @classmethod
-    def log_class(cls, message='', prefix=None, border=False,
-                  debug=False, source=None):
+    def log_class(cls, message='', debug=False, **kwargs):
         r"""Emit a log message.
+
+        Args:
+            message (str, optional): Log message.
+            debug (bool, optional): If True, set a Python debugger
+                breakpoint after emitting the message.
+            **kwargs: Additional keyword arguments are passed to the
+                format_log method.
+
+        Returns:
+            str: Log message.
+
+        """
+        msg = cls.format_log(message=message, **kwargs)
+        print(msg)
+        if debug:
+            pdb.set_trace()
+        return msg
+
+    @classmethod
+    def format_log(cls, message='', prefix=None, border=False,
+                   source=None, exception=None):
+        r"""Format a log message.
 
         Args:
             message (str, optional): Log message.
@@ -466,6 +530,8 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                 after the message.
             source (str, optional): Source class that the message was
                 emitted by.
+            exception (BaseException, optional): Error that traceback
+                should be reported for.
 
         """
         if prefix is None:
@@ -473,13 +539,18 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                 prefix = f'{cls._name}: '
             else:
                 prefix = f'{cls._name} [{source}]: '
-        msg = f'{prefix}{message}'
+        msg = f'{prefix}{message}' if isinstance(prefix, str) else message
+        if exception is not None:
+            msg += '\n' + ''.join(traceback.format_exception(exception))
         if border:
             line = 80 * '-'
             msg = line + '\n' + msg + '\n' + line
-        print(msg)
-        if debug:
-            pdb.set_trace()
+        return msg
+
+    @property
+    def log_prefix(self):
+        r"""str: Prefix to add to messages emitted by this instance."""
+        return None
 
     def log(self, message='', force=False, cls=None, **kwargs):
         r"""Emit a log message.
@@ -494,28 +565,26 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
         """
         if not (getattr(self, 'verbose', True) or force):
             return
+        kwargs.setdefault('prefix', self.log_prefix)
         source = None
         if cls is None:
             cls = self
         else:
             source = self._name
-        cls.log_class(message=message, source=source, **kwargs)
+        return cls.log_class(message=message, source=source, **kwargs)
 
-    def error(self, error_cls, message='', debug=False, prefix=None):
+    def error(self, error_cls, message='', **kwargs):
         r"""Raise an error, adding context to the message.
 
         Args:
             error_cls (type): Error class.
             message (str, optional): Error message.
-            debug (bool, optional): If True, set a debug break point.
-            prefix (str, optional): Prefix to use.
+            **kwargs: Additional keyword arguments are passed to
+                log.
 
         """
-        if prefix is None:
-            prefix = f'{self.log_prefix_instance}: {self.log_prefix_stack}'
-        msg = f'{prefix}{message}'
-        if debug:
-            self.debug(f'{error_cls}({msg})')
+        kwargs['force'] = True
+        msg = self.log(f'ERROR: {error_cls}({message})', **kwargs)
         raise error_cls(msg)
 
     def debug(self, message='', **kwargs):
@@ -528,8 +597,11 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                 log method if it is called.
 
         """
-        self.log(f'DEBUG: {message}', force=True, **kwargs)
-        pdb.set_trace()
+        kwargs.update(
+            debug=True,
+            force=True,
+        )
+        self.log(f'DEBUG: {message}', **kwargs)
 
     def clear_cached_properties(self, exclude=None, include=None,
                                 args=False):
@@ -634,7 +706,12 @@ def generate_filename(basefile, ext=None, suffix=None, directory=None):
 
     """
     assert ext or suffix or directory
-    out = basefile
+    if basefile:
+        out = basefile
+    else:
+        assert suffix
+        out = suffix
+        suffix = None
     if ext:
         out = os.path.splitext(out)[0] + ext
     if suffix:
@@ -699,7 +776,8 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
                   f'Aborting.')
         return
     if verbose:
-        print(f'Writing movie with {len(frames)} frames to \"{fname}\"')
+        print(f'Writing movie with {len(frames)} frames to \"{fname}\"'
+              f':\n{pprint.pformat(frames)}')
     frame_dir = os.path.dirname(frames[0])
     fname_base = os.path.basename(os.path.splitext(fname)[0])
     fname_concat = os.path.join(frame_dir, f'concat_{fname_base}.txt')
@@ -750,7 +828,7 @@ def read_csv(fname, select=None, verbose=False, include_units=True):
     """
     if verbose:
         print(f'Reading CSV from \"{fname}\"')
-    df = pd.read_csv(fname)
+    df = pd.read_csv(fname, comment='#')
     out = {}
     for k in df.columns:
         out[k] = df[k].to_numpy()
@@ -771,13 +849,15 @@ def read_csv(fname, select=None, verbose=False, include_units=True):
     return out
 
 
-def write_csv(data, fname, verbose=False):
+def write_csv(data, fname, verbose=False, comments=None):
     r"""Write columns to a CSV file.
 
     Args:
         data (dict): Table columns.
         fname (str): Path to file where the CSV should be saved.
         verbose (bool, optional): If True, log messages will be emitted.
+        comments (list, optional): Comments to add at the beginning of the
+            file.
 
     """
     if verbose:
@@ -799,7 +879,12 @@ def write_csv(data, fname, verbose=False):
         print({k: type(v) for k, v in data.items()})
         pdb.set_trace()
         raise
-    df.to_csv(fname, index=False, header=header)
+    mode = 'w'
+    if comments:
+        with open(fname, 'w') as fd:
+            fd.write('\n'.join([f'# {x}' for x in comments]) + '\n')
+        mode = 'a'
+    df.to_csv(fname, index=False, header=header, mode=mode)
     if verbose:
         print(f"Wrote CSV to \"{fname}\"")
 
@@ -1200,7 +1285,8 @@ def prune_empty_faces(mesh, area_min=None):
     return out
 
 
-def scene2geom(scene, cls, d=None, verbose=False, **kwargs):
+def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
+               components=None, **kwargs):
     r"""Convert a PlantGL scene to a 3D geometry mesh.
 
     Args:
@@ -1210,6 +1296,10 @@ def scene2geom(scene, cls, d=None, verbose=False, **kwargs):
         d (plantgl.Tesselator, optional): PlantGL discretizer.
         verbose (bool, optional): If True, display log messages about
             tasks.
+        colormap (str, dict, optional): Name of matplotlib colormap or
+            a dictionary mapping IDs to colors for each scene ID.
+        components (dict, optional): Dictionary that component face
+            face ranges should be added to.
         **kwargs: Additional keyword arguments are passed to shape2dict
             for each shape in the scene.
 
@@ -1229,7 +1319,24 @@ def scene2geom(scene, cls, d=None, verbose=False, **kwargs):
     if verbose:
         print(f'scene2geom: Converting scene with {len(scene_dict)} '
               f'components')
+    cmap = None
+    if isinstance(colormap, str):
+        import matplotlib as mpl
+        kmax = max(scene_dict.keys())
+
+        def fcmap(x):
+            return tuple([
+                int(255 * i) for i in
+                mpl.colormaps['viridis'](x/kmax)[:-1]
+            ])
+
+        cmap = fcmap
+
+    elif isinstance(colormap, dict):
+        cmap = colormap.get
     for k, shapes in scene_dict.items():
+        if cmap is not None:
+            kwargs['color'] = cmap(k)
         for shape in shapes:
             d.clear()
             shapedict = shape2dict(shape, d=d, as_obj=as_obj,
@@ -1237,6 +1344,12 @@ def scene2geom(scene, cls, d=None, verbose=False, **kwargs):
             igeom = cls.from_dict(shapedict)
             if igeom is not None:
                 igeom = prune_empty_faces(igeom)
+                if components is not None:
+                    from canopy_factory.crops.base import ColorPlantParameter
+                    component = ColorPlantParameter.colorname2component(
+                        shape.appearance.name)
+                    components.setdefault(component, [])
+                    components[component].append((out.nface, igeom.nface))
                 out.append(igeom)
             d.clear()
     if verbose:
@@ -1245,7 +1358,7 @@ def scene2geom(scene, cls, d=None, verbose=False, **kwargs):
 
 
 def shape2dict(shape, d=None, conversion=1.0, as_obj=False,
-               color=(0, 255, 0), verbose=False,
+               color=None, verbose=False,
                axis_up=_default_axis_up, axis_x=_default_axis_x):
     r"""Convert a PlantGL shape to a 3D geometry dictionary.
 
@@ -1301,13 +1414,17 @@ def shape2dict(shape, d=None, conversion=1.0, as_obj=False,
             {k: vv for k, vv in zip(['x', 'y', 'z'], v)})
     # Colors
     if d.result.colorPerVertex and d.result.colorList:
+        color = None
         if d.result.isColorIndexListToDefault():
             for i, c in enumerate(d.result.colorList):
                 for k in ['red', 'green', 'blue']:
                     out['vertices'][i][k] = getattr(c, k)
         else:  # pragma: debug
             raise Exception("Indexed vertex colors not supported.")
-    elif color:
+    elif color is None:
+        color = tuple(getattr(shape.appearance.ambient, k)
+                      for k in ['red', 'green', 'blue'])
+    if color:
         for x in out['vertices']:
             for k, c in zip(['red', 'green', 'blue'], color):
                 x[k] = c
@@ -1490,12 +1607,13 @@ def shift_mesh(mesh, x, y, axis_up=np.array([0, 0, 1], dtype=np.float64),
 
     """
     mesh_dict = mesh.as_array_dict()
-    if isinstance(mesh, ObjDict):
+    if isinstance(mesh, ObjDict) and 'face' in mesh_dict:
         mesh_dict['face'] -= 1
-    axis_y = np.cross(axis_up, axis_x)
-    mesh_dict['vertex'] += x * axis_x
-    mesh_dict['vertex'] += y * axis_y
-    if plantid and plantids_in_blue:
+    if 'vertex' in mesh_dict:
+        axis_y = np.cross(axis_up, axis_x)
+        mesh_dict['vertex'] += x * axis_x
+        mesh_dict['vertex'] += y * axis_y
+    if plantid and plantids_in_blue and 'vertex_colors' in mesh_dict:
         mesh_dict['vertex_colors'][:, 2] += plantid
     out = type(mesh).from_array_dict(mesh_dict)
     return out
@@ -1594,11 +1712,12 @@ def apply_color_map(values, color_map=None,
 #################################################################
 # TODO: Move these into cli.py?
 
-def jsonschema2argument(json):
+def jsonschema2argument(json, no_defaults=False):
     r"""Contruct a argparser argument from a jsonschema description.
 
     Args:
         json (dict): JSON schema.
+        no_defaults (bool, optional): If True, don't include defaults.
 
     Returns:
         dict: Keyword arguments for adding an argument to an argument
@@ -1618,23 +1737,36 @@ def jsonschema2argument(json):
                             f'to an argument: {json["oneOf"]}, errors = '
                             f'{errors}')
     typename = json.get('subtype', json.get('type', None))
+    items = json.get('items', None)
     if typename is not None:
+        if ((isinstance(typename, list) and len(typename) == 2
+             and 'array' in typename)):
+            nonarray = [x for x in typename if x != 'array'][0]
+            if items is None:
+                items = dict(json, type=nonarray)
+            typename = 'array'
         if not isinstance(typename, str):
             raise TypeError(f'JSON type should be string, not {typename} '
                             f'(json = {json})')
-        if ((typename == 'array'
-             and isinstance(json.get('items', None), dict))):
-            out = jsonschema2argument(json['items'])
+        if typename == 'array' and isinstance(items, dict):
+            out = jsonschema2argument(items)
             if (('minItems' in json and 'maxItems' in json
                  and json['minItems'] == json['maxItems'])):
                 out['nargs'] = json['minItems']
             else:
                 out['nargs'] = '+'
         elif typename == 'boolean':
-            if json['default']:
-                out['action'] = 'store_false'
+            if no_defaults:
+                out.update(
+                    nargs='?',
+                    const=(not json.get('default', False)),
+                )
             else:
-                out['action'] = 'store_true'
+                assert 'action' not in out
+                if json.get('default', False):
+                    out['action'] = 'store_false'
+                else:
+                    out['action'] = 'store_true'
         elif typename == 'string':
             out['type'] = str
         elif typename in ['number', 'float']:
@@ -1647,7 +1779,7 @@ def jsonschema2argument(json):
         out['choices'] = json['enum']
     if not out:
         raise TypeError(f'Unsupported JSON schema: {json}')
-    if 'default' in json:
+    if 'default' in json and not no_defaults:
         out['default'] = json['default']
     if json.get('type', None) == 'ndarray':
         out['nargs'] = '+'
@@ -1699,51 +1831,6 @@ def parse_quantity(x, default_units=None):
     elif isinstance(x, np.ndarray):
         return units.QuantityArray(x, default_units)
     return units.Quantity(x, default_units)
-
-
-def parse_solar_time(x, date, latitude, longitude, altitude=None,
-                     location=None, method='spa', horizon_buffer=5.0):
-    r"""Parse an input string as a solar time.
-
-    Args:
-        x (str): Input string. Can be 'sunrise', 'noon', or 'sunset'.
-        date (datetime.datetime): Date to get solar time on.
-        latitude (float): Latitude of location to get solar time for.
-        longitude (float): Longitude of location to get solar time for.
-        altitude (float, str): Altitude of location to get solar time
-            for.
-        location (pvlib.location.Location, optional): pvlib location to
-            use instead of creating one.
-        method (str, optional): Method that pvlib should use to determine
-            the solar times.
-        horizon_buffer (float, optional): Time (in minutes) that should
-            be added or subtracted to times when the sun is at the
-            horizon.
-
-    Returns:
-        datetime.datetime: Time determined from solar position.
-
-    """
-    import pvlib
-    assert x in _solar_times
-    if x == 'noon':
-        x = 'transit'
-    if location is None:
-        location = pvlib.location.Location(
-            latitude, longitude, altitude=altitude, tz=str(date.tzinfo),
-        )
-    date_pv = pd.DatetimeIndex([date])
-    # date_pv = pvlib.tools._datetimelike_scalar_to_datetimeindex(date)
-    out_pd = location.get_sun_rise_set_transit(date_pv, method=method)[x]
-    out = out_pd.iloc[0].to_pydatetime()
-    if horizon_buffer:
-        if x == 'sunrise':
-            out += timedelta(minutes=int(parse_quantity(horizon_buffer,
-                                                        'minutes')))
-        elif x == 'sunset':
-            out -= timedelta(minutes=int(parse_quantity(horizon_buffer,
-                                                        'minutes')))
-    return out
 
 
 def parse_axis(x):
@@ -1818,6 +1905,221 @@ def format_list_for_help(vals, sep=', '):
     if len(vals) > 1:
         vals = vals[:-2] + [' & '.join(vals[-2:])]
     return sep.join(vals)
+
+
+class SolarModel(object):
+    r"""Solar model using pvlib. For quantities with units, values can
+    be provided as floats (in which case the default units will be
+    assumed) or units.Quantity instances.
+
+    Args:
+        latitude (float): Location latitude (in degrees).
+        longitude (float): Location latitude (in degrees).
+        time (datetime.datetime): Time.
+        altitude (float, optional): Altitude (in meters) used to compute
+            solar position. If not provided, but pressure is, pressure
+            will be used to calculate altitude.
+        pressure (float, optional): Pressure (in Pa) used to compute
+            solar position. If not provided, but altitude is, altitude
+            will be used to calculate pressure.
+        temperature (float, optional): Air temperature (in degrees C)
+            used to compute solar position.
+        eta_par (float, optional): Fraction of solar radiation (assuming
+            black-body spectrum of 5800 K) that is photosynthetically
+            active (wavelengths 400–700 nm).
+        eta_photon (float, optional): Average number of photons per
+            photosynthetically activate unit of radiation (in
+            µmol s−1 W−1).
+        method_solar_position (str, optional): Method that should be used
+            by pvlib to determine the solar position.
+        method_airmass (str, optional): Model that should be used by
+            pvlib to determine the relative air mass.
+        method_irradiance (str, optional): Model that should be used by
+            pvlib to determine the solar irradiance.
+
+    """
+
+    _solar_times = ['sunrise', 'noon', 'transit', 'sunset']
+
+    def __init__(self, latitude, longitude, time, altitude=None,
+                 pressure=None, temperature=12.0, eta_par=0.368,
+                 eta_photon=4.56, method_solar_position='nrel_numpy',
+                 method_airmass='kastenyoung1989',
+                 method_irradiance='ineichen'):
+        import pvlib
+        self.pvlib = pvlib
+        if pressure is None and altitude is None:
+            pressure = 101325.0
+            altitude = 0.0
+        self.latitude = parse_quantity(latitude, 'degrees')
+        self.longitude = parse_quantity(longitude, 'degrees')
+        self.time = time
+        self.altitude = parse_quantity(altitude, 'meters')
+        self.pressure = parse_quantity(pressure, 'Pa')
+        self.temperature = parse_quantity(temperature, 'degC')
+        self.eta_par = eta_par
+        self.eta_photon = parse_quantity(eta_photon, 'µmol s-1 W-1')
+        self.method_solar_position = method_solar_position
+        self.method_airmass = method_airmass
+        self.method_irradiance = method_irradiance
+        if self.pressure is None:
+            self.pressure = parse_quantity(pvlib.atmosphere.alt2pres(
+                self.altitude.value), 'Pa')
+        if self.altitude is None:
+            self.altitude = parse_quantity(pvlib.atmosphere.pres2alt(
+                self.pressure.value), 'meters')
+        self.location = pvlib.location.Location(
+            self.latitude.value, self.longitude.value,
+            altitude=self.altitude.value,
+            tz=self.time.tzinfo,
+        )
+        self.time_pv = pvlib.tools._datetimelike_scalar_to_datetimeindex(
+            self.time)
+        self._solar_position = None
+        self._irradiance = None
+
+    def solar_time(self, x, method='spa', horizon_buffer=5.0):
+        r"""Parse an input string as a solar time.
+
+        Args:
+            x (str): Input string. Can be 'sunrise', 'noon', or 'sunset'.
+            method (str, optional): Method that pvlib should use to
+                determine the solar times.
+            horizon_buffer (float, optional): Time (in minutes) that
+                should be added or subtracted to times when the sun is
+                at the horizon.
+
+        Returns:
+            datetime.datetime: Time determined from solar position.
+
+        """
+        assert x in self._solar_times
+        date = self.time.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if x == 'noon':
+            x = 'transit'
+        date_pv = pd.DatetimeIndex([date])
+        out_pd = self.location.get_sun_rise_set_transit(
+            date_pv, method=method)[x]
+        out = out_pd.iloc[0].floor(freq='us').to_pydatetime()
+        if horizon_buffer:
+            if x == 'sunrise':
+                out += quantity2timedelta(
+                    parse_quantity(horizon_buffer, 'minutes'))
+            elif x == 'sunset':
+                out -= quantity2timedelta(
+                    parse_quantity(horizon_buffer, 'minutes'))
+        return out
+
+    @property
+    def solar_position(self):
+        r"""dict: Solar position information."""
+        if self._solar_position is None:
+            self._solar_position = self.location.get_solarposition(
+                self.time_pv, pressure=self.pressure.value,
+                temperature=self.temperature.value,
+                method=self.method_solar_position,
+            )
+        return self._solar_position
+
+    @property
+    def apparent_elevation(self):
+        r"""units.Quantity: Apparent elevation of the sun."""
+        return parse_quantity(
+            self.solar_position["apparent_elevation"].iloc[0], 'degrees')
+
+    @property
+    def azimuth(self):
+        r"""units.Quantity: Azimuth angle of the sun."""
+        return parse_quantity(
+            self.solar_position["azimuth"].iloc[0], 'degrees')
+
+    def relative_direction(self, up, north):
+        from hothouse.blaster import SunRayBlaster
+        blaster = SunRayBlaster(
+            latitude=self.latitude.value, longitude=self.longitude.value,
+            date=self.time, solar_altitude=self.apparent_elevation,
+            solar_azimuth=self.azimuth,
+            zenith=up.astype('f4'), north=north.astype('f4'),
+            ground=np.zeros((3,), 'f4'),
+            # direct_ppfd=self.ppfd_direct,
+            # diffuse_ppfd=self.ppfd_diffuse,
+        )
+        return -blaster.forward
+
+    # @property
+    # def airmass(self):
+    #     r"""pandas.DataFrame: Relative and absolute air mass."""
+    #     return self.location.get_airmass(
+    #         solar_position=self.solar_position,
+    #         method=self.method_airmass,
+    #     )
+
+    @property
+    def relative_airmass(self):
+        r"""float: Relative (not pressure-adjusted) airmass at sea
+        level."""
+        return self.pvlib.atmosphere.get_relative_airmass(
+            self.solar_position['apparent_zenith'])
+
+    @property
+    def absolute_airmass(self):
+        r"""float: Absolute (pressure-adjusted) airmass."""
+        return self.pvlib.atmosphere.get_absolute_airmass(
+            self.relative_airmass, self.pressure)
+
+    @property
+    def linke_turbidity(self):
+        r"""float: Linke Turibidity for the time/location."""
+        return self.pvlib.clearsky.lookup_linke_turbidity(
+            self.time_pv, self.latitude.value, self.longitude.value)
+
+    @property
+    def dni_extra(self):
+        r"""units.Quantity: Extraterrestrial radiation incident on a
+        surface normal to the sun (in W/m**2)."""
+        return parse_quantity(
+            self.pvlib.irradiance.get_extra_radiation(self.time_pv),
+            "W m-2")
+
+    @property
+    def irradiance(self):
+        r"""pandas.DataFrame: Solar irradiance."""
+        if self._irradiance is None:
+            self._irradiance = self.location.get_clearsky(
+                self.time, model=self.method_irradiance,
+                solar_position=self.solar_position,
+                dni_extra=self.dni_extra,
+                linke_turbidity=self.linke_turbidity,
+                airmass_absolute=self.absolute_airmass,
+            )
+        return self._irradiance
+
+    @property
+    def dni(self):
+        r"""units.Quantity: Direct normal irradiance"""
+        return self.irradiance['dni']
+
+    @property
+    def dhi(self):
+        r"""units.Quantity: Diffuse horizontal irradiance"""
+        return self.irradiance['dhi']
+
+    @property
+    def ghi(self):
+        r"""units.Quantity: Global horizontal irradiance"""
+        return self.irradiance['ghi']
+
+    @property
+    def ppfd_direct(self):
+        r"""units.Quantity: Direct photosynthetic photon flux density"""
+        return self.eta_par * self.eta_photon * self.dni
+
+    @property
+    def ppfd_diffuse(self):
+        r"""units.Quantity: Diffuse photosynthetic photon flux density"""
+        return self.eta_par * self.eta_photon * self.dhi
 
 
 class UnitSet(object):
@@ -1981,15 +2283,903 @@ class UnitSet(object):
                 out[f'{prefix}{k}{suffix}'] = str(v) if as_strings else v
         return out
 
-    def convert(self, x):
-        r"""Convert a quantity to this unit system.
+    def add_units(self, x, dimension):
+        r"""Add units to a quantity with the specified dimensionality.
 
         Args:
             x (units.QuantityArray): Quantity with units.
+            dimension (str): Dimensions of units that should be added.
 
         Returns:
             units.QuantityArray: x converted to this unit system.
 
         """
-        assert isinstance(x, units.QuantityArray)
-        return x.to_system(self.units)
+        x_units = getattr(self, dimension)
+        if not isinstance(x, units.QuantityArray):
+            if isinstance(x, np.ndarray):
+                x = units.QuantityArray(x, x_units)
+            else:
+                x = units.Quantity(x, x_units)
+            return x
+        assert x.is_compatible(x_units)
+        return self.convert(x)
+
+    def convert(self, x, strip=False):
+        r"""Convert a quantity to this unit system.
+
+        Args:
+            x (units.QuantityArray): Quantity with units.
+            strip (bool, optional): If True, return a float version with
+                the units stripped.
+
+        Returns:
+            units.QuantityArray: x converted to this unit system.
+
+        """
+        if not isinstance(x, units.QuantityArray):
+            return x
+        if x.units.is_dimensionless():
+            out = x
+        else:
+            out = x.to_system(self.units)
+        if strip:
+            out = float(out)
+        return out
+
+
+def quantity2timedelta(x):
+    r"""Convert a quantity to a datetime timedelta difference.
+
+    Args:
+        x (units.Quantity): Quantity with time units.
+
+    Returns:
+        datetime.timedelta: Time difference.
+
+    """
+    order = ['days', 'seconds', 'microseconds']
+    kws = {}
+    for k in order:
+        x = x.to(k)
+        xk = int(x)
+        x = x - units.Quantity(xk, k)
+        kws[k] = xk
+    return timedelta(**kws)
+
+
+def timedelta2quantity(x):
+    r"""Convert a datetime.timedelta instance into a quantity.
+
+    Args:
+        x (datetime.timedelta): Time difference.
+
+    Returns:
+        units.Quantity: Quantity with time units.
+
+    """
+    return units.Quantity(x.total_seconds(), 'seconds').to('days')
+
+
+def get_mesh_dict(x):
+    r"""Convert a ObjDict/PlyDict instance to a dictionary.
+
+    Args:
+        x (ObjDict, PlyDict): Mesh to convert.
+
+    Returns:
+        dict: Mapping between face/vertices and arrays.
+
+    """
+    out = x.as_array_dict()
+    out.setdefault('face', np.empty((0,), dtype=np.int64))
+    out.setdefault('vertex', np.empty((0, 3), dtype=np.double))
+    out.setdefault('vertex_colors', np.empty((0, 3), dtype=np.int32))
+    if isinstance(x, ObjDict):
+        out['face'] -= 1
+    return out
+
+
+############################################################
+# Enhanced dictionaries
+############################################################
+
+class ImmutableDictException(BaseException):
+    pass
+
+
+class DictWrapper(MutableMapping):
+    r"""Abstract base class for dictionary wrappers."""
+
+    def __init__(self, logger=None, logger_prefix=''):
+        self.logger = logger
+        self._logger_prefix = logger_prefix
+        self._original_keys = set(self.keys(raw=True))
+        # TODO: Remove this check
+        # allkeys = list(self.keys())
+        # if len(allkeys) != len(set(allkeys)):
+        #     pdb.set_trace()
+        # assert len(allkeys) == len(set(allkeys))
+
+    @property
+    @abstractmethod
+    def dest(self):
+        r"""DictWrapper: Destination dictionary for added keys."""
+        raise ImmutableDictException("Immutable")
+
+    @property
+    def mutable(self):
+        r"""bool: True if keys can be added to the dictionary."""
+        try:
+            self.dest
+            return True
+        except ImmutableDictException:
+            return False
+
+    @property
+    def flattened(self):
+        r"""dict: Flattened version of the members."""
+        return dict(self.items())
+
+    @property
+    def raw_flattened(self):
+        r"""dict: Copy of raw destination dictionary (with prefix)"""
+        return dict(self.items(raw=True))
+
+    def __repr__(self):
+        return self.flattened.__repr__()
+
+    def __len__(self):
+        return len(list(self._get_iterator()))
+
+    def __iter__(self):
+        for k, v in self._get_iterator():
+            yield k
+
+    def keys(self, raw=False, prefix=None):
+        r"""Wrapped dictionary keys with prefixes removed.
+
+        Args:
+            raw (bool, optional): If True, the raw dictionary keys will
+                be returned without the prefix removed.
+            prefix (str, optional): If True, only return keys that start
+                with this prefix.
+
+        Returns:
+            dict_keys: Keys view.
+
+        """
+        if not (raw or prefix):
+            return super(DictWrapper, self).keys()
+        return [k for k, v in self._get_iterator(raw=raw)
+                if (prefix is None or k.startswith(prefix))]
+
+    def items(self, raw=False):
+        r"""Wrapped dictionary items with prefixes removed from keys.
+
+        Args:
+            raw (bool, optional): If True, the raw dictionary items will
+                be returned without the prefix removed.
+
+        Returns:
+            dict_items: Items view.
+
+        """
+        if not raw:
+            return super(DictWrapper, self).items()
+        return [x for x in self._get_iterator(raw=raw)]
+
+    def setdefault(self, k, v):
+        if k in self:
+            return
+        self[k] = v
+
+    @property
+    def added(self):
+        r"""set: Keys added to the dictionary."""
+        return set(self.keys()) - self._original_keys
+
+    @property
+    def removed(self):
+        r"""set: Keys removed from the dictionary."""
+        return self._original_keys - set(self.keys())
+
+    @classmethod
+    def select_keys(cls, x, prefix=''):
+        return {
+            k: copy.deepcopy(v) for k, v in x.items()
+            if (not prefix) or k.startswith(prefix)
+        }
+
+    @classmethod
+    def remove_prefixed_keys(cls, x, prefix):
+        for k in list(x.keys()):
+            if k.startswith(prefix):
+                del x[k]
+
+    def _forward_key(self, k):
+        return k
+
+    def _reverse_key(self, k):
+        return k
+
+    def count_prefix(self, prefix, raw=False):
+        r"""Count the number of keys that start with a prefix.
+
+        Args:
+            prefix (str): Prefix to count.
+            raw (bool, optional): If True, the raw dictionary keys will
+                be checked for the provided prefix.
+
+        """
+        return len(list(self.keys(raw=raw, prefix=prefix)))
+
+    def copy_src2dst(self, kdst, ksrc=NoDefault, overwrite=False):
+        r"""Copy a key/value pair from the source dictionary to the
+        destination dictionary if it is present in the source dictionary
+        and not present in the destination dictionary.
+
+        Args:
+            kdst (str): Key that should be assigned to in the destination.
+            ksrc (str, optional): Key that should be copyied from the
+                source dictionary. If not provided, kdst is used.
+            overwrite (bool, optional): If True, overwrite any existing
+                value in the destination dictionary.
+
+        """
+        if ksrc == NoDefault:
+            ksrc = kdst
+        val = NoDefault
+        if ksrc in self:
+            val = self[ksrc]
+        elif kdst in self:
+            val = self[kdst]
+        kdst_raw = self._forward_key(kdst)
+        if (overwrite or kdst_raw not in self.dest) and val is not NoDefault:
+            self.dest[kdst_raw] = val
+
+    def remove_cond(self, fcond):
+        r"""Remove key/value pairs from this dictionary based on the
+        value of a provided function.
+
+        Args:
+            fcond (callable): Function that takes a single raw key/value
+                pair and returns True when the pair should be removed.
+
+        """
+        for k, v in list(self.items(raw=True)):
+            if not fcond(k, v):
+                del self[self._reverse_key(k)]
+
+    def select_cond(self, fcond, transform=False, deepcopy=False):
+        r"""Create a new PrefixedDict instance that only includes
+        key/value pairs selected by the provided function.
+
+        Args:
+            fcond (callable): Selection function that takes a single
+                key/value pair and returns True or False to indicate
+                if the pair is selected.
+            transform (bool, callable, optional): A function that should
+                be used to transform raw keys for inclusion in the
+                returned dictionary. If True, self._reverse_key will be
+                used.
+            deepcopy (bool, optional): If True, deepcopy values.
+
+        Returns:
+            dict: Dictionary containing selected members.
+
+        """
+        if transform is True:
+            transform = self._reverse_key
+        wrapped = {}
+        for k, v in self.items(raw=True):
+            if fcond(k, v):
+                kx = transform(k) if transform else k
+                if deepcopy:
+                    wrapped[kx] = copy.deepcopy(v)
+                else:
+                    wrapped[kx] = v
+        return wrapped
+
+    def remove_prefix(self, prefix, **kwargs):
+        r"""Remove keys that start with the provided prefix.
+
+        Args:
+            prefix (str): Prefix to remove keys with.
+            **kwargs: Additional keyword arguments are passed to
+                remove_cond.
+
+        """
+
+        def fcond(k, v):
+            return ((not prefix) or k.startswith(prefix))
+
+        self.remove_cond(fcond, **kwargs)
+
+    def select_prefix(self, prefix, strip=False, **kwargs):
+        r"""Create a new PrefixedDict instance that only includes keys
+        that start with a given prefix.
+
+        Args:
+            prefix (str): Prefix to filter on.
+            strip (bool, optional): If True, the prefix should be
+                stripped in the returned dictionary.
+            **kwargs: Additional keyword arguments are passed to
+                select_cond.
+
+        Returns:
+            dict: Dictionary containing selected members.
+
+        """
+
+        def fcond(k, v):
+            return ((not prefix) or k.startswith(prefix))
+
+        def fstrip(k):
+            if not prefix:
+                return k
+            return k.split(prefix, 1)[-1]
+
+        if strip:
+            assert 'transform' not in kwargs
+            kwargs['transform'] = fstrip
+        return self.select_cond(fcond, **kwargs)
+
+    def strip_prefix(self, prefix, keys=None):
+        r"""Remove a prefix from keys in the dictionary.
+
+        Args:
+            prefix (str): Prefix to strip.
+            keys (list, optional): Set of keys to remove the prefix from.
+                If not provided, all keys will be used and an error will
+                be raised if any keys do not start with the prefix.
+
+        """
+        if not prefix:
+            return
+        if keys is None:
+            keys = list(self.keys())
+        for k in keys:
+            if not k.startswith(prefix):
+                raise KeyError(f"Key \"{k}\" does not "
+                               f"start with prefix \"{prefix}\"")
+            ky = k.split(prefix, 1)[-1]
+            self[ky] = self.pop(k)
+
+    def update_missing(self, other):
+        r"""Update the dictionary only will values that are not present.
+
+        Args:
+            other (dict): Values to update the dictionary with.
+
+        """
+        for k, v in other.items():
+            self.setdefault(k, v)
+
+    @classmethod
+    def coerce(cls, x, **kwargs):
+        r"""Coerce an object to be a DictWrapper compatible instance.
+
+        Args:
+            x (dict, DictWrapper, tuple, list): Object that can be
+                interpreted as a DictWrapper instance.
+            **kwargs: Additional keyword arguments are passed to the
+                constructor for the interpreted instance.
+
+        Returns:
+            DictWrapper: Coerced instance.
+
+        """
+        if isinstance(x, tuple):
+            assert len(x) == 2
+            return PrefixedDict(x, **kwargs)
+        elif isinstance(x, list):
+            x = DictSet(x)
+        if isinstance(x, (dict, DictWrapper)):
+            if kwargs:
+                return PrefixedDict(x, **kwargs)
+            return x
+        raise TypeError(type(x))
+
+    @abstractmethod
+    def _get_iterator(self, raw=False, prev=None):
+        r"""Yields member key/item pairs.
+
+        Args:
+            raw (bool, optional): If True, raw keys should be yielded.
+            prev (list, optional): Set of keys already yielded.
+
+        Yields:
+            tuple: Member items.
+
+        """
+        raise NotImplementedError
+
+    @contextlib.contextmanager
+    def temporary_prefix(self, prefix, append=False, report_change=False):
+        r"""Temporarily set a prefix for the dictionary with the context.
+        When the context exits, any previous prefix will be restored and
+        any added parameters will be maintained.
+
+        Args:
+            prefix (str): Prefix to use within the context.
+            append (bool, optional): If True, the prefix should be
+                appended to the end of the current prefix.
+            report_change (str, bool, optional): If True, changes
+                that occur in the context will be reported. If a string
+                is provided, it will be used as a prefix for the log
+                message.
+
+        Yields:
+            DictWrapper: View of the dictionary with the provided prefix.
+
+        """
+        assert not append
+        if report_change is True:
+            report_change = ''
+        if isinstance(report_change, str):
+            cm = self.report_change(prefix=report_change)
+        else:
+            cm = contextlib.nullcontext()
+        with cm:
+            yield PrefixedDict(self, prefix=prefix)
+
+    @classmethod
+    def assert_keys_match(cls, x, keys0, logger=None):
+        if not list(x.keys()) == keys0:
+            message = (
+                f'ADDED:   {set(x.keys()) - set(keys0)}\n'
+                f'REMOVED: {set(keys0) - set(x.keys())}'
+            )
+            if logger:
+                logger.log(message, force=True)
+            else:
+                print(message)
+            pdb.set_trace()
+        assert list(x.keys()) == keys0
+
+    @property
+    def logger_prefix(self):
+        r"""str: Prefix for log messages."""
+        return self._logger_prefix
+
+    def report_diff(self, keys0, keys1, prefix='', suffix=''):
+        r"""Report on a difference between two key sets.
+
+        Args:
+            keys0 (set): Set of keys from a prior state.
+            keys1 (set): Set of keys from a state after keys0.
+            prefix (str, optional): Prefix for report message.
+            suffix (str, optional): Suffix for report message.
+
+        """
+        added = keys1 - keys0
+        removed = keys0 - keys1
+        msg = ''
+        if added:
+            msg += f'ADDED {added}.'
+        if removed:
+            msg += ' ' if added else ''
+            msg += f'REMOVED {removed}.'
+        if not (added or removed):
+            msg += 'NO CHANGE'
+            return
+        self.logger.log(f'{self.logger_prefix}[{self.prefix}]: '
+                        f'{prefix}{msg}{suffix}')
+
+    @contextlib.contextmanager
+    def report_change(self, prefix='', suffix='',
+                      assert_no_change=False, **kwargs):
+        r"""Report on how the dictionary changed within the context.
+
+        Args:
+            prefix (str, optional): Prefix for report message.
+            suffix (str, optional): Suffix for report message.
+            assert_no_change (bool, optional): If True, assert that the
+                keys did not change.
+            **kwargs: Additional keyword arguments are passed to the
+                keys method to get the set of keys before & after the
+                context.
+
+        """
+        kwargs.setdefault('raw', True)
+        keys0 = set(self.keys(**kwargs))
+        try:
+            yield
+        finally:
+            keys1 = set(self.keys(**kwargs))
+            if assert_no_change:
+                assert keys0 == keys1
+            self.report_diff(keys0, keys1, prefix=prefix, suffix=suffix)
+
+
+pprint.PrettyPrinter._dispatch[DictWrapper.__repr__] = (
+    pprint.PrettyPrinter._pprint_dict
+)
+
+
+class SimpleWrapper(DictWrapper):
+    r"""Dictionary wrapper that only allows certain keys.
+
+    Args:
+        wrapped (dict, optional): Wrapped dictionary.
+        immutable (bool, optional): If True, the dictionary should not
+            be modified.
+        ordered (bool, optional): If True and wrapped not provided, an
+            OrderedDict will be used.
+        **kwargs: Additional keyword arguments are passed to the parent
+            constructor.
+
+    """
+
+    def __init__(self, wrapped=None, immutable=False, ordered=False,
+                 **kwargs):
+        if wrapped is None:
+            if ordered:
+                wrapped = OrderedDict
+            else:
+                wrapped = {}
+        self._wrapped = wrapped
+        self._immutable = immutable
+        super(SimpleWrapper, self).__init__(**kwargs)
+
+    @property
+    def dest(self):
+        r"""DictWrapper: Destination dictionary for added keys."""
+        if self._immutable:
+            raise ImmutableDictException("Immutable")
+        return self._wrapped
+
+    def _get_iterator(self, raw=False, prev=None):
+        r"""Yields member key/item pairs.
+
+        Args:
+            raw (bool, optional): If True, raw keys should be yielded.
+            prev (list, optional): Set of keys already yielded.
+
+        Yields:
+            tuple: Member items.
+
+        """
+        if prev is None:
+            prev = []
+        for k, v in self._wrapped.items():
+            try:
+                kx = self._reverse_key(k)
+            except KeyError:
+                continue
+            if kx in prev:
+                continue
+            if raw:
+                yield (k, v)
+            else:
+                yield (kx, v)
+            prev.append(kx)
+
+    def __getitem__(self, k):
+        return self._wrapped[self._forward_key(k)]
+
+    def __setitem__(self, k, v):
+        self.dest[self._forward_key(k)] = v
+
+    def __delitem__(self, k):
+        del self.dest[self._forward_key(k)]
+        assert k not in self
+
+    # Methods for nested DictSet
+    @property
+    def members(self):
+        r"""list: Members of the wrapped dictionary. Only valid if
+        the wrapped dictionary is a DictSet."""
+        return self._wrapped.members
+
+    @members.setter
+    def members(self, x):
+        self._wrapped.members = x
+
+    def insert(self, idx, member, add_prefix=False, **kwargs):
+        r"""Add a new member to the set.
+
+        Args:
+            idx (index): Index to insert the new member add.
+            member (dict): New member.
+            add_prefix (str, bool, optional): Prefix that should be added
+                to the keys in x. If True, the current prefix should be
+                added.
+            **kwargs: Additional keyword arguments are passed to
+                coerce_member.
+
+        """
+        if add_prefix is True:
+            add_prefix = self.prefix
+        return self._wrapped.insert(idx, member, add_prefix=add_prefix,
+                                    **kwargs)
+
+    def append(self, member, add_prefix=False, **kwargs):
+        r"""Add a new member to the end of the set.
+
+        Args:
+            member (dict): New member.
+            add_prefix (str, bool, optional): Prefix that should be added
+                to the keys in x. If True, the current prefix should be
+                added.
+            **kwargs: Additional keyword arguments are passed to
+                coerce_member.
+
+        """
+        if add_prefix is True:
+            add_prefix = self.prefix
+        return self._wrapped.append(member, add_prefix=add_prefix,
+                                    **kwargs)
+
+
+class PrefixedDict(SimpleWrapper):
+    r"""Dictionary wrapper that allows for adding a prefix to keys when
+    accessing the wrapped dictionary.
+
+    Args:
+        wrapped (dict, optional): Wrapped dictionary.
+        prefix (str, optional): Prefix to add to keys.
+        **kwargs: Additional keyword arguments are passed to the parent
+            constructor.
+
+    """
+
+    def __init__(self, wrapped=None, prefix=None, **kwargs):
+        if wrapped is None:
+            wrapped = {}
+        if isinstance(wrapped, tuple):
+            if prefix is None:
+                prefix = wrapped[0]
+                wrapped = wrapped[1]
+            else:
+                wrapped = PrefixedDict(wrapped[1], prefix=wrapped[0])
+        if prefix is None:
+            prefix = ''
+        self.prefix = prefix
+        super(PrefixedDict, self).__init__(wrapped=wrapped, **kwargs)
+
+    @property
+    def logger_prefix(self):
+        r"""str: Prefix for log messages."""
+        return f'{self._logger_prefix}[{self.prefix}]'
+
+    def _forward_key(self, k):
+        if not self.prefix:
+            return k
+        return f'{self.prefix}{k}'
+
+    def _reverse_key(self, k):
+        if not self.prefix:
+            return k
+        if not k.startswith(self.prefix):
+            raise KeyError(f'Key \"{k}\" does not start with prefix '
+                           f'\"{self.prefix}\"')
+        try:
+            assert k.startswith(self.prefix)
+        except AssertionError:
+            print(k, self.prefix)
+            pdb.set_trace()
+            raise
+        return k.split(self.prefix, 1)[-1]
+
+    def select_prefix(self, prefix=None, strip=False, **kwargs):
+        r"""Create a new PrefixedDict instance that only includes keys
+        that start with a given prefix.
+
+        Args:
+            prefix (str, optional): Prefix to filter on. If not provided,
+                the prefix for the target will be used.
+            strip (bool, optional): If True, the prefix should be
+                stripped in the returned dictionary.
+            **kwargs: Additional keyword arguments are passed to the
+                parent method.
+
+        Returns:
+            PrefixedDict: Dictionary containing selected members.
+
+        """
+        if prefix is None:
+            prefix = self.prefix
+        out = super(PrefixedDict, self).select_prefix(prefix, **kwargs)
+        out_prefix = prefix if not kwargs.get('strip', False) else ''
+        return PrefixedDict(out, prefix=out_prefix)
+
+    @contextlib.contextmanager
+    def temporary_prefix(self, prefix, append=False, report_change=False):
+        r"""Temporarily set a prefix for the dictionary with the context.
+        When the context exits, any previous prefix will be restored and
+        any added parameters will be maintained.
+
+        Args:
+            prefix (str): Prefix to use within the context.
+            append (bool, optional): If True, the prefix should be
+                appended to the end of the current prefix.
+            report_change (str, bool, optional): If True, changes
+                that occur in the context will be reported. If a string
+                is provided, it will be used as a prefix for the log
+                message.
+
+        Yields:
+            DictWrapper: View of the dictionary with the provided prefix.
+
+        """
+        if append:
+            prefix = self.prefix + prefix
+        if report_change is True:
+            report_change = ''
+        if isinstance(report_change, str):
+            cm = self.report_change(prefix=report_change)
+        else:
+            cm = contextlib.nullcontext()
+        old_prefix = self.prefix
+        with cm:
+            self.prefix = prefix
+            try:
+                yield self
+            finally:
+                self.prefix = old_prefix
+
+
+@contextlib.contextmanager
+def temporary_prefix(x, prefix, **kwargs):
+    r"""Create a wrapper around a dictionary with a temporary prefix that
+    should be added when accessing dictionary elements.
+
+    Args:
+        x (dict, DictWrapper): Dictionary to wrap with a prefix.
+        prefix (str): Prefix to use within the context.
+        **kwargs: Additional keyword arguments are passed to the
+            temporary_prefix PrefixedDict method.
+
+    Yields:
+        PrefixedDict: Dictionary with prefix wrapper.
+
+    """
+    if not isinstance(x, DictWrapper):
+        x = PrefixedDict(x)
+    with x.temporary_prefix(prefix, **kwargs):
+        yield x
+
+
+class DictSet(DictWrapper):
+    r"""Container for chaining multiple dictionaries.
+
+    Args:
+        members (list): Set of dictionaries that should be accessed in
+            the order provided.
+        **kwargs: Additional keyword arguments are passed to the parent
+            constructor.
+
+    """
+
+    def __init__(self, members, **kwargs):
+        assert isinstance(members, list)
+        self.members = []
+        for x in members:
+            self.append(x)
+        super(DictSet, self).__init__(**kwargs)
+
+    @classmethod
+    def coerce_member(cls, x, add_prefix=False, **kwargs):
+        r"""Coerce an object to a DictWrapper instance.
+
+        Args:
+            x (object): Dictionary-like object.
+            add_prefix (str, optional): Prefix that should be added to the
+                keys in x.
+            **kwargs: Additional keyword arguments are passed to
+                DictWrapper.coerce.
+
+        """
+        if add_prefix:
+            assert isinstance(x, (dict, DictWrapper))
+            x = {add_prefix + k: v for k, v in x.items()}
+        if isinstance(x, DictWrapper) and not kwargs:
+            return x
+        kwargs.setdefault('immutable', True)
+        return DictWrapper.coerce(x, **kwargs)
+
+    @property
+    def dest(self):
+        r"""DictWrapper: Destination dictionary for added keys."""
+        for x in self.members:
+            if x.mutable:
+                return x
+        raise ImmutableDictException("No immutable members")
+
+    def __getitem__(self, k):
+        for x in self.members:
+            if k in x:
+                return x[k]
+        raise KeyError(k)
+
+    def __setitem__(self, k, v):
+        dest = self.dest
+        for x in self.members:
+            if x is dest:
+                dest[k] = v
+                return
+            if k in x:
+                raise ImmutableDictException(
+                    f'Setting \"{k}\" will not change the contents as '
+                    f'it is present in an immutable member proceeding '
+                    f'the first mutable member'
+                )
+
+    def __delitem__(self, k):
+        for x in self.members:
+            if k not in x:
+                continue
+            if not x.mutable:
+                raise ImmutableDictException(
+                    f'Cannot delete \"{k}\". It is present in an '
+                    f'immutable member.'
+                )
+            del x[k]
+
+    def __iter__(self):
+        prev = []
+        for x in self.members:
+            for k, v in x.items():
+                if k in prev:
+                    continue
+                yield k
+                prev.append(k)
+
+    def _get_iterator(self, raw=False, prev=None):
+        if prev is None:
+            prev = []
+        for x in self.members:
+            for k, v in x._get_iterator(raw=raw, prev=prev):
+                yield (k, v)
+
+    @contextlib.contextmanager
+    def temporary_prefix(self, prefix, per_member=False, **kwargs):
+        r"""Temporarily set a prefix for the dictionary with the context.
+        When the context exits, any previous prefix will be restored and
+        any added parameters will be maintained.
+
+        Args:
+            prefix (str): Prefix to use within the context.
+            per_member (bool, optional): If True, add prefixes on a
+                member-by-member basis.
+            **kwargs: Additional keyword arguments are passed to
+                temporary_prefix for each member if per_member is True,
+                and the parent method otherwise.
+
+        Yields:
+            DictWrapper: View of the dictionary with the provided prefix.
+
+        """
+        if not per_member:
+            with super(DictSet, self).temporary_prefix(
+                    prefix, **kwargs) as child:
+                yield child
+            return
+        with contextlib.ExitStack() as stack:
+            for x in self.members:
+                stack.enter_context(x.temporary_prefix(prefix, **kwargs))
+            yield self
+
+    def insert(self, idx, member, **kwargs):
+        r"""Add a new member to the set.
+
+        Args:
+            idx (index): Index to insert the new member add.
+            member (dict): New member.
+            **kwargs: Additional keyword arguments are passed to
+                coerce_member.
+
+        """
+        self.members.insert(idx, self.coerce_member(member, **kwargs))
+
+    def append(self, member, **kwargs):
+        r"""Add a new member to the end of the set.
+
+        Args:
+            member (dict): New member.
+            **kwargs: Additional keyword arguments are passed to
+                coerce_member.
+
+        """
+        self.members.append(self.coerce_member(member, **kwargs))

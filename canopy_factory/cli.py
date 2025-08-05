@@ -2,15 +2,20 @@ import os
 import sys
 import pdb
 import copy
+import pprint
 import argparse
 import numpy as np
+import inspect
+import pytz
+import glob
+import itertools
 from collections import OrderedDict
-from datetime import datetime, timedelta
+from datetime import datetime
 from canopy_factory import utils
 from canopy_factory.utils import (
-    parse_quantity, format_list_for_help,
+    rapidjson, units, parse_quantity, format_list_for_help,
     get_class_registry, NoDefault, RegisteredClassBase,
-    cached_property, cached_factory_property,
+    cached_property,
 )
 
 
@@ -295,9 +300,9 @@ class InstrumentedParser(argparse.ArgumentParser):
         super(InstrumentedParser, self).__init__(*args, **kwargs)
         self.register('action', 'parsers', SubParsersAction)
         self.add_argument(
-            '--show-irrelevant', default=0,
-            dest='show_irrelevant', type=int, const=-1, nargs='?',
-            help=('Show arguments that are diabled by absent or '
+            '--hide-irrelevant', default=-1,
+            dest='hide_irrelevant', type=int, const=0, nargs='?',
+            help=('Hide arguments that are diabled by absent or '
                   'invalid arguments already specified. This can '
                   'be useful for getting more information about '
                   'available command line options'),
@@ -378,10 +383,10 @@ class InstrumentedParser(argparse.ArgumentParser):
                 if (((v is True and argv is None)
                      or (v is False and argv is not None)
                      or (isinstance(v, (list, tuple)) and argv not in v))):
-                    if args.show_irrelevant > 0:
-                        if i >= args.show_irrelevant:
+                    if args.hide_irrelevant > 0:
+                        if i >= args.hide_irrelevant:
                             out = True
-                        add_to_parent = (i <= args.show_irrelevant)
+                        add_to_parent = (i <= args.hide_irrelevant)
                     else:
                         out = True
                 if not add_to_parent:
@@ -412,7 +417,7 @@ class InstrumentedParser(argparse.ArgumentParser):
             bool: True if arguments were pruned, False otherwise.
 
         """
-        if args.show_irrelevant == -1:
+        if args.hide_irrelevant == -1:
             return False
         changes = False
         for action in self._actions:
@@ -710,12 +715,49 @@ class InstrumentedParser(argparse.ArgumentParser):
         self._child_subparsers[group] = out
         return out
 
-    def run_subparser(self, group, args):
+    def subparser_class(self, group, args):
+        r"""Get the subparser class selected by a subparser group.
+
+        Args:
+            group (str): Name of the subparser group to get the class for.
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            type: Subparser class.
+
+        """
+        subparser = self.get_subparsers(group)
+        subparser_name = getattr(args, group)
+        if subparser_name is None:
+            subparser_name = subparser.default
+            setattr(args, group, subparser_name)
+        assert subparser.func is None
+        return get_class_registry().get(group, subparser_name)
+
+    def construct_subparser(self, group, args, **kwargs):
+        r"""Construct the subparser selected by a subparser group.
+
+        Args:
+            group (str): Name of the subparser group to construct.
+            args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        Returns:
+            SubparserBase: Subparser instance.
+
+        """
+        cls = self.subparser_class(group, args)
+        return cls(args, **kwargs)
+
+    def run_subparser(self, group, args, return_func=False):
         r"""Run the subparser selected by a subparser group.
 
         Args:
             group (str): Name of the subparser group to run.
             args (argparse.Namespace): Parsed arguments.
+            return_func (bool, optional): If True, return the subparser
+                run function without calling it.
 
         """
         subparser = self.get_subparsers(group)
@@ -725,8 +767,10 @@ class InstrumentedParser(argparse.ArgumentParser):
         func = subparser.func
         if func is None:
             func = get_class_registry().get(group, subparser_name)
+        if return_func:
+            return func
         print(f"RUNNING {subparser_name}")
-        func(args)
+        return func(args)
 
     def find_argument(self, name, default=NoDefault):
         r"""Find the action that will handle an argument.
@@ -801,12 +845,6 @@ class InstrumentedParser(argparse.ArgumentParser):
         subparser_options = kwargs.pop('subparser_options', {})
         subparser_specific_dest = kwargs.pop(
             'subparser_specific_dest', False)
-        # if subparsers:
-        #     import pprint
-        #     pprint.pprint(args)
-        #     pprint.pprint(kwargs)
-        #     print('subparsers', subparsers)
-        #     import pdb; pdb.set_trace()
         assert not subparsers
         assert not subparser_options
         # for x in self.subparsers(subparsers=subparsers):
@@ -838,6 +876,1685 @@ class InstrumentedParser(argparse.ArgumentParser):
         return action
 
 
+class CompositeArgument(RegisteredClassBase):
+    r"""Container for parsing related arguments.
+
+    Args:
+        name (str): Base argument name.
+        args (argparse.Namespace): Parsed arguments.
+        name_base (str): Name of the base variable that should be used
+            to set defaults.
+        defaults (dict, optional): Defaults that should be used for
+            time arguments before the class _defauls.
+        ignore (list, optional): Arguments that should be ignored.
+        optional (bool, optional): If True, defaults from the class will
+            not be set when the argument is not defined.
+        description (str, optional): Argument description.
+
+    Class Attributes:
+        _name (str): Name of the base variables that should be
+            used to determine the prefix/suffix and where the instance
+            should be stored on the parsed arguments.
+        _defaults (dict): Argument defaults.
+        _arguments (list): Arguments that should be prefixed.
+        _arguments_universal (list): Arguments that should not be
+            prefixed/suffixed.
+
+    """
+
+    _registry_key = 'argument'
+    _name = None
+    _name_as_suffix = False
+    _name_as_prefix = False
+    _defaults = {}
+    _arguments = []
+    _arguments_universal = []
+    _attributes_kwargs = [
+        'optional', 'description',
+    ]
+    _attributes_copy = []
+
+    def __init__(self, name, args, name_base=None, defaults=None,
+                 ignore=None, optional=False, description=None,
+                 args_overwrite=None):
+        self.name = name
+        if name_base == name:
+            name_base = None
+        if defaults is None:
+            defaults = {}
+        if ignore is None:
+            ignore = []
+        self._defaults_set = []
+        self.name_base = name_base
+        self.prefix = self.get_prefix(self.name)
+        self.suffix = self.get_suffix(self.name)
+        self.base = None
+        self.ignore = ignore
+        self.optional = optional
+        self.description = description
+        if name_base is not None:
+            self.base = self.from_args(
+                name_base, args, name_base=name_base,
+                args_overwrite=args_overwrite,
+            )
+        self.args = self.get_args(self.name, args, ignore=self.ignore,
+                                  args_overwrite=args_overwrite)
+        self.defaults = {
+            k: defaults[k] for k in self.argument_names()
+            if k in defaults
+        }
+        for k in self.ignore:
+            self.args[k] = None
+
+    @classmethod
+    def from_other(cls, other, **kwargs):
+        r"""Create an argument instance from an existing instance of any
+        CompositeArgument subclass.
+
+        Args:
+            other (CompositeArgument): Instance to copy.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        Returns:
+            CompositeArgument: Copy as this class.
+
+        """
+        argument_names = cls.argument_names()
+        name = other.prefix + cls._name + other.suffix
+        if other.name_base and 'name_base' not in kwargs:
+            kwargs['name_base'] = (
+                other.get_prefix(other.name_base) + cls._name
+                + other.get_suffix(other.name_base)
+            )
+        if other.defaults and 'defaults' not in kwargs:
+            kwargs['defaults'] = {
+                k: v for k, v in other.defaults.items()
+                if k in argument_names
+            }
+        if other.ignore and 'ignore' not in kwargs:
+            kwargs['ignore'] = [
+                k for k in other.ignore
+                if k in argument_names
+            ]
+        for k in cls._attributes_kwargs:
+            if ((k not in other._attributes_kwargs
+                 or k in kwargs)):
+                continue
+            kwargs[k] = getattr(other, k)
+        kws = {}
+        for k, v in other.args.items():
+            if k not in argument_names:
+                continue
+            kws[other.prefix + k + other.suffix] = v
+        out = cls.from_kwargs(name, kws, **kwargs)
+        for k in cls._attributes_copy:
+            if hasattr(other, k):
+                setattr(out, k, getattr(other, k))
+        return out
+
+    @classmethod
+    def from_kwargs(cls, name, kws, **kwargs):
+        r"""Create an argument instance by pulling arguments from the
+        provided keyword arguments.
+
+        Args:
+            name (str): Base argument name.
+            kws (dict): Keywords to add to a new argument namespace.
+            **kwargs: Additional keyword arguments are passed to from_args
+
+        Returns:
+            CompositeArgument: New instance.
+
+        """
+        if name is None:
+            name = cls._name
+        args = argparse.Namespace()
+        arguments = cls.argument_names(name)
+        for k, v in kws.items():
+            if k not in arguments:
+                continue
+            setattr(args, k, v)
+        return cls.from_args(name, args, **kwargs)
+
+    @classmethod
+    def from_args(cls, name, args, overwrite=False, dont_update=False,
+                  **kwargs):
+        r"""Create an instance on the provided arguments, first checking
+        if one already exists.
+
+        Args:
+            name (str): Base argument name.
+            args (argparse.Namespace): Parsed arguments.
+            overwrite (bool, optional): If True, overwrite the existing
+                instance.
+            dont_update (bool, optional): If True, don't set the argument
+                attributes.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        Returns:
+            CompositeArgument: New or existing instance.
+
+        """
+        if overwrite:
+            if dont_update:
+                args = copy.deepcopy(args)
+            cls.reset_args(name, args)
+        inst = getattr(args, name, None)
+        if not isinstance(inst, cls):
+            inst = cls(name, args, **kwargs)
+        if not dont_update:
+            inst.update_args(args)
+        return inst
+
+    @classmethod
+    def reset_args(cls, name, args, value=NoDefault):
+        r"""Reset the arguments for a variable.
+
+        Args:
+            name (str): Variable name.
+            args (argparse.Namespace): Parsed arguments.
+            value (object, optional): Value that the parsed variable
+                should be reset to.
+
+        """
+        if value is NoDefault:
+            if isinstance(getattr(args, name, None), CompositeArgument):
+                value = getattr(args, name).args.get(name, None)
+            else:
+                value = getattr(args, name)
+        setattr(args, name, value)
+
+    def update_args(self, args, name=None):
+        r"""Update a namespace with the parsed arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name that should be used for the set
+                variables.
+
+        """
+        if name is None:
+            name = self.name
+        setattr(args, name, self)
+
+    @classmethod
+    def get_prefix(cls, name):
+        r"""Get the prefix used for a variable.
+
+        Args:
+            name (str): Variable name.
+
+        Returns:
+            str: Variable prefix.
+
+        """
+        if name == cls._name:
+            out = ''
+        else:
+            out = name.rsplit(cls._name, 1)[0]
+        if cls._name_as_prefix:
+            out += cls._name
+        return out
+
+    @classmethod
+    def get_suffix(cls, name):
+        r"""Get the suffix used for a variable.
+
+        Args:
+            name (str): Variable name.
+
+        Returns:
+            str: Variable suffix.
+
+        """
+        if name == cls._name:
+            out = ''
+        else:
+            out = name.split(cls._name, 1)[1]
+        if cls._name_as_suffix:
+            out = cls._name + out
+        return out
+
+    @classmethod
+    def get_args(cls, name, args, ignore=None, args_overwrite=None):
+        r"""Get the set of arguments controling the variable.
+
+        Args:
+            name (str): Variable base name.
+            ignore (list, optional): Arguments to ignore.
+            args_overwrite (dict, optional): Arguments to overwrite.
+
+        Returns:
+            dict: Argument name/value pairs.
+
+        """
+        if ignore is None:
+            ignore = []
+        if args_overwrite is None:
+            args_overwrite = {}
+        out = {
+            k: None if k in ignore
+            else args_overwrite.get(kbook, getattr(args, kbook, None))
+            for k, kbook in zip(cls.argument_names(),
+                                cls.argument_names(name))
+        }
+        for k in list(out.keys()):
+            while isinstance(out[k], CompositeArgument):
+                v = out[k]
+                assert k == v._name
+                for kk in v.argument_names():
+                    if ((kk == k or kk in (ignore + v.ignore)
+                         or v.args[kk] is None)):
+                        continue
+                    # if v.args[kk] != out[kk] and out[kk] is None:
+                    #     out[kk] = v.args[kk]
+                    if v.args[kk] != out[kk]:
+                        print(kk, v.args[kk], out[kk])
+                        pdb.set_trace()
+                    assert v.args[kk] == out[kk]
+                out[k] = v.args[k]
+        return out
+
+    @classmethod
+    def argument_names(cls, name=None, prefix=None, suffix=None,
+                       no_universal=False):
+        r"""Get the argument names used to specify a variable.
+
+        Args:
+            name (str, optional): Base name for argument to determine
+                prefix & suffix from.
+            prefix (str, optional): Prefix that should be added to
+                arguments.
+            suffix (str, optional): Suffix that should be added to
+                arguments.
+            no_universal (bool, optional) If True, don't include
+                universal arguments.
+
+        Returns:
+            list: Argument names.
+
+        """
+        if prefix is None or suffix is None:
+            assert prefix is None and suffix is None
+            if name is None:
+                name = cls._name
+            prefix = cls.get_prefix(name)
+            suffix = cls.get_suffix(name)
+        out = [
+            prefix + SubparserBase.arg2dest(args, kwargs) + suffix
+            for args, kwargs in cls._arguments
+        ]
+        if no_universal:
+            return out
+        out += [
+            SubparserBase.arg2dest(args, kwargs)
+            for args, kwargs in cls._arguments_universal
+        ]
+        return out
+
+    @classmethod
+    def argument_dict(cls, prefix='', suffix='', no_universal=False,
+                      description='', ignore=None,
+                      use_flags=False, **kwargs):
+        r"""Get a dictionary of argument data.
+
+        Args:
+            prefix (str, optional): Prefix that should be added to
+                arguments.
+            suffix (str, optional): Suffix that should be added to
+                arguments.
+            no_universal (bool, optional) If True, don't include
+                universal arguments.
+            description (str, optional): Description string that should
+                be used to complete the argument help strings.
+            ignore (list, optional): Arguments to ignore.
+            use_flags (bool, optional): If False, use the argument
+                destinations. If True, use the argument flags.
+            **kwargs: Additional keyword arguments are ignored.
+
+        Returns:
+            dict: Positional and keyword arguments for creating the
+                arguments.
+
+        """
+        if ignore is None:
+            ignore = []
+        out = OrderedDict()
+        prefix_arg = prefix.replace('_', '-')
+        prefix_dst = prefix.replace('-', '_')
+        suffix_arg = suffix.replace('_', '-')
+        suffix_dst = suffix.replace('-', '_')
+        for iargs, ikwargs in cls._arguments:
+            dest0 = SubparserBase.arg2dest(iargs, ikwargs)
+            if dest0 in ignore:
+                continue
+            if prefix_arg or suffix_arg:
+                iargs = tuple([
+                    f'--{prefix_arg}' + k.split('--', 1)[-1] + suffix_arg
+                    for k in iargs if k.startswith('--')
+                ])
+            ikwargs = copy.deepcopy(ikwargs)
+            if 'help' in ikwargs:
+                ikwargs['help'] = ikwargs['help'].format(
+                    description=description,
+                    prefix_arg=prefix_arg, prefix_dst=prefix_dst,
+                    suffix_arg=suffix_arg, suffix_dst=suffix_dst,
+                )
+            if 'dest' in ikwargs:
+                ikwargs['dest'] = ikwargs['dest'].format(
+                    prefix_dst=prefix_dst,
+                    suffix_dst=suffix_dst,
+                )
+            if use_flags:
+                ikey = iargs[0]
+            else:
+                ikey = SubparserBase.arg2dest(iargs, ikwargs)
+            out[ikey] = (iargs, ikwargs)
+        if no_universal:
+            return out
+        for iargs, ikwargs in cls._arguments_universal:
+            dest0 = SubparserBase.arg2dest(iargs, ikwargs)
+            if dest0 in ignore:
+                continue
+            if use_flags:
+                ikey = iargs[0]
+            else:
+                ikey = SubparserBase.arg2dest(iargs, ikwargs)
+            out[ikey] = (iargs, ikwargs)
+        return out
+
+    @classmethod
+    def any_arguments_set(cls, args, name=None, ignore=None,
+                          no_universal=True):
+        r"""Check if any arguments are set.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name for the base variable.
+            ignore (list, optional): Arguments to ignore.
+            no_universal (bool, optional) If True, don't include
+                universal arguments.
+
+        Returns:
+            bool: True if arguments are set.
+
+        """
+        for k in cls.argument_names(name, no_universal=no_universal):
+            if ignore and k in ignore:
+                continue
+            if getattr(args, k, None) is not None:
+                return True
+        return False
+
+    @classmethod
+    def add_arguments(cls, dst, name=None):
+        r"""Add composite arguments to a class.
+
+        Args:
+            dst (type): Class that arguments should be added to.
+            name (str, optional): Name for the base variable. If not
+                provided, all composite arguments will be added.
+
+        """
+        if name is None:
+            if cls._name is None:
+                for k in dst._composite_arguments.keys():
+                    arg_class = get_class_registry().get('argument', k)
+                    arg_class.add_arguments(dst)
+                return
+            for k in dst._composite_arguments[cls._name].keys():
+                cls.add_arguments(dst, name=k)
+            return
+        assert cls._name is not None
+        kwargs = dst._composite_arguments[cls._name][name]
+        existing = dst.argument_dict()
+        prefix = cls.get_prefix(name)
+        suffix = cls.get_suffix(name)
+        for k, v in cls.argument_dict(prefix=prefix, suffix=suffix,
+                                      **kwargs).items():
+            if k not in existing:
+                dst._arguments.append(v)
+        dst._argument_conversions.setdefault(cls._name, [])
+        if name not in dst._argument_conversions[cls._name]:
+            dst._argument_conversions[cls._name].append(name)
+        # TODO: Add _parameter_inst to dst._external_arg_attributes
+
+    @classmethod
+    def is_date(cls, x):
+        r"""Check if datetime instance is purely a date without time
+        information.
+
+        Args:
+            x (datetime.datetime): Datetime instance to check.
+
+        Returns:
+            bool: True if x is purely a date.
+
+        """
+        if not isinstance(x, datetime):
+            return False
+        return all(getattr(x, k) == 0 for k in
+                   ['hour', 'minute', 'second', 'microsecond'])
+
+    @classmethod
+    def to_date(cls, x):
+        r"""Convert a datetime instance to a form that is purely a date.
+
+        Args:
+            x (datetime.datetime): Datetime instance to convert.
+
+        Returns:
+            datetime.datetime: Version with time information removed.
+
+        """
+        kws = {k: getattr(x, k) for k in
+               ['year', 'month', 'day', 'tzinfo']}
+        out = datetime(**kws)
+        assert cls.is_date(out)
+        return out
+
+    @classmethod
+    def parse(cls, x, args, name=None, **kwargs):
+        r"""Parse an argument.
+
+        Args:
+            x (object): Instance to parse.
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name that should be used to store the
+                results.
+            **kwargs: Additional keyword arguments are passed to the
+                from_args method.
+
+        Returns:
+            object: The parsed instance.
+
+        """
+        args = copy.deepcopy(args)
+        if name is None:
+            name = cls._name
+        cls.reset_args(name, args, value=x)
+        return cls.from_args(name, args, **kwargs)
+
+    def any_set(self, names):
+        r"""Check if any of the specified arguments were set.
+
+        Args:
+            names (list): Argument names to check.
+
+        Returns:
+            bool: True if any of the arguments were set.
+
+        """
+        return any(self.args[k] is not None for k in names)
+
+    def extract_unused(self, out, name):
+        r"""Extract the equivalent value from an output.
+
+        Args:
+            out (object): Output.
+            name (str): Argument to extract from out.
+
+        Returns:
+            object: Argument value.
+
+        """
+        raise NotImplementedError(name)
+
+    def check_unused(self, names, output=NoDefault):
+        r"""Assert that unused arguments were not set.
+
+        Args:
+            names (list): Argument names to check.
+            output (object, optional): Output to try to extract arguments
+                from.
+
+        Raises:
+            AssertionError: If unused arguments were set.
+
+        """
+        matches = {}
+        invalid = []
+        for k in names:
+            if self.args[k] is not None:
+                value = NoDefault
+                if output is not NoDefault:
+                    try:
+                        value = self.extract_unused(output, k)
+                        matches[k] = value
+                    except NotImplementedError:
+                        pass
+                if value is NoDefault or self.args[k] != value:
+                    invalid.append(k)
+        if invalid:
+            invalid = {
+                self.prefix + k + self.suffix: self.args[k]
+                for k in invalid
+            }
+            raise AssertionError(
+                f'Unused arguments set:\n{pprint.pformat(invalid)}\n'
+                f'Did not match:\n{pprint.pformat(matches)}'
+            )
+
+    def setdefaults(self, names):
+        r"""Set defaults for missing arguments that were not set.
+
+        Args:
+            names (list): Argument names to set defaults for.
+
+        Returns:
+            bool: True if all defaults could be initialized, False
+                otherwise.
+
+        """
+        out = True
+        for k in names:
+            value = None
+            if k in self.ignore:
+                assert self.args[k] is None
+                out = False
+                continue
+            elif self.args[k] is not None:
+                continue
+            elif k in self.defaults:
+                value = self.defaults[k]
+            elif self.base and self.base.args[k] is not None:
+                value = self.base.args[k]
+            elif self.optional:
+                out = False
+                continue
+            elif k in self._defaults:
+                value = self._defaults[k]
+            else:
+                out = False
+                continue
+            self._defaults_set.append(k)
+            self.args[k] = value
+        return out
+
+    def raw_args(self, name=None):
+        r"""dict: Set of name/value pairs for arguments related to this
+        argument."""
+        if name is None:
+            prefix = self.prefix
+            suffix = self.suffix
+        else:
+            prefix = self.get_prefix(name)
+            suffix = self.get_suffix(name)
+        return {
+            (prefix + k + suffix): v
+            for k, v in self.args.items()
+            # if k not in self._defaults_set else None
+        }
+
+    @property
+    def value(self):
+        r"""object: Parsed base argument value."""
+        if hasattr(self, self._name):
+            return getattr(self, self._name)
+        if not self.setdefaults([self._name]):
+            return None
+        return self.args[self._name]
+
+    @property
+    def string(self):
+        r"""str: String representation of this variable."""
+        if self.is_wildcard(self._name):
+            return '*'
+        if not self.setdefaults([self._name]):
+            return None
+        if isinstance(self.args[self._name], str):
+            return self.args[self._name]
+        return None
+
+    def is_wildcard(self, k):
+        r"""Check if an argument is a wildcard.
+
+        Args:
+            k (str, list): Argument(s) to check.
+
+        Returns:
+            bool: True if argument is wildcard.
+
+        """
+        if isinstance(k, list):
+            return any(self.is_wildcard(kk) for kk in k)
+        return (self.args[k] == '*')
+
+    def string_glob(self, wildcards):
+        r"""Create a string with the provided list of parameters replaced
+        with *.
+
+        Args:
+            wildcards (list): Arguments that should be replaced.
+
+        Returns:
+            str: Glob pattern.
+
+        """
+        if self._name in wildcards:
+            return '*'
+        args_overwrite = {k: '*' for k in wildcards}
+        other = self.from_other(self, args_overwrite=args_overwrite)
+        return other.string
+
+
+class OutputArgument(CompositeArgument):
+    r"""Container for output arguments."""
+
+    _name = 'output'
+    _defaults = {
+        'output': False,
+        'overwrite': False,
+        'dont_write': False,
+    }
+    _arguments = [
+        (('--output', ), {
+            'nargs': '?', 'const': True,
+            'help': (
+                'File where {description} should be loaded from or '
+                'saved to. If passed without a filename, the filename '
+                'will be generated based on other arguments.'
+            ),
+        }),
+        (('--overwrite', ), {
+            'action': 'store_true',
+            'help': (
+                'Overwrite any existing {prefix_dst}output{suffix_dst} '
+                'file generated or passed to '
+                '\"--{prefix_arg}output{suffix_arg}\".'),
+        }),
+        (('--dont-write', ), {
+            'action': 'store_true',
+            'help': (
+                'Don\'t write any output to '
+                '{prefix_dst}output{suffix_dst} on disk (even if an '
+                'explict path is provided). The generated output will '
+                'still be available during the Python session.'
+            ),
+        }),
+    ]
+    _arguments_universal = [
+        (('--overwrite-all', ), {
+            'action': 'store_true',
+            'help': 'Overwrite all child components of the task',
+        }),
+        (('--dont-write-all', ), {
+            'action': 'store_true',
+            'help': 'Don\'t write any output to disk',
+        }),
+    ]
+    _attributes_kwargs = CompositeArgument._attributes_kwargs + [
+        'ext', 'base', 'base_string', 'directory',
+        'upstream', 'downstream',
+    ]
+    # _attributes_copy = CompositeArgument._attributes_copy + [
+    # ]
+
+    def __init__(self, name, args, ext=None, base=None,
+                 base_string=None, directory=None,
+                 upstream=None, downstream=None, **kwargs):
+        if upstream is None:
+            upstream = []
+        if downstream is None:
+            downstream = []
+        self.ext = ext
+        self.base_output = base
+        self.base_string = base_string
+        self._generated_path = None
+        self.upstream = upstream
+        self.downstream = downstream
+        self.directory = directory
+        kwargs.setdefault('description', 'output')
+        super(OutputArgument, self).__init__(name, args, **kwargs)
+        if 'output' not in self.defaults:
+            if self.optional:
+                self.defaults['output'] = False
+            else:
+                self.defaults['output'] = True
+        self.output_name = self.suffix.strip('_')
+        if self.directory is None:
+            assert self.suffix
+            self.directory = os.path.join(
+                utils._output_dir, self.output_name)
+        if self.base_string is None and self.base_output is None:
+            self.base_string = self.output_name
+        if not self.generated:
+            raise Exception(f'Filepath for \"{self.output_name}\" '
+                            f'not generated: {self.path} '
+                            f'{self.args["output"]}, '
+                            f'{type(self.args["output"])}, '
+                            f'{isinstance(self.args["output"], str)}')
+
+    @property
+    def value(self):
+        r"""object: Parsed base argument value."""
+        if not self.generated:
+            return self.path
+        return self.enabled
+
+    @cached_property
+    def enabled(self):
+        r"""str: Output file"""
+        self.setdefaults(['output'])
+        return bool(self.args['output'])
+
+    @cached_property
+    def generated(self):
+        r"""bool: True if the file name is generated."""
+        self.setdefaults(['output'])
+        return (not isinstance(self.args['output'], str))
+
+    def assert_age_in_name(self, args):
+        r"""Assert that the file name contains age information.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments containing age.
+
+        Raises:
+            AssertionError: If the age string is not present.
+
+        """
+        if args.age.string == 'maturity' or not self.path:
+            return
+        if args.age.string not in self.path:
+            raise AssertionError(f'\"{self.output_name}\" filename does '
+                                 f'not contain age string '
+                                 f'\"{args.age.string}\": {self.path}')
+
+    @property
+    def overwrite(self):
+        r"""bool: True if overwrite set."""
+        self.setdefaults(['overwrite_all', 'overwrite'])
+        if self.args['overwrite_all']:
+            return True
+        return self.args['overwrite']
+
+    def clear_overwrite(self, args=None):
+        r"""Clear the overwrite parameter.
+
+        Args:
+            args (argparse.Namespace, optional): Parsed arguments to
+               clear.
+
+        """
+        self.args['overwrite_all'] = False
+        self.args['overwrite'] = False
+        if args is not None:
+            # setattr(args, 'overwrite_all', False)
+            setattr(args, f'{self.prefix}overwrite{self.suffix}', False)
+
+    @cached_property
+    def dont_write(self):
+        r"""bool: True if dont_write set."""
+        self.setdefaults(['dont_write_all', 'dont_write'])
+        if self.args['dont_write_all']:
+            return True
+        return self.args['dont_write']
+
+    @property
+    def base_path(self):
+        r"""str: Base file name."""
+        if self.base_string is None and self.base_output is not None:
+            raise Exception('Base should be set by now')
+        return self.base_string
+
+    @property
+    def path(self):
+        r"""str: File name."""
+        if self.generated:
+            if self._generated_path is not None:
+                assert isinstance(self._generated_path, str)
+            return self._generated_path
+        assert isinstance(self.args['output'], (str, bool))
+        return self.args['output']
+
+    @property
+    def exists(self):
+        r"""bool: True if the file exists."""
+        fname = self.path
+        if self.generated and fname is True:
+            raise Exception(f'{self.name} file not initialized')
+        return isinstance(fname, str) and os.path.isfile(fname)
+
+    def reset_generated(self, value=None):
+        r"""Reset the generated path.
+
+        Args:
+            value (str, optional): New value for the generated path.
+
+        """
+        if value is not None:
+            assert self.generated
+            assert isinstance(value, str)
+        self._generated_path = value
+
+    def depends(self, arguments, task=None, args=None):
+        r"""Check if the generated path depends on any of the listed
+        arguments.
+
+        Args:
+            arguments (list): Set of arguments to check dependence on.
+            task (TaskBase, optional): Task that produces this output.
+            args (argparse.Namespace, optional): Parsed arguments.
+
+        Returns:
+            bool: True if the path depends on any of the listed
+                arguments.
+
+        """
+        if isinstance(arguments, str):
+            arguments = [arguments]
+        if not (self.generated and arguments):
+            return False
+        if task is None:
+            task = self.task_class
+        if args is None:
+            args = self.default_args
+        fname = self.generate(task=task, args=args,
+                              wildcards=arguments)
+        return ('*' in fname)
+
+    @cached_property
+    def task_class(self):
+        r"""type: The task class that produces this output."""
+        return TaskBase.get_output_task(self.output_name)
+
+    @cached_property
+    def default_args(self):
+        r"""argparse.Namespace: Default arguments."""
+        return self.task_class.copy_external_args(initialize=True)
+
+    def generate(self, task=None, args=None, reset=False, wildcards=None):
+        r"""Generate the file name.
+
+        Args:
+            task (TaskBase, optional): Task that produces this output.
+            args (argparse.Namespace, optional): Parsed arguments.
+            reset (bool, optional): If True, reset the generated path
+                on the instance.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            str: Generated file name.
+
+        """
+        assert self.generated
+        iparts = {}
+        assert task is not None and args is not None
+        assert self.output_name in task._outputs_local
+        # if task is None:
+        #     task = self.task_class
+        # if args is None:
+        #     args = self.default_args
+        for k in ['directory', 'base', 'suffix', 'ext']:
+            if k not in iparts and hasattr(task, f'_output_{k}'):
+                iparts[k] = getattr(task, f'_output_{k}')(
+                    args, self.output_name, wildcards=wildcards)
+                if iparts[k] is None:
+                    del iparts[k]
+        if 'directory' not in iparts:
+            assert self.directory
+            iparts['directory'] = self.directory
+        if 'base' not in iparts:
+            if self.base_string is None:
+                assert self.base_output is not None
+                src = task._get_output_task(task, self.base_output)
+                iparts['base'] = src._output_file(
+                    args, self.base_output, wildcards=wildcards,
+                    regenerate=True, return_disabled=True,
+                )
+            else:
+                iparts['base'] = self.base_string
+        if 'ext' not in iparts:
+            iparts['ext'] = self.ext
+        disabled = [k for k, v in iparts.items() if v is False]
+        if disabled:
+            raise FilenameGenerationError(
+                f'\"{self.output_name}\" output disabled by '
+                f'\"{disabled}\"'
+            )
+        base = iparts.pop('base')
+        fname = utils.generate_filename(base, **iparts)
+        if wildcards:
+            while '**' in fname:
+                fname = fname.replace('**', '*')
+        if reset:
+            assert not wildcards
+            self.reset_generated(value=fname)
+        return fname
+
+
+class ColorArgument(CompositeArgument):
+    r"""Container for color arguments."""
+
+    _name = 'color'
+    _defaults = {
+        'color': 'transparent',
+    }
+    _arguments = [
+        (('--color', ), {
+            'type': utils.parse_color,
+            'help': (
+                'Color name or tuple of RGBA values expressed as float '
+                'in the range [0, 1]{description}.'
+            ),
+        }),
+    ]
+
+    @cached_property
+    def color(self):
+        r"""tuple: RGBA color tuple."""
+        if not self.setdefaults(['color']):
+            return None
+        return utils.parse_color(self.args['color'], convert_names=True)
+
+
+class AxisArgument(CompositeArgument):
+    r"""Container for parsing an axis argument."""
+
+    _name = 'axis'
+    _arguments = [
+        (('--axis', ), {
+            'type': 'str',
+            'help': 'Name or vector{description}',
+        }),
+    ]
+
+    @property
+    def string(self):
+        r"""str: String representation of this variable."""
+        if not self.setdefaults(['axis']):
+            return None
+        if self.args['axis'] in utils._axis_map:
+            return self.args['axis']
+        return None
+
+    @cached_property
+    def value(self):
+        r"""object: Parsed base argument value."""
+        if not self.setdefaults(['axis']):
+            return None
+        return utils.parse_axis(self.args['axis'])
+
+
+# class AxesArgument(CompositeArgument):
+#     r"""Container for parsing axes arguments."""
+
+#     _name = 'axes'
+#     _defaults = {
+#         'up': 'y',
+#         'north': 'x',
+#         'east': 'z',
+#     }
+#     _arguments = [
+#         (('--axis-up', ), {
+#             'type': AxisArgument,
+#             'help': (
+#                 'Axis name or vector for up direction{description}.'
+#             ),
+#         }),
+#         (('--axis-east', ), {
+#             'type': AxisArgument,
+#             'help': (
+#                 'Axis name or vector for east direction{description}.'
+#             ),
+#         }),
+#         (('--axis-north', ), {
+#             'type': AxisArgument,
+#             'help': (
+#                 'Axis name or vector for north direction{description}.'
+#             ),
+#         }),
+#     ]
+
+#     # def __init__(self, name, args, **kwargs):
+#     #     super(AxesArgument, self).__init__(name, args, **kwargs)
+#     #     if self.args['axis_up']
+
+
+# class CameraArgument(CompositeArgument):
+#     r"""Container for parsing camera arguments."""
+
+#     _name = 'camera'
+#     _name_as_prefix = True
+#     _defaults = {
+#         'lens': 'projection',
+#         'direction': 'downsoutheast',
+#         'fov_width': parse_quantity(45.0, 'degrees'),
+#         'fov_height': parse_quantity(45.0, 'degrees'),
+#     }
+#     _arguments = [
+#         (('--lens', ), {
+#             'type': str,
+#             'choices': ['projection', 'orthographic'],  # 'spherical'],
+#             'help': 'Type of camera{description}',
+#         }),
+#         (('--direction', ), {
+#             'type': str,
+#             'help': (
+#                 'Direction that camera should face. If not '
+#                 'provided, the camera will point to the center of '
+#                 'the scene from its location.',
+#             ),
+#         }),
+#         (('--fov-width', ), {
+#             'type': parse_quantity, 'units': 'degrees',
+#             'help': (
+#                 'Angular width of the camera\'s field of view (in '
+#                 'degrees) for a projection camera.'
+#             ),
+#         }),
+#         (('--fov-height', ), {
+#             'type': parse_quantity, 'units': 'degrees',
+#             'help': (
+#                 'Angular height of the camera\'s field of view (in '
+#                 'degrees) for a projection camera.'
+#             ),
+#         }),
+#         (('--up', ), {
+#             'type': str,
+#             'help': (
+#                 'Up direction for the camera. If not provided, the '
+#                 'up direction for the scene will be assumed.'
+#             ),
+#         }),
+#         (('--location', ), {
+#             'type': str,
+#             'help': (
+#                 'Location of the camera. If not provided, one will '
+#                 'be determined that captures the entire scene from '
+#                 'the provided camera direction. If a direction is '
+#                 'also not provided, the camera will be centered '
+#                 'on the center of the scene facing down, '
+#                 'southeast at a distance that captures the entire '
+#                 'scene. If \"maturity\" is specified, the location will '
+#                 'be set for the mature plant (only valid for generated '
+#                 'meshes).'
+#             ),
+#         }),
+#     ]
+
+#     def __init__(self, name, args, **kwargs):
+#         super(CameraArgument, self).__init__(name, args, **kwargs)
+#         if ((self.args['direction'] is None
+#              and self.args['location'] is None)):
+#             self.setdefaults(['direction'])
+#         # TODO
+
+#     @cached_property
+#     def direction(self):
+#         r"""np.ndarray: Unit vector for camera's pointing direction."""
+#         if self.args['direction'] is not None:
+#             return
+
+
+class AgeArgument(CompositeArgument):
+    r"""Container for parsing age arguments."""
+
+    _name = 'age'
+    _defaults = {
+        'age': 'maturity',
+    }
+    _arguments = [
+        (('--age', ), {
+            'type': parse_quantity, 'units': 'days',
+            'help': 'Plant age (in days since planting){description}.',
+        }),
+    ]
+    _attributes_copy = [
+        '_parameter_inst', '_parameter_inst_function',
+    ]
+
+    def __init__(self, name, args, **kwargs):
+        self._time_argument = None
+        self._parameter_inst = None
+        self._parameter_inst_function = getattr(
+            args, '_parameter_inst_function', None)
+        super(AgeArgument, self).__init__(name, args, **kwargs)
+
+    @classmethod
+    def is_crop_age(cls, x):
+        r"""Check if a string is a named crop age.
+
+        Args:
+            x (str): Value to check.
+
+        Returns:
+            bool: True if x is a named crop age.
+
+        """
+        from canopy_factory.crops import ParametrizeCropTask
+        return (x in ParametrizeCropTask._age_strings)
+
+    @property
+    def parameter_inst(self):
+        r"""ParametrizeCropTask: Instance for calculating ages."""
+        if ((self._parameter_inst is None
+             and self._parameter_inst_function is not None)):
+            self._parameter_inst = self._parameter_inst_function()
+        assert self._parameter_inst is not None
+        return self._parameter_inst
+
+    @property
+    def requires_parameter_inst(self):
+        r"""bool: True if a parameter instance is required."""
+        return self.is_crop_age(self.args['age'])
+
+    def get_crop_age(self, x, return_quantity=False):
+        r"""Get a named crop age as a timedelta.
+
+        Args:
+            x (str): Named crop age.
+
+        Returns:
+            timedelta: Age as a time delta.
+
+        """
+        out = self.parameter_inst.get_age(x)
+        if return_quantity:
+            return out
+        return utils.quantity2timedelta(out)
+
+    @cached_property
+    def crop_age_string(self):
+        r"""str: Crop-based age string."""
+        self.setdefaults(['age'])
+        if self.is_crop_age(self.args['age']):
+            return self.args['age']
+        return None
+
+    @cached_property
+    def string(self):
+        r"""str: String representation of the age."""
+        if self.is_wildcard('age'):
+            return '*'
+        if self.crop_age_string:
+            return self.crop_age_string
+        if self.age is None:
+            return None
+        return f'{int(self.age.to("days"))}days'
+
+    @cached_property
+    def age(self):
+        r"""units.Quantity: Days since planting."""
+        if self._time_argument is not None:
+            return self._time_argument.age
+        if not self.setdefaults(['age']):
+            return None
+        if self.is_crop_age(self.args['age']):
+            return self.get_crop_age(self.args['age'],
+                                     return_quantity=True)
+        return self.args['age']
+
+
+class TimeArgument(AgeArgument):
+    r"""Container for parsing time arguments."""
+
+    _name = 'time'
+    _defaults = dict(
+        AgeArgument._defaults,
+        **{
+            'hour': 'noon',
+            'timezone': pytz.timezone("America/Chicago"),
+            'doy': 169,  # 06/17
+            'year': 2024,
+            'location': 'Champaign',
+            'latitude': parse_quantity(40.1164, 'degrees'),
+            'longitude': parse_quantity(-88.2434, 'degrees'),
+            'temperature': parse_quantity(12.0, 'degC'),
+            'altitude': parse_quantity(224.0, 'meters'),
+        }
+    )
+    _arguments = AgeArgument._arguments + [
+        (('--time', '-t'), {
+            'type': str,
+            'help': (
+                'Date time (in any ISO 8601 format){description}.'
+                'If time information is not provided, the provided '
+                '\"--{prefix_arg}hour{suffix_arg}\" will be used. '
+                'If \"now\" is specified the current date and time '
+                'will be used. If \"sunrise\", \"noon\", \"transit\", '
+                'or \"sunset\" is specified, the time will be calculated'
+                ' from the provided date and location.'
+            ),
+        }),
+        (('--hour', '--hr', ), {
+            'type': int,
+            'help': (
+                'Hour{description}. If provided with '
+                '\"--{prefix_arg}time{suffix_arg}\", any hour '
+                'information in the specified time will be overwritten. '
+                'Defaults to 12 if \"--{prefix_arg}doy{suffix_arg}\" is '
+                'provided, but \"--{prefix_arg}hour{suffix_arg}\" is '
+                'not.'
+            ),
+        }),
+        (('--date', ), {
+            'type': str,
+            'help': (
+                'Date that should be used with '
+                '\"--{prefix_arg}time{suffix_arg}\" '
+                'if a string is provided describing the time of day '
+                '(e.g. \"sunrise\", \"noon\", \"sunset\"). If '
+                'provided, \"--{prefix_arg}doy{suffix_arg}\" and '
+                '\"--{prefix_arg}year{suffix_arg}\" will not be used. '
+            ),
+        }),
+        (('--doy', ), {
+            'type': int,
+            'help': 'Day of the year{description}.'
+        }),
+        (('--year', ), {
+            'type': int,
+            'help': (
+                'Year{description}. If provided '
+                'with \"--{prefix_arg}time{suffix_arg}\", '
+                'the year in the time string(s) '
+                'will be overwritten. Defaults to the current year '
+                'if \"--{prefix_arg}doy{suffix_arg}\" is provided, '
+                'but \"--{prefix_arg}year{suffix_arg}\" is not.'
+            ),
+        }),
+    ]
+    _arguments_universal = AgeArgument._arguments_universal + [
+        (('--planting-date', ), {
+            'type': str,
+            'help': (
+                'Date time (in any ISO 8601 format) on which the crop '
+                'was planted (used to calculate age from time or time '
+                'from age.'
+            ),
+        }),
+        (('--location', ), {
+            'type': str,
+            'choices': sorted(list(utils.read_locations().keys())),
+            'help': ('Name of a registered location that should be used '
+                     'to set the location dependent properties: '
+                     'timezone, altitude, longitude, latitude'),
+        }),
+        (('--timezone', '--tz', ), {
+            'type': pytz.timezone,
+            'help': (
+                'Name of timezone (as accepted by pytz){description}. '
+                'If provided '
+                'with \"--{prefix_arg}time{suffix_arg}\", '
+                'any timezone information in the '
+                'specified time(s) will be overwritten. Defaults '
+                'to \"America/Chicago\" if \"--doy\" is provided, '
+                'but \"--timezone\" is not.'
+            ),
+        }),
+        (('--latitude', '--lat', ), {
+            'type': parse_quantity, 'units': 'degrees',
+            'help': ('Latitude (in degrees) at which the sun should be '
+                     'modeled. Defaults to the latitude of Champaign '
+                     'IL.'),
+        }),
+        (('--longitude', '--long', ), {
+            'type': parse_quantity, 'units': 'degrees',
+            'help': ('Longitude (in degrees) at which the sun should be '
+                     'modeled. Defaults to the longitude of Champaign '
+                     'IL.'),
+        }),
+        (('--altitude', '--elevation', ), {
+            'type': parse_quantity, 'units': 'meters',
+            'help': ('Altitude (in meters) that should be used for '
+                     'solar light calculations. If not provided, it '
+                     'will be calculated from \"pressure\", if it is '
+                     'provided, and the elevation of Champaign, IL '
+                     'otherwise.'),
+        }),
+        (('--pressure', ), {
+            'type': parse_quantity, 'units': 'Pa',
+            'help': ('Air pressure (in Pa) that should be used for '
+                     'solar light calculations. If not provided, it '
+                     'will be calculated from \"altitude\".'),
+        }),
+        # TODO: This should depend on time
+        (('--temperature', ), {
+            'type': parse_quantity, 'units': 'degC',
+            'help': ('Air temperature (in degrees C) that should be '
+                     'used for solar light calculations.'),
+        }),
+    ]
+
+    def __init__(self, name, args, **kwargs):
+        super(TimeArgument, self).__init__(name, args, **kwargs)
+        if 'location' not in self.ignore:
+            self.setdefaults(['location'])
+            if ((isinstance(self.args['location'], str)
+                 and not self.is_wildcard('location'))):
+                arguments = self.argument_dict()
+                location_data = utils.read_locations()[
+                    self.args['location']]
+                for k, v in location_data.items():
+                    if k == 'name':
+                        continue
+                    assert k in arguments
+                    if 'units' in arguments[k][1]:
+                        self.args[k] = parse_quantity(
+                            v, arguments[k][1]['units'])
+                    else:
+                        self.args[k] = v
+        if self.is_solar_time(self.args['time']):
+            assert self.args['hour'] is None
+            self.args['hour'] = self.args['time']
+            self.args['time'] = None
+        elif self.args['time'] == 'now':
+            self.args['time'] = datetime.now()
+        elif ((isinstance(self.args['time'], str)
+               and not self.is_wildcard('time'))):
+            self.args['time'] = datetime.fromisoformat(self.args['time'])
+        if self.is_date(self.args['time']):
+            assert self.args['date'] is None
+            self.args['date'] = self.args['time']
+            self.args['time'] = None
+        if self.args['date'] == 'now':
+            self.args['date'] = self.to_date(datetime.now())
+        elif self.is_crop_age(self.args['date']):
+            assert 'age' not in self.ignore
+            assert self.args['age'] is None or 'age' in self._defaults_set
+            self.args['age'] = self.args['date']
+            if self.args['age'] == 'planting':
+                self.defaults['hour'] = 'noon'
+            self.args['date'] = None
+        if ((isinstance(self.args['timezone'], str)
+             and not self.is_wildcard('timezone'))):
+            self.args['timezone'] = pytz.timezone(self.args['timezone'])
+        if ((self.args['age'] is None
+             and self.args['planting_date'] is None)):
+            self.setdefaults(['age'])
+        if (('planting_date' not in self.ignore
+             and isinstance(self.args['planting_date'], str)
+             and not self.is_wildcard('planting_date'))):
+            self.args['planting_date'] = datetime.fromisoformat(
+                self.args['planting_date'])
+            assert self.is_date(self.args['planting_date'])
+        if ((self.crop_age_string == 'planting'
+             and self.args['planting_date'] is None)):
+            self.args['planting_date'] = self.date
+
+    @classmethod
+    def reset_args(cls, name, args, value=NoDefault):
+        r"""Reset the arguments for a variable.
+
+        Args:
+            name (str): Variable name.
+            args (argparse.Namespace): Parsed arguments.
+            value (object, optional): Value that the parsed variable
+                should be reset to.
+
+        """
+        age_value = NoDefault if value is NoDefault else None
+        super(TimeArgument, cls).reset_args(name, args, value=value)
+        prefix = cls.get_prefix(name)
+        suffix = cls.get_suffix(name)
+        AgeArgument.reset_args(prefix + 'age' + suffix, args,
+                               value=age_value)
+
+    def update_args(self, args, name=None):
+        r"""Update a namespace with the parsed time arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name that should be used for the set
+                variables.
+
+        """
+        if name is None:
+            name = self.name
+            prefix = self.prefix
+            suffix = self.suffix
+        else:
+            prefix = self.get_prefix(name)
+            suffix = self.get_suffix(name)
+        super(TimeArgument, self).update_args(args, name=name)
+        if 'age' not in self.ignore:
+            age_inst = AgeArgument.from_other(self)
+            age_inst._time_argument = self
+            setattr(args, f'{prefix}age{suffix}', age_inst)
+
+    def extract_unused(self, out, name):
+        r"""Extract the equivalent value from an output.
+
+        Args:
+            out (object): Output.
+            name (str): Argument to extract from out.
+
+        Returns:
+            object: Argument value.
+
+        """
+        if isinstance(out, datetime):
+            if name in ['year', 'hour']:
+                return getattr(out, name)
+            elif name == 'timezone':
+                return out.tzinfo
+            elif name == 'doy':
+                return int(out.strftime('%j'))
+            elif name == 'date':
+                return self.to_date(out)
+        return super(TimeArgument, self).extract_unused(out, name)
+
+    @property
+    def is_summer_solstice(self):
+        r"""bool: True if the date is the summer solstice."""
+        if self.args['latitude'] > units.Quantity(0, 'degrees'):
+            return (self.date.month == 6 and self.date.day == 21)
+        return (self.date.month == 12 and self.date.day == 21)
+
+    @property
+    def is_summer_solstice_noon(self):
+        r"""bool: True if the time is noon on the summer solstice."""
+        return (self.is_summer_solstice
+                and self.solar_time_string in ['noon', 'transit'])
+
+    @property
+    def summer_solstice(self):
+        r"""datetime: Get the date of the summer solstice for this
+        latitude."""
+        if self.args['latitude'] > units.Quantity(0, 'degrees'):
+            return self.date.replace(month=6, day=21)
+        return self.date.replace(month=12, day=21)
+
+    def iteration_args(self, dt=None, include_bookends=False):
+        r"""Arguments that should be passed to represent this time
+        in an iteration.
+
+        Args:
+            dt (units.Quantity, optional): Time interval to apply.
+            include_bookends (bool, optional): If True, the keys in the
+                returned arguments should include the prefix & suffix.
+
+        Returns:
+            dict: Arguments.
+
+        """
+        if dt is None:
+            dt = units.Quantity(0.0, 'days')
+        dt_null = (dt == units.Quantity(0.0, 'days'))
+        dt_days = ((dt % units.Quantity(1.0, 'days'))
+                   == units.Quantity(0.0, 'days'))
+        out = {
+            'time': self.time + utils.quantity2timedelta(dt),
+            'date': None,
+            'age': None,
+            'planting_date': self.planting_date,
+        }
+        for k in self.argument_names(no_universal=True):
+            out.setdefault(k, None)
+        if self.solar_time_string and (dt_null or dt_days):
+            out.update(
+                time=self.solar_time_string,
+                date=(self.date + utils.quantity2timedelta(dt)),
+            )
+        if self.crop_age_string and dt_null:
+            out.update(
+                age=self.crop_age_string,
+            )
+        elif dt_days:
+            out.update(
+                age=(self.age + dt),
+            )
+        if not include_bookends:
+            return out
+        return {f'{self.prefix}{k}{self.suffix}': v
+                for k, v in out.items()}
+
+    @classmethod
+    def is_solar_time(cls, x):
+        r"""Check if a string is a named solar time.
+
+        Args:
+            x (str): Time to check.
+
+        Returns:
+            bool: True if x is a named solar time.
+
+        """
+        return (x in utils.SolarModel._solar_times)
+
+    @cached_property
+    def solar_time_string(self):
+        r"""str: Solar time string."""
+        if self.args['time'] is not None:
+            return None
+        if not self.setdefaults(['hour']):
+            return None
+        if self.is_solar_time(self.args['hour']):
+            return self.args['hour']
+        return None
+
+    @cached_property
+    def string(self):
+        r"""str: String representation of the time."""
+        out = ''
+        if self.args['location'] is not None:
+            out += f"{self.args['location']}-"
+        if self.is_wildcard(['time', 'date', 'hour', 'year',
+                             'timezone']):
+            out += '*'
+            return out
+        if self.time is None:
+            return None
+        x = self.time
+        if self.args['location'] is not None:
+            x = x.replace(tzinfo=None)
+        if self.solar_time_string:
+            date = self.to_date(x)
+            return date.date().isoformat() + '-' + self.solar_time_string
+        return x.replace(microsecond=0).isoformat().replace(':', '-')
+
+    @cached_property
+    def date(self):
+        r"""datetime.datetime: Parsed date instance."""
+        if self.args['time'] is not None:
+            return self.to_date(self.time)
+        elif self.args['date'] is not None:
+            if isinstance(self.args['date'], str):
+                self.args['date'] = datetime.fromisoformat(
+                    self.args['date'])
+            out = self.args['date']
+            assert self.is_date(out)
+            self.check_unused(['year', 'doy'], out)
+            return out
+        elif ((self.args['planting_date'] is not None
+               and self.args['age'] is not None)):
+            out = self.planting_date + utils.quantity2timedelta(self.age)
+            out = self.to_date(out)
+            self.check_unused(['year', 'doy'], out)
+            return out
+        elif self.base and not self.any_set(['year', 'doy']):
+            return copy.deepcopy(self.base.date)
+        if not self.setdefaults(['year', 'doy']):
+            return None
+        return datetime.strptime(
+            f"{self.args['year']}-{self.args['doy']}",
+            "%Y-%j"
+        )
+
+    @cached_property
+    def time(self):
+        r"""datetime.datetime: Parsed time instance."""
+        if self.args['time'] is not None:
+            if self.args['time'].tzinfo is None:
+                self.setdefaults(['timezone'])
+                self.args['time'] = self.args['time'].astimezone(
+                    self.args['timezone'])
+            else:
+                self.setdefaults(['timezone'])
+                x = self.args['time'].astimezone(self.args['timezone'])
+                assert x == self.args['time']
+                self.args['time'] = x
+            out = self.args['time']
+            self.check_unused(['date', 'hour', 'year', 'doy'], out)
+            return out
+        date = self.date
+        if date is None or not self.setdefaults(['timezone', 'hour']):
+            return None
+        date = date.astimezone(self.args['timezone'])
+        if self.solar_time_string:
+            solar_model = self._get_solar_model(date)
+            return solar_model.solar_time(self.solar_time_string)
+        return date.replace(hour=self.args['hour'])
+
+    @cached_property
+    def age(self):
+        r"""units.Quantity: Days since planting."""
+        if self.args['age'] is not None:
+            if self.is_crop_age(self.args['age']):
+                return self.get_crop_age(self.args['age'],
+                                         return_quantity=True)
+            return self.args['age']
+        if self.args['planting_date'] is None:
+            return None
+        if self.date is None:
+            return None
+        diff = self.date - self.planting_date
+        return utils.timedelta2quantity(diff)
+
+    @cached_property
+    def planting_date(self):
+        r"""datetime.datetime: Planting date."""
+        if self.args['planting_date'] is not None:
+            return self.args['planting_date']
+        if self.time is None or self.age is None:
+            return None
+        out = self.time - utils.quantity2timedelta(self.age)
+        return self.to_date(out)
+
+    def _get_solar_model(self, time):
+        if not (self.args['altitude'] or self.args['pressure']):
+            self.setdefaults(['altitude'])
+        self.setdefaults(['latitude', 'longitude', 'temperature'])
+        return utils.SolarModel(
+            self.args['latitude'], self.args['longitude'], time,
+            altitude=self.args['altitude'],
+            pressure=self.args['pressure'],
+            temperature=self.args['temperature'],
+        )
+
+    @cached_property
+    def solar_model(self):
+        r"""SolarModel: Solar model."""
+        if self.time is None:
+            return None
+        return self._get_solar_model(self.time)
+
+
+class RepeatIterationError(BaseException):
+    r"""Error can be raised if a step should be repeated."""
+
+    def __init__(self, args_overwrite=None):
+        if args_overwrite is None:
+            args_overwrite = {}
+        self.args_overwrite = args_overwrite
+        super(RepeatIterationError, self).__init__()
+
+
 class SubparserBase(RegisteredClassBase):
     r"""Base class for tasks associated with subparsers.
 
@@ -854,69 +2571,32 @@ class SubparserBase(RegisteredClassBase):
     _name = None
     _help = None
     _default = None
-    _argument_sources = []
     _arguments = []
-    _arguments_suffix_ignore = []
-    _argument_modifications = {}
-    _excluded_arguments = []
-    _excluded_arguments_defaults = {}
-    _external_arguments = {}
-
-    def __init__(self, args=None, **kwargs):
-        super(SubparserBase, self).__init__()
-        if args is None:
-            kwargs.setdefault(self._registry_key, self._name)
-            args, kwargs = main(**kwargs)
-        self._cached_args = []
-        self.adjust_args(args)
-        self.args = args
-        kwargs.setdefault('dont_load_existing', True)
-        self.run(top_level=True, **kwargs)
+    _argument_conversions = {}
+    _external_arg_attributes = []
+    _subparser_arguments = {}
+    _subparser_modifications = {}
+    _composite_arguments = {}
 
     @staticmethod
-    def _on_registration(cls):
-        RegisteredClassBase._on_registration(cls)
-        if cls._registry_key is None:
-            return
-        import inspect
-        base = inspect.getmro(cls)[1]
-        base_args = base.argument_dict(use_flags=True)
-        local_args = cls.argument_dict(use_flags=True)
-        arguments = copy.deepcopy(base_args)
-        for other_base in cls._argument_sources:
-            arguments.update(
-                **copy.deepcopy(other_base.argument_dict(use_flags=True)))
-        subparser_specific = [
-            k for k, v in base_args.items()
-            if v[1].get('subparser_specific_dest', False)
-        ]
-        cls._excluded_arguments_defaults = dict(
-            cls._excluded_arguments_defaults,
-            **{
-                base.arg2dest(*base_args[k]): base.arg2default(*base_args[k])
-                for k in cls._excluded_arguments + subparser_specific
-            }
-        )
-        for k in cls._excluded_arguments:
-            arguments.pop(k)
-        arguments.update(**local_args)
-        for k, v in cls._argument_modifications.items():
-            arguments[k][1].update(**v)
-        for kext, mods in cls._external_arguments.items():
-            ext_arguments = get_class_registry().get(
-                cls._registry_key, kext).argument_dict(use_flags=True)
-            for k, v in mods.items():
-                arguments[k] = copy.deepcopy(ext_arguments[k])
-                arguments[k][1].update(**v)
-        cls._arguments = list(arguments.values())
-        cls._argument_modifications = {}
-        cls._excluded_arguments = []
-        cls._external_arguments = {}
-        cls._argument_sources = []
+    def _modify_argument(arg, keys=None, append_choices=None, **kwargs):
+        flags, attr = arg[:]
+        attr = dict(attr, **kwargs)
+        if keys:
+            if isinstance(keys, str):
+                keys = (keys, )
+            flags = tuple(list(flags) + list(keys))
+        if append_choices:
+            if isinstance(append_choices, str):
+                append_choices = [append_choices]
+            attr.setdefault('choices', [])
+            attr['choices'] += append_choices
+        return (flags, attr)
 
-    @staticmethod
-    def add_arguments_static(cls, parser, only_subparser=False,
-                             exclude=None, include=None):
+    @classmethod
+    def add_arguments(cls, parser, only_subparser=False,
+                      exclude=None, include=None,
+                      modifications=None):
         r"""Add arguments associated with this subparser to a parser.
 
         Args:
@@ -926,6 +2606,8 @@ class SubparserBase(RegisteredClassBase):
                 subparser if it is missing.
             exclude (list, optional): Set of arguments to exclude.
             include (list, optional): Set of arguments to include.
+            modifications (dict, optional): Modifications that should be
+                made to arguments.
 
         """
         add_missing = {'help': cls._help}
@@ -937,45 +2619,82 @@ class SubparserBase(RegisteredClassBase):
             add_missing_group=add_missing_group,
             add_missing=add_missing,
         )
+        if modifications is None:
+            modifications = {}
+
+        def check(k):
+            if exclude is not None and k in exclude:
+                return False
+            if include is not None and k not in include:
+                return False
+            return True
+
+        for k in cls._subparser_arguments.keys():
+            if not check(k):
+                continue
+            for v in get_class_registry().values(k):
+                v.add_arguments(subparser, only_subparser=True,
+                                exclude=exclude, include=include,
+                                modifications=modifications)
         if only_subparser:
             return
         for iargs, ikwargs in cls._arguments:
-            if exclude is not None or include is not None:
-                idest = ikwargs.get(
-                    'dest', iargs[0].lstrip('-').replace('-', '_'))
-                if exclude is not None and idest in exclude:
-                    continue
-                if include is not None and idest not in include:
-                    continue
+            idest = ikwargs.get(
+                'dest', iargs[0].lstrip('-').replace('-', '_'))
+            if not check(idest):
+                continue
+            if idest in modifications:
+                iargs, ikwargs = SubparserBase._modify_argument(
+                    (iargs, ikwargs), **modifications[idest])
             # ikwargs.setdefault('subparsers', {})
             # ikwargs['subparsers'].setdefault(cls._registry_key,
             #                                  [cls._name])
             # parser.add_argument(*iargs, **ikwargs)
-            subparser.add_argument(*iargs, **ikwargs)
+            try:
+                subparser.add_argument(*iargs, **ikwargs)
+            except argparse.ArgumentError:
+                print(cls, subparser)
+                pprint.pprint(cls._arguments)
+                pdb.set_trace()
+                raise
+        for k in cls._subparser_arguments.keys():
+            if not check(k):
+                continue
+            kinclude = include
+            kmodifications = modifications
+            if isinstance(cls._subparser_arguments[k], list):
+                kinclude = [
+                    x for x in cls._subparser_arguments[k] if check(x)
+                ]
+            if k in cls._subparser_modifications:
+                kmodifications = dict(cls._subparser_modifications[k],
+                                      **modifications)
+            for v in get_class_registry().values(k):
+                v.add_arguments(subparser, only_subparser=False,
+                                exclude=exclude, include=kinclude,
+                                modifications=kmodifications)
 
     @classmethod
-    def add_arguments(cls, parser, **kwargs):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            **kwargs: Additional keyword arguments are passed to the
-                add_arguments_static method.
-
-        """
-        return cls.add_arguments_static(cls, parser, **kwargs)
-
-    @classmethod
-    def adjust_args(cls, args):
-        r"""Adjust the parsed arguments including setting defaults that
-        depend on other provided arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        """
-        pass
+    def _convert_composite(cls, args, k, v=NoDefault, base=None,
+                           overwrite=False, **kwargs):
+        if base is None:
+            for kk, vv in cls._composite_arguments.items():
+                if k in vv:
+                    base = kk
+                    break
+            else:
+                raise ValueError(f'Could not determine composite '
+                                 f'argument type for \"{k}\"')
+        arg_class = get_class_registry().get('argument', base)
+        if overwrite:
+            arg_class.reset_args(k, args, value=v)
+        kws = dict(
+            cls._composite_arguments.get(base, {}).get(k, {}), **kwargs
+        )
+        out = arg_class.from_args(k, args, **kws)
+        # if base in ['age', 'time']:
+        #     out.ensure_parameter_inst(args)
+        return out
 
     @classmethod
     def arg2dest(cls, iargs, ikwargs):
@@ -996,33 +2715,60 @@ class SubparserBase(RegisteredClassBase):
         return ikey
 
     @classmethod
-    def arg2default(cls, iargs, ikwargs):
+    def arg2default(cls, name, info=None):
         r"""Determine the default value for an argument.
 
         Args:
-            iargs (tuple): Argument args for add_argument.
-            ikwargs (dict): Argument kwargs for add_argument.
+            name (str): Argument name.
+            info (dict, optional): Argument info.
 
         Returns:
             object: Default value for the argument.
 
         """
         ival = None
-        if ikwargs.get('action', None) == 'store_true':
+        if info is None:
+            info = cls.argument_dict(include=name,
+                                     include_subparser='explicit')[1]
+        if info.get('action', None) == 'store_true':
             ival = False
-        elif ikwargs.get('action', None) == 'store_false':
+        elif info.get('action', None) == 'store_false':
             ival = True
-        elif 'default' in ikwargs:
-            ival = ikwargs['default']
-            if 'type' in ikwargs and ival is not None:
-                ival = ikwargs['type'](ival)
+        elif 'default' in info:
+            ival = info['default']
+            if 'type' in info and ival is not None:
+                ival = info['type'](ival)
         return ival
 
     @classmethod
-    def argument_dict(cls, use_flags=False):
+    def add_missing_args(cls, args):
+        r"""Add missing arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments to modify.
+
+        """
+        for k, v in cls.argument_dict(
+                include_subparser='explicit').items():
+            if not hasattr(args, k):
+                setattr(args, k, cls.arg2default(k, info=v[1]))
+
+    @classmethod
+    def argument_dict(cls, exclude=None, include=None,
+                      modifications=None, only_subparser=False,
+                      include_subparser=False, use_flags=False):
         r"""Get a dictionary of argument data.
 
         Args:
+            exclude (list, optional): Set of arguments to exclude.
+            include (list, optional): Set of arguments to include.
+            modifications (dict, optional): Modifications that should be
+                made to arguments.
+            only_subparser (bool, optional): If True, include only
+                subparser arguments.
+            include_subparser (bool, optional): If True, include
+                subparser arguments. If 'explicit' is passed, the
+                subparser itself will also be added as an argument.
             use_flags (bool, optional): If False, use the argument
                 destinations. If True, use the argument flags.
 
@@ -1032,39 +2778,136 @@ class SubparserBase(RegisteredClassBase):
 
         """
         out = OrderedDict()
-        for iargs, ikwargs in cls._arguments:
+        return_first = False
+        if isinstance(include, str):
+            return_first = True
+            include = [include]
+        if modifications is None:
+            modifications = {}
+        if only_subparser and not include_subparser:
+            include_subparser = True
+
+        def check(k):
+            if exclude is not None and k in exclude:
+                return False
+            if include is not None and k not in include:
+                return False
+            return True
+
+        def check_and_add(iargs, ikwargs):
+            if return_first and out:
+                return True
+            idst = cls.arg2dest(iargs, ikwargs)
+            if not check(idst):
+                return False
+            if include is not None and idst not in include:
+                return False
+            if idst in modifications:
+                iargs, ikwargs = SubparserBase._modify_argument(
+                    (iargs, ikwargs), **modifications[idst])
             if use_flags:
                 ikey = iargs[0]
             else:
-                ikey = cls.arg2dest(iargs, ikwargs)
-            out[ikey] = [iargs, ikwargs]
+                ikey = idst
+            if ikey not in out:
+                if return_first and include[0] != idst:
+                    return False
+                out[ikey] = (iargs, ikwargs)
+                if return_first:
+                    return True
+            return False
+
+        if include_subparser == 'explicit':
+            k = cls._registry_key
+            iargs = (k, )
+            ikwargs = {'choices': get_class_registry().keys(k)}
+            vbase = get_class_registry().getbase(k)
+            if vbase._default:
+                ikwargs['default'] = vbase._default
+            if vbase._help:
+                ikwargs['help'] = vbase._help
+            if check_and_add(iargs, ikwargs):
+                pass
+            for k in cls._subparser_arguments.keys():
+                if return_first and out:
+                    break
+                if cls._subparser_arguments[k] is False or not check(k):
+                    continue
+                for v in get_class_registry().values(k):
+                    if return_first and out:
+                        break
+                    for iargs, ikwargs in v.argument_dict(
+                            only_subparser=True,
+                            include_subparser=include_subparser,
+                            exclude=exclude, include=include,
+                            modifications=modifications,
+                            use_flags=use_flags).values():
+                        if check_and_add(iargs, ikwargs):
+                            break
+        if not only_subparser:
+            for iargs, ikwargs in cls._arguments:
+                if check_and_add(iargs, ikwargs):
+                    break
+        if include_subparser:
+            for k, kargs in cls._subparser_arguments.items():
+                if return_first and out:
+                    break
+                if kargs is False or not check(k):
+                    continue
+                kinclude = include
+                kmodifications = modifications
+                if isinstance(kargs, list):
+                    kinclude = [x for x in kargs if check(x)]
+                if k in cls._subparser_modifications:
+                    kmodifications = dict(cls._subparser_modifications[k],
+                                          **modifications)
+                for v in get_class_registry().values(k):
+                    if return_first and out:
+                        break
+                    for iargs, ikwargs in v.argument_dict(
+                            only_subparser=False,
+                            include_subparser=True,
+                            exclude=exclude, include=kinclude,
+                            modifications=kmodifications,
+                            use_flags=use_flags).values():
+                        if check_and_add(iargs, ikwargs):
+                            break
+        if return_first:
+            if not out:
+                raise ValueError(
+                    f'{cls} Could not find argument matching '
+                    f'\"{include[0]}\":\n{pprint.pformat(out)}')
+            assert len(out) == 1
+            return list(out.values())[0]
         return out
 
-    @classmethod
-    def argument_defaults(cls, use_flags=False):
-        r"""Get a dictionary of argument defaults.
+    @staticmethod
+    def argument_names_static(cls, use_flags=False):
+        r"""Set of arguments allowed by the subparser.
 
         Args:
             use_flags (bool, optional): If False, use the argument
                 destinations. If True, use the argument flags.
 
         Returns:
-            dict: Argument defaults.
+            list: Arguments.
 
         """
-        parser = InstrumentedParser('for defaults')
-        cls.add_arguments(parser)
-        args = parser.parse_args([cls._name])
-        args._in_argument_defaults = True
-        cls.adjust_args(args)
-        out = {}
+        # TODO: Prepend with subparser registry key?
+        out = list(cls._subparser_arguments.keys())
+        for k in cls._subparser_arguments.keys():
+            out += [
+                x for x in cls._get_subparser_arguments(
+                    k, use_flags=use_flags)
+                if x not in out
+            ]
         for iargs, ikwargs in cls._arguments:
-            dest = cls.arg2dest(iargs, ikwargs)
             if use_flags:
-                ikey = iargs[0]
+                out.append(iargs[0])
+            elif issubclass(cls, SubparserBase):
+                out.append(cls.arg2dest(iargs, ikwargs))
             else:
-                ikey = dest
-            out[ikey] = getattr(args, dest)
+                out.append(SubparserBase.arg2dest(iargs, ikwargs))
         return out
 
     @classmethod
@@ -1079,13 +2922,7 @@ class SubparserBase(RegisteredClassBase):
             list: Arguments.
 
         """
-        out = []
-        for iargs, ikwargs in cls._arguments:
-            if use_flags:
-                out.append(iargs[0])
-            else:
-                out.append(cls.arg2dest(iargs, ikwargs))
-        return out
+        return cls.argument_names_static(cls, use_flags=use_flags)
 
     @classmethod
     def select_valid_arguments(cls, args, use_flags=False):
@@ -1100,131 +2937,60 @@ class SubparserBase(RegisteredClassBase):
         names = cls.argument_names(use_flags=use_flags)
         return [k for k in args if k in names]
 
-    def copy_args(self, args):
-        r"""Copy arguments from the namespace to this instance as
-        attributes.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        """
-        for k in self.argument_names():
-            assert not hasattr(self, k)
-            setattr(self, k, getattr(args, k))
-
-    def cache_args(self, adjust=None, args_preserve=None,
-                   args_overwrite=None, properties_preserve=None,
-                   properties_overwrite=None, alternate_outputs=None,
-                   recursive=None):
-        r"""Cache the current set of arguments.
-
-        Args:
-            adjust (type, optional): Class that should be used to adjust
-                the arguments after they are updated. If not provided,
-                this class will be used.
-            args_preserve (list, optional): Set of argument names to
-                preserve from the updated argument namespace when the
-                cached args are restored (by restore_args).
-            args_ovewrite (dict, optional): Argument values to set for
-                the run after copying the current argument namespace.
-            properties_preserve (list, optional): Set of cached
-                properties that should be preserved.
-            properties_overwrite (dict, optional): Cached property
-                values to set for the run after caching the current
-                properties.
-            alternate_outputs (list, optional): Set of alternate outputs
-                that should be generated.
-            recursive (bool, optional): If True, this is a recursive
-                call and overwrite for outputs should be reset to False.
-                If not provided, recursive will be set to true if self
-                is an instance of the provided adjust class.
-
-        """
-        if adjust is None:
-            adjust = self
-        if args_preserve is None:
-            args_preserve = []
-        if args_overwrite is None:
-            args_overwrite = {}
-        if properties_preserve is None:
-            properties_preserve = []
-        if properties_overwrite is None:
-            properties_overwrite = {}
-        if alternate_outputs is None:
-            alternate_outputs = []
-        if recursive is None:
-            recursive = (adjust._name == self._name)
-        enabled_outputs = adjust.enabled_outputs(self.args)
-        for name in adjust.output_names():
-            output_key = f'output_{name}'
-            if name in enabled_outputs + alternate_outputs:
-                args_overwrite.setdefault(output_key, True)
-            else:
-                args_overwrite.setdefault(output_key, False)
-            if recursive:
-                args_overwrite.setdefault(f'overwrite_{name}', False)
-        cached_properties = self.pop_cached_properties(
-            preserve=properties_preserve, args=True)
-        self._cached_args.append(
-            (self.args, args_preserve,
-             cached_properties, properties_preserve)
-        )
-        self.args = copy.deepcopy(self.args)
-        self.log(f'Updating args with {args_overwrite}')
-        raise Exception
-        for k, v in args_overwrite.items():
-            setattr(self.args, k, v)
-        if properties_overwrite:
-            self.set_cached_properties(properties_overwrite)
-        adjust.adjust_args(self.args)
-
-    def restore_args(self):
-        r"""Restore the last set of preserved arguments."""
-        new_args = self.args
-        cache_entry = self._cached_args.pop()
-        self.args = cache_entry[0]
-        for k in cache_entry[1]:
-            setattr(self.args, k, getattr(new_args, k))
-        cached_properties = cache_entry[2]
-        props_preserve = cache_entry[3]
-        if props_preserve:
-            cached_properties.update(
-                self.get_cached_properties(include=props_preserve)
-            )
-        self.reset_cached_properties(cached_properties, args=True)
-
     def run(self):
         r"""Run the process associated with this subparser."""
         raise NotImplementedError
 
 
+class FilenameGenerationError(BaseException):
+    r"""Error to raise when a file name cannot be generated."""
+    pass
+
+
+class SuffixGenerationError(FilenameGenerationError):
+    r"""Error to raise when an argument cannot be converted into a
+    suffix."""
+    pass
+
+
 class TaskBase(SubparserBase):
-    r"""Base class for tasks."""
+    r"""Base class for tasks.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        regenerate_output (bool, optional): If True, regenerate output
+            file names.
+
+    Class Attributes:
+        _output_info (dict): Properties of task outputs.
+        _outputs_local (list): Outputs produced by this task.
+        _outputs_required (list): Required local outputs.
+        _outputs_optional (list): Optional local outputs.
+        _outputs_external (dict): Mapping between outputs produced by
+            external tasks that are used by this task and the external
+            task that produces it.
+        _outputs_total (list): All outputs produced by this task or the
+            external tasks that are used by this task.
+        _external_tasks (dict): Mapping of external tasks used by this
+            task and information about how arguments should be adopted
+            by this task.
+        _dont_inherit_base (bool): If True, arguments of the base class
+            will not be inherited.
+        _arguments (list): Class arguments.
+
+    """
 
     _registry_key = 'task'
     _default = 'generate'
-    _ext = None
-    _output_dir = None
-    _alternate_outputs_write_optional = []
-    _alternate_outputs_write_required = []
-    _arguments_suffix_ignore = [
-        'overwrite_all', 'verbose', 'debug',
-    ]
+    _output_info = {}
+    _outputs_local = []
+    _outputs_required = []
+    _outputs_optional = []
+    _outputs_external = {}
+    _outputs_total = []
+    _external_tasks = {}
+    _dont_inherit_base = False
     _arguments = [
-        (('--output', ), {
-            'type': str,
-            'help': 'File where output should be saved',
-            'subparser_specific_dest': True,
-        }),
-        (('--overwrite', ), {
-            'action': 'store_true',
-            'help': 'Overwrite existing output',
-            'subparser_specific_dest': True,
-        }),
-        (('--overwrite-all', ), {
-            'action': 'store_true',
-            'help': 'Overwrite all child components of the task',
-        }),
         (('--verbose', ), {
             'action': 'store_true',
             'help': 'Show log messages'
@@ -1236,340 +3002,78 @@ class TaskBase(SubparserBase):
         }),
     ]
 
-    def __init__(self, *args, **kwargs):
-        self._alternate_output = {}
-        super(TaskBase, self).__init__(*args, **kwargs)
-
     @staticmethod
     def _on_registration(cls):
         SubparserBase._on_registration(cls)
-        if cls._registry_key is None:
-            return
-        import inspect
         base = inspect.getmro(cls)[1]
-        cls._arguments_suffix_ignore = copy.deepcopy(
-            base._arguments_suffix_ignore) + cls._arguments_suffix_ignore
-        cls._alternate_outputs_write = (
-            cls._alternate_outputs_write_required
-            + cls._alternate_outputs_write_optional)
-
-    def output_exists(self, name=None):
-        r"""bool: True if the output file exists."""
-        if isinstance(name, list):
-            return all(self.output_exists(name=k) for k in name)
-        if name is None:
-            name = self._name
-        overwrite = getattr(self.args, f'overwrite_{name}')
-        output = getattr(self.args, f'output_{name}')
-        return (output and (not overwrite) and os.path.isfile(output))
-
-    @classmethod
-    def run_class(cls, self, dont_load_existing=False,
-                  args_preserve=None, args_overwrite=None,
-                  properties_preserve=None, properties_overwrite=None,
-                  recursive=None, dont_reset_alternate_output=False,
-                  return_alternate_output=False,
-                  require_alternate_output=None,
-                  top_level=False, **kwargs):
-        r"""Run the process associated with this subparser.
-
-        Args:
-            self (object): Task instance that is running.
-            dont_load_existing (bool, optional): If True, existing output
-                will not be loaded.
-            args_preserve (list, optional): Set of argument names to
-                preserve from the updated arguments following a run.
-            args_ovewrite (dict, optional): Argument values to set for
-                the run after copying the current argument namespace.
-            properties_preserve (list, optional): Set of cached
-                properties that should be preserved.
-            properties_overwrite (dict, optional): Cached property
-                values to set for the run after caching the current
-                properties.
-            recursive (bool, optional): If True, this is a recursive
-                call and overwrite for outputs should be reset to False.
-                If not provided, recursive will be set to true if self
-                is an instance of the provided adjust class.
-            dont_reset_alternate_output (bool, optional): If True, don't
-                reset the dictionary of alternate outputs on return.
-            return_alternate_output (str, optional): Name of an
-                alternate output that should be output instead of the
-                standard output.
-            require_alternate_output (list, optional): A list of
-                alternate output values that should be recorded. If not,
-                provided the default required alternate outputs will be
-                used.
-            top_level (bool, optional): If True, this is the top level
-                call and arguments should not be cached.
-            **kwargs: Additional keyword arguments are passed to the
-                _run method if it is called.
-
-        Returns:
-            object: Generated object.
-
-        """
-        output_name = cls._name
-        if ((return_alternate_output
-             and return_alternate_output in cls._alternate_outputs_write)):
-            if require_alternate_output is None:
-                require_alternate_output = []
-            if return_alternate_output not in require_alternate_output:
-                require_alternate_output.append(return_alternate_output)
-            output_name = return_alternate_output
-            return_alternate_output = False
-        if top_level:
-            assert not any([
-                args_preserve, args_overwrite, properties_preserve,
-                properties_overwrite, require_alternate_output,
-                recursive,
-            ])
-        else:
-            self.cache_args(
-                adjust=cls, args_preserve=args_preserve,
-                args_overwrite=args_overwrite,
-                properties_preserve=properties_preserve,
-                properties_overwrite=properties_overwrite,
-                alternate_outputs=require_alternate_output,
-                recursive=recursive,
-            )
-        output_names = cls.enabled_outputs(self.args)
-        output_files = [
-            getattr(self.args, f'output_{k}') for k in output_names
-        ]
-        out = None
-        if ((self.output_exists(name=output_names)
-             and return_alternate_output is False)):
-            if dont_load_existing:
-                self.log(f'Output already exists and overwrite '
-                         f'not set: {output_files} '
-                         f'(output_names={output_names})',
-                         cls=cls, force=True)
-            else:
-                self.log(f'Loading existing output {output_files}',
-                         cls=cls, force=True)
-                out = cls.read_output(
-                    self,
-                    require_alternate_output=require_alternate_output
-                )
-        else:
-            # outputs = {k: getattr(self.args, f'output_{k}') for k in
-            #            output_names}
-            # self.log(f'outputs = {pprint.pformat(outputs)}')
-            self.log(f'Generating output {output_files}', cls=cls,
-                     force=True)
-            out = cls._run(self, **kwargs)
-            cls.write_output(self, out)
-        if not top_level:
-            self.restore_args()
-        if output_name != cls._name:
-            self.log(f'Returning alternate value for '
-                     f'{output_name}', cls=cls)
-            out = self.get_alternate_output(output_name)
-        if not dont_reset_alternate_output:
-            self._alternate_output.clear()
-        return out
-
-    def run(self, **kwargs):
-        r"""Run the process associated with this subparser.
-
-        Args:
-            **kwargs: Additional keyword arguments are passed to
-                run_class.
-
-        Returns:
-            object: Generated object.
-
-        """
-        kwargs.setdefault('recursive', False)
-        return self.run_class(self, **kwargs)
-
-    def add_alternate_output(self, key, value):
-        r"""Add an alternate value for return by run_class.
-
-        Args:
-            key (str): Name of alternate output.
-            value (object): Value of alternate output.
-
-        """
-        assert key not in self._alternate_output
-        self._alternate_output[key] = value
-
-    def pop_alternate_output(self, key, default=NoDefault,
-                             preserve=False):
-        r"""Pop an alternate output value from the registry.
-
-        Args:
-            key (str): Name of alternate output.
-            default (object, optional): Value to return if it is not
-                present.
-            preserve (bool, optional): If True, don't remove the entry.
-
-        Returns:
-            object: Alternate output.
-
-        Raises:
-            KeyError: If key is not present and default is not provided.
-
-        """
-        if key in self._alternate_output:
-            if preserve:
-                out = self._alternate_output[key]
-            else:
-                out = self._alternate_output.pop(key)
-        else:
-            out = default
-        if out is NoDefault:
-            raise KeyError(key)
-        return out
-
-    def get_alternate_output(self, key, default=NoDefault):
-        r"""Get an alternate value for return by run_class.
-
-        Args:
-            key (str): Name of alternate output.
-            default (object, optional): Value to return if it is not
-                present.
-
-        Returns:
-            object: Alternate output.
-
-        Raises:
-            KeyError: If key is not present and default is not provided.
-
-        """
-        return self.pop_alternate_output(key, default=default,
-                                         preserve=True)
-
-    @classmethod
-    def read_output(cls, self, name=None,
-                    require_alternate_output=None):
-        r"""Load an output file produced by this task.
-
-        Args:
-            self (object): Task instance that is running.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-            require_alternate_output (list, optional): Set of alternate
-                output values that should be read. If not provided,
-                the set of required alternate values for the class will
-                be used.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        is_base = (name is None)
-        if name is None:
-            name = cls._name
-        outputfile = getattr(self.args, f'output_{name}')
-        assert outputfile
-        self.log(f'Loading existing output from \"{outputfile}\"',
-                 cls=cls)
-        out = cls._read_output(self.args, name=name)
-        if require_alternate_output is None:
-            require_alternate_output = cls._alternate_outputs_write_required
-        if is_base and require_alternate_output:
-            for k in require_alternate_output:
-                koutput = cls.read_output(self, name=k)
-                self.add_alternate_output(k, koutput)
-        return out
-
-    @classmethod
-    def write_output(cls, self, output, name=None):
-        r"""Write to an output file.
-
-        Args:
-            self (object): Task instance that is running.
-            output (object): Output object to write to file.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        """
-        is_base = (name is None)
-        if name is None:
-            name = cls._name
-        outputfile = getattr(self.args, f'output_{name}')
-        if not outputfile:
+        if base == SubparserBase:
             return
-        self.log(f'Writing output to \"{outputfile}\"', cls=cls)
-        cls._write_output(output, self.args, name=name)
-        if is_base:
-            for k in cls.enabled_outputs(self.args, no_base=True):
-                koutput = self.get_alternate_output(k)
-                cls.write_output(self, koutput, name=k)
+        cls._build_arguments(cls)
 
-    @classmethod
-    def output_names(cls, only_required=False):
-        r"""Get the set of outputs associated with this subparser.
-
-        Args:
-            only_required (bool, optional): If True, only include
-                required outputs.
-
-        Returns:
-            list: Output names.
-
-        """
-        out = [cls._name]
-        if only_required:
-            out += cls._alternate_outputs_write_required
+    def __init__(self, args, regenerate_output=False, dont_adjust=False,
+                 dont_reset=False, root=None, cached_outputs=None):
+        if root is None:
+            root = self
+        self.root = root
+        self._outputs = {}
+        if root is self:
+            if cached_outputs is None:
+                cached_outputs = {}
+            self._cached_outputs = cached_outputs
         else:
-            out += cls._alternate_outputs_write
-        return out
+            assert cached_outputs is None
+            self._cached_outputs = root._cached_outputs
+        self.external_tasks = {}
+        super(TaskBase, self).__init__()
+        self.args = args
+        # self.log(f'EXTERNAL_TASKS: {list(self._external_tasks.keys())}',
+        #          force=True)
+        for cls in self._external_tasks.keys():
+            if cls._name in self.external_tasks:
+                continue
+            else:
+                self.external_tasks[cls._name] = cls(
+                    self.args, root=self.root,
+                    dont_adjust=True, dont_reset=True,
+                )
+        if not dont_adjust:
+            args._parameter_inst_function = self.get_parameter_inst
+            self.adjust_args(self.args)
+        if not dont_reset:
+            # self.ensure_parameter_inst()
+            self.reset_outputs(regenerate=regenerate_output)
 
     @classmethod
-    def enabled_outputs(cls, args, no_base=False):
-        r"""Get the set of outputs enabled by a set of arguments.
+    def adjust_args(cls, args, skip_external=False, only_external=False):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            no_base (bool, optional): If True, don't include the default
-                output name.
+            skip_external (bool, optional): If True, don't adjust
+                arguments for external tasks.
+            only_external (bool, optional): If True, only adjust
+                arguments for external tasks.
+
+        """
+        assert not (skip_external and only_external)
+        if not only_external:
+            cls.adjust_args_internal(args)
+        if not skip_external:
+            for cls in cls._external_tasks.keys():
+                cls.adjust_args(args, only_external=only_external)
+
+    def get_parameter_inst(self):
+        r"""Get the instance of ParametrizeCropTask used by this task.
 
         Returns:
-            list: Names of enabled outputs.
+             ParametrizeCropTask: Instance that parametrizes geometries.
 
         """
-        out = []
-        if not no_base:
-            out += [cls._name]
-        out += cls._alternate_outputs_write_required
-        out += [
-            k for k in cls._alternate_outputs_write_optional
-            if getattr(args, f'output_{k}', False)
-        ]
-        return out
+        return self.root._get_output_task(self, 'parametrize')
 
     @classmethod
-    def _read_output(cls, args, name=None):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        raise NotImplementedError
-
-    @classmethod
-    def _write_output(cls, output, args, name=None):
-        r"""Write to an output file.
-
-        Args:
-            output (object): Output object to write to file.
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        """
-        raise NotImplementedError
-
-    @classmethod
-    def adjust_args(cls, args):
+    def adjust_args_internal(cls, args):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
@@ -1577,156 +3081,1260 @@ class TaskBase(SubparserBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        for k, v in cls._excluded_arguments_defaults.items():
+        valid_arguments = cls.argument_dict()
+        for k, v in valid_arguments.items():
             if not hasattr(args, k):
-                setattr(args, k, v)
-        cls.adjust_args_output(args)
-        base_overwrite = getattr(args, f'overwrite_{cls._name}')
-        for k in cls._alternate_outputs_write:
-            if base_overwrite:
-                setattr(args, f'overwrite_{k}', True)
-            cls.adjust_args_output(args, name=k)
+                setattr(args, k, cls.arg2default(k, info=v[1]))
+        order = list(cls._argument_conversions.keys())
+        for k in order:
+            if k in cls._composite_arguments:
+                for kk in cls._argument_conversions[k]:
+                    if kk not in valid_arguments:
+                        continue
+                    cls._convert_composite(args, kk, base=k)
+            else:
+                method = getattr(cls, f'_convert_{k}')
+                for kk in cls._argument_conversions[k]:
+                    if kk not in valid_arguments:
+                        continue
+                    method(args, kk, getattr(args, kk, None))
 
     @classmethod
-    def default_filename_applies(cls, args):
-        r"""Check if the default file name can be applied by comparing
-        the provided arguments against the assumed defaults.
+    def copy_external_args(cls, args=None, args_overwrite=None,
+                           args_external=None, set_defaults=False,
+                           initialize=False, return_dict=False):
+        r"""Extract arguments for this task from a set for another task.
 
         Args:
-            args (argparse.Namespace): Parsed arguments.
+            args (argparse.Namespace, optional): Parsed arguments to
+                copy.
+            args_overwrite (dict, optional): Arguments to overwrite.
+            args_external (list, optional): External arguments that should
+                be preserved.
+            set_defaults (bool, optional): If True, don't set missing
+                arguments to defaults.
+            initialize (bool, optional): If True, initialize arguments
+                by applying adjust_args (implies set_defaults == True).
+            return_dict (bool, optional): Return a dictionary instead
+                of argparse.Namespace.
 
         Returns:
-            bool: True if the default name applies.
+            argparse.Namespace: Arguments.
 
         """
-        for k, expected in cls.argument_defaults(use_dest=True).items():
-            if k in cls._arguments_suffix_ignore:
+        if initialize:
+            set_defaults = True
+        if args is None:
+            args = argparse.Namespace()
+        if args_overwrite is None:
+            args_overwrite = {}
+        if args_external is None:
+            args_external = []
+        args_overwrite.setdefault(cls._registry_key, cls._name)
+        args_changing = list(args_overwrite.keys())
+        if args_changing:
+            for k, kargs in cls._composite_arguments.items():
+                for kk in kargs:
+                    if kk not in args_changing:
+                        continue
+                    v = get_class_registry().get('argument', k)
+                    args_changing += [
+                        x for x in v.argument_names(kk, no_universal=True)
+                        if x not in args_changing
+                    ]
+        out = {}
+        for k, props in cls.argument_dict(
+                include_subparser='explicit').items():
+            if k in args_overwrite:
+                out[k] = args_overwrite[k]
+            elif k in out:
                 continue
-            actual = getattr(args, k)
-            match = (actual == expected)
-            if isinstance(match, np.ndarray):
-                match = np.all(match)
-            if not match:
-                print(f'Mismatch {k}: {actual} vs. {expected}')
-                pdb.set_trace()
-                return False
-        return True
+            elif hasattr(args, k):
+                out[k] = getattr(args, k)
+            elif set_defaults:
+                out[k] = cls.arg2default(k, info=props[1])
+            else:
+                out[k] = None
+            v = out[k]
+            if isinstance(v, CompositeArgument):
+                for kk, vv in v.raw_args(k).items():
+                    if kk in args_overwrite:
+                        continue
+                    out[kk] = vv
+                continue
+        missing = []
+        for k in args_overwrite.keys():
+            if k not in out:
+                missing.append(k)
+        if missing:
+            raise Exception(f'Members of args_overwrite were unused: '
+                            f'{missing}')
+        for k in args_external:
+            assert k not in out
+            if hasattr(args, k):
+                out[k] = getattr(args, k)
+        if return_dict:
+            assert not initialize
+            return out
+        kws = out
+        # if use_parse:
+        #     kws = {k: v for k, v in kws.items() if v is not None}
+        #     out = parse(**kws)
+        out = argparse.Namespace()
+        for k, v in kws.items():
+            setattr(out, k, v)
+        if initialize:
+            cls.adjust_args(out)
+        return out
 
     @classmethod
-    def adjust_args_output(cls, args, name=None):
-        r"""Adjust the parsed arguments controling output, generating a
-        file name from the other arguments if it is not present.
+    def from_kwargs(cls, kws, **kwargs):
+        r"""Create an instance from the provided arguments.
+
+        Args:
+            kws (dict): Keyword arguments that should be parsed into
+                arguments via the parse function.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        """
+        kws[cls._registry_key] = cls._name
+        args = cls.copy_external_args(args_overwrite=kws,
+                                      set_defaults=True)
+        return cls(args, **kwargs)
+
+    @classmethod
+    def from_external_args(cls, args, args_overwrite=None,
+                           args_external=None, copy_outputs_from=None,
+                           **kwargs):
+        r"""Create an instance from a set of external arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
+            args_ovewrite (dict, optional): Argument values to set for
+                the run after copying the current argument namespace.
+            args_external (list, optional): External arguments that should
+                be preserved.
+            copy_outputs_from (TaskBase, optional): Existing instance
+                that matching outputs should be copied from.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        Returns:
+            TaskBase: New task instance.
+
+        """
+        args = cls.copy_external_args(
+            args, args_overwrite=args_overwrite,
+            args_external=args_external, set_defaults=True,
+        )
+        out = cls(args, **kwargs)
+        if copy_outputs_from is not None:
+            out.copy_matching_outputs(copy_outputs_from)
+        return out
+
+    # Methods for building arguments
+    @staticmethod
+    def _build_arguments(cls):
+        for k in ['_subparser_arguments', '_subparser_modifications',
+                  '_arguments', '_argument_conversions',
+                  '_output_info', '_outputs_required', '_outputs_local',
+                  '_composite_arguments']:
+            setattr(cls, k, copy.deepcopy(getattr(cls, k)))
+        if not cls._dont_inherit_base:
+            base = inspect.getmro(cls)[1]
+            TaskBase._copy_external_arguments(cls, base)
+        cls._dont_inherit_base = False
+        if cls._name is not None and cls._name not in cls._outputs_required:
+            cls._outputs_required.insert(0, cls._name)
+        cls._outputs_required = [
+            k for k, v in cls._output_info.items()
+            if not v.get('optional', False)
+        ]
+        cls._outputs_optional = [
+            k for k, v in cls._output_info.items()
+            if v.get('optional', False)
+        ]
+        cls._outputs_local = cls._outputs_required + cls._outputs_optional
+        cls._outputs_external = {}
+        for ext, props in cls._external_tasks.items():
+            TaskBase._copy_external_arguments(cls, ext, **props)
+        cls._outputs_total = (
+            cls._outputs_local + list(cls._outputs_external.keys())
+        )
+        for k, v in cls._output_info.items():
+            if k in cls._outputs_external:
+                continue
+            if 'base' in v and v['base'] not in v.get('upstream', []):
+                v.setdefault('upstream', [])
+                v['upstream'].append(v['base'])
+            for x in v.get('upstream', []):
+                xsrc = cls
+                while x not in xsrc._outputs_local:
+                    xsrc = xsrc._outputs_external[x]
+                xsrc._output_info[x].setdefault('downstream', {})
+                xsrc._output_info[x]['downstream'].setdefault(cls, [])
+                if k not in xsrc._output_info[x]['downstream'][cls]:
+                    xsrc._output_info[x]['downstream'][cls].append(k)
+            cls._composite_arguments.setdefault('output', {})
+            koutput = f'output_{k}'
+            if koutput not in cls._composite_arguments['output']:
+                cls._composite_arguments['output'][koutput] = v
+        CompositeArgument.add_arguments(cls)
+
+    @classmethod
+    def _get_subparser_arguments(cls, k, use_flags=False):
+        assert k in cls._subparser_arguments
+        kargs = cls._subparser_arguments[k]
+        if isinstance(kargs, list):
+            if use_flags:
+                kargs = ['--' + x.replace('_', '-') for x in kargs]
+            return kargs
+        if kargs is False:
+            return []
+        assert kargs is True
+        kargs = []
+        for v in get_class_registry().values(k):
+            kargs += [
+                x for x in v.argument_names(use_flags=use_flags)
+                if x not in kargs
+            ]
+        return kargs
+
+    @staticmethod
+    def _copy_external_arguments(dst, src, include=None, exclude=None,
+                                 modifications=None, optional=False):
+        arguments = dst.argument_dict()
+        if modifications is None:
+            modifications = {}
+        modifications = copy.deepcopy(modifications)
+
+        def check(k):
+            if exclude is not None and k in exclude:
+                return False
+            if include is not None and k not in include:
+                return False
+            return True
+
+        if include is not None:
+            include += [f'output_{k}' for k in src._outputs_local]
+            if optional:
+                for k in src._outputs_local:
+                    modifications.setdefault(f'output_{k}', {})
+                    modifications[f'output_{k}'].setdefault(
+                        'default', False)
+        for argT, v in src._composite_arguments.items():
+            arg_class = get_class_registry().get('argument', argT)
+            for k in v.keys():
+                prefix = arg_class.get_prefix(k)
+                suffix = arg_class.get_suffix(k)
+                added_args = arg_class.argument_names(
+                    prefix=prefix, suffix=suffix)
+                if exclude is not None and k in exclude:
+                    exclude = exclude + [
+                        kk for kk in added_args if kk not in exclude]
+                if include is not None and k in include:
+                    include = include + [
+                        kk for kk in added_args if kk not in include]
+        for k in src._subparser_arguments.keys():
+            subparser_args = None
+            if modifications:
+                subparser_args = src._get_subparser_arguments(k)
+                for kmod in modifications.keys():
+                    if kmod in subparser_args:
+                        dst._subparser_modifications.setdefault(k, {})
+                        dst._subparser_modifications[k].setdefault(
+                            kmod, modifications[kmod])
+            if (not check(k)) or k in dst._subparser_arguments:
+                continue
+            if include is None and exclude is None:
+                dst._subparser_arguments[k] = copy.deepcopy(
+                    src._subparser_arguments[k])
+                continue
+            if subparser_args is None:
+                subparser_args = src._get_subparser_arguments(k)
+            dst._subparser_arguments[k] = [
+                x for x in subparser_args if check(x)
+            ]
+        for k, v in src._subparser_modifications.items():
+            if (not check(k)) or k in dst._subparser_modifications:
+                continue
+            dst._subparser_modifications[k] = copy.deepcopy(
+                src._subparser_modifications[k])
+        for k, v in src.argument_dict().items():
+            if v[1].get('subparser_specific_dest', False):
+                k = k.rsplit(f'_{src._name}', 1)[0] + f'_{dst._name}'
+            if not check(k):
+                continue
+            if k not in arguments:
+                arguments[k] = v
+            for argT, v in src._composite_arguments.items():
+                if k in v:
+                    if k not in dst._composite_arguments.get(argT, {}):
+                        dst._composite_arguments.setdefault(argT, {})
+                        dst._composite_arguments[argT][k] = (
+                            copy.deepcopy(v[k])
+                        )
+                        if optional and argT == 'output':
+                            dst._composite_arguments[argT][k].setdefault(
+                                'defaults', {})
+                            dst._composite_arguments[argT][k][
+                                'defaults']['output'] = False
+                    break
+        if modifications:
+            for k, v in modifications.items():
+                if k not in arguments:
+                    continue
+                arguments[k] = SubparserBase._modify_argument(
+                    arguments[k], **v)
+        dst._arguments = list(arguments.values())
+        dst._outputs_external.update(src._outputs_external)
+        for k in src._outputs_total:  # TODO: Verify this works
+            dst._outputs_external[k] = src
+        for k, v in src._argument_conversions.items():
+            dst._argument_conversions.setdefault(k, [])
+            dst._argument_conversions[k] += [
+                vv for vv in v
+                if vv not in dst._argument_conversions[k]
+                and check(vv)
+            ]
+            if not dst._argument_conversions[k]:
+                dst._argument_conversions.pop(k)
+                continue
+            if ((k in dst._composite_arguments
+                 or hasattr(dst, f'_convert_{k}'))):
+                continue
+            if not hasattr(dst, f'_convert_{k}'):
+                setattr(dst, f'_convert_{k}',
+                        getattr(src, f'_convert_{k}'))
+
+    # Methods for managing task I/O
+    @classmethod
+    def _read_output(cls, args, name, fname):
+        r"""Load an output file produced by this task.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output to read.
+            fname (str): Path of file that should be read from.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        raise NotImplementedError
+
+    def read_output(self, name=None):
+        r"""Load an output file produced by this task.
+
+        Args:
+            name (str, optional): Name of the output to read.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        def _read_output(task, name):
+            fname = task.output_file(name, return_disabled=True)
+            if not os.path.isfile(fname):
+                raise RuntimeError(f'\"{name}\" output file does not '
+                                   f'exist: {fname}')
+            return task._read_output(task.args, name, fname)
+
+        return self._call_output_task(self, _read_output, name)
+
+    @classmethod
+    def _write_output(cls, args, name, fname, output):
+        r"""Write to an output file.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output to write.
+            fname (str): Path of the file that should be written to.
+            output (object): Output object to write to file.
+
+        """
+        raise NotImplementedError
+
+    def write_output(self, name, output, overwrite=False):
+        r"""Write to an output file.
+
+        Args:
+            name (str): Name of the output to write.
+            output (object): Output object to write to file.
+            overwrite (bool, optional): If True, overwrite existing
+                output.
+
+        """
+
+        def _write_output(task, name):
+            if not task.output_enabled(name, for_write=True):
+                raise RuntimeError(f'Write to disk not enabled for '
+                                   f'\"{name}\" output.')
+            fname = task.output_file(name)
+            assert isinstance(fname, str)
+            if (not overwrite) and os.path.isfile(fname):
+                return
+            fdir = os.path.dirname(fname)
+            task.log(f'Writing \"{name}\" output: {fname}',
+                     force=True)
+            if not os.path.isdir(fdir):
+                os.mkdir(fdir)
+            task._write_output(task.args, name, fname, output)
+
+        return self._call_output_task(self, _write_output, name)
+
+    @classmethod
+    def get_output_task(cls, name, default=NoDefault):
+        r"""Determine which task class produces the named output.
+
+        Args:
+            name (str): Output name.
+            default (object, optional): Value to return if the task
+                class cannot be located.
+
+        Returns:
+            type: Task class.
+
+        """
+        for v in get_class_registry().values('task'):
+            if name in v._outputs_local:
+                return v
+        if default is not NoDefault:
+            return default
+        raise KeyError(name)
+
+    @staticmethod
+    def _get_output_task(cls, name=None, default=NoDefault,
+                         initialize_missing=False):
+        r"""Get the task class responsible for producing an output.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to get task(s) for.
+            default (object, optional): Value to return if the task
+                instance cannot be located.
+            initialize_missing (bool, optional): If the task instance
+                does not exist, create it.
+
+        Returns:
+            type: Task class.
+
+        """
+        if isinstance(name, list):
+            return {k: cls._get_output_task(cls, k) for k in name}
+        if name is None:
+            name = cls._name
+        if name in cls._outputs_local:
+            return cls
+        out = cls._outputs_external[name]
+        if not isinstance(cls, type):
+            if out._name not in cls.external_tasks:
+                if initialize_missing:
+                    cls.external_tasks[out._name] = out(cls.args)
+                elif default is not NoDefault:
+                    return default
+            out = cls.external_tasks[out._name]
+        if name not in out._outputs_local:
+            return cls._get_output_task(
+                out, name, default=default,
+                initialize_missing=initialize_missing,
+            )
+        return out
+
+    @staticmethod
+    def _call_output_task(cls, method, name, args=None):
+        if isinstance(name, list):
+            return {k: cls._call_output_task(cls, method, k, args)
+                    for k in name}
+        if name is None:
+            name = cls._name
+        task = cls._get_output_task(cls, name)
+        return method(task, name)
+
+    def enabled_outputs(self, for_write=False):
+        r"""Get the set of outputs enabled by the provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            for_write (bool, optional): If True, only return outputs
+                for which write is enabled.
+
+        Returns:
+            list: Names of enabled outputs.
+
+        """
+        return [k for k in self._outputs_local
+                if self.output_enabled(k, for_write=for_write)]
+
+    def output_exists(self, name=None):
+        r"""Check if a task output exists.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to check for.
+
+        Returns:
+            bool: True if the output file exists.
+
+        """
+        if isinstance(name, list):
+            return all(self.output_exists(name=x) for x in name)
+        if name is None:
+            name = self._name
+        task = self._get_output_task(self, name)
+        output = getattr(task.args, f'output_{name}')
+        if (not output.overwrite) and name in task._outputs:
+            return True
+        return ((not output.overwrite) and output.exists)
+
+    def output_missing(self, name=None):
+        r"""Check if a task output is enabled, but does not exist.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to check for.
+
+        Returns:
+            bool: True if the output file exists.
+
+        """
+        if isinstance(name, list):
+            return any(self.output_missing(name=x) for x in name)
+        if name is None:
+            name = self._name
+        task = self._get_output_task(self, name)
+        output = task.output_file(name)
+        if not output:
+            return False
+        return (not task.output_exists(name))
+
+    @classmethod
+    def _output_enabled(cls, args, name=None, for_write=False):
+        r"""Check if an output is enabled by the current arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, list, optional): Name(s) of one or more outputs
+                to check.
+            for_write (bool, optional): If True, only return True if
+                output is enabled and write is not disabled.
+
+        Returns:
+            bool: True if the output is enabled, False otherwise.
+
+        """
+
+        def _output_enabled(task, name):
+            output = getattr(args, f'output_{name}')
+            if for_write and output.dont_write:
+                return False
+            return output.enabled
+
+        return cls._call_output_task(cls, _output_enabled, name)
+
+    def output_enabled(self, name=None, for_write=False):
+        r"""Check if an output is enabled by the current arguments.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to check.
+            for_write (bool, optional): If True, only return True if
+                output is enabled and write is not disabled.
+
+        Returns:
+            bool: True if the output is enabled, False otherwise.
+
+        """
+
+        def _output_enabled(task, name):
+            return task._output_enabled(task.args, name,
+                                        for_write=for_write)
+
+        return self._call_output_task(self, _output_enabled, name)
+
+    @classmethod
+    def _output_names(cls, args,
+                      exclude_local=False, include_external=False,
+                      exclude_optional=False, exclude_required=False,
+                      include_disabled=False, for_write=False):
+        r"""Get the list of outputs that will be generated.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            exclude_local (bool, optional): If True, don't include
+                local outputs.
+            include_external (bool, optional): If True, include outputs
+                produced by external tasks.
+            exclude_optional (bool, optional): If True, don't include
+                optional outputs.
+            exclude_required (bool, optional): If True, don't include
+                required outputs.
+            include_disabled (bool, optional): If True, include disabled
+                outputs.
+            for_write (bool, optional): If True, only include outputs
+                that will be written to disk
+
+        Returns:
+            list: Output names.
+
+        """
+        out = []
+        if not exclude_local:
+            if not exclude_optional:
+                out += cls._outputs_optional
+            if not exclude_required:
+                out += cls._outputs_required
+            if not include_disabled:
+                out = [k for k in out if
+                       cls._output_enabled(args, k, for_write=for_write)]
+        if include_external:
+            for k, v in cls._external_tasks.items():
+                if exclude_optional and v.get('optional', False):
+                    continue
+                out += [
+                    x for x in k._output_names(
+                        args, include_external=include_external,
+                        exclude_optional=exclude_optional,
+                        exclude_required=exclude_required,
+                        include_disabled=include_disabled,
+                        for_write=for_write)
+                    if x not in out
+                ]
+        return out
+
+    def output_names(self, **kwargs):
+        r"""Get the list of outputs that will be generated.
+
+        Args:
+            **kwargs: Keyword arguments are passed to _output_names.
+
+        Returns:
+            list: Output names.
+
+        """
+        return self._output_names(self.args, **kwargs)
+
+    @classmethod
+    def _make_suffix(cls, args, name, value=NoDefault, prefix='_',
+                     suffix='', cond=NoDefault, noteq=NoDefault,
+                     default=NoDefault, title=False, conv=NoDefault,
+                     wildcards=None):
+        r"""Create a suffix associated with an argument.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Argument name.
+            value (object, optional): Value to use in the suffix when
+                the argument is set.
+            prefix (str, optional): Prefix to use with value.
+            suffix (str, optional): Suffix to use with value.
+            cond (bool, optional): Condition under which the argument
+                is considered set. If not provided, the boolean value
+                of the argument will be used.
+            noteq (object, optional): Set the cond to when the value
+                is not equal to this.
+            default (object, optional): Value to use when cond is False.
+            title (bool, optional): If True, use title case for the
+                value.
+            conv (callable, optional): Function that should be used to
+                convert the argument value to a string.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            str: Generated suffix.
+
+        """
+        assert name is not None
+        if wildcards and name in wildcards:
+            return '*'
+        if not hasattr(args, name):
+            if wildcards and name in wildcards:
+                value0 = None
+            else:
+                value0 = cls.arg2default(name)
+        else:
+            value0 = getattr(args, name)
+        if isinstance(value0, CompositeArgument):
+            if wildcards:
+                value0 = value0.string_glob(wildcards)
+            elif value0.string is None:
+                value0 = value0.value
+            else:
+                value0 = value0.string
+        if value is NoDefault:
+            value = value0
+        if noteq is not NoDefault:
+            assert cond is NoDefault
+            cond = (value0 != noteq)
+        elif cond is NoDefault:
+            assert noteq is NoDefault
+            try:
+                cond = bool(value0)
+            except ValueError:
+                cond = bool(len(value0))
+        if not cond:
+            if default is NoDefault:
+                return ''
+            value = default
+        if conv is not NoDefault:
+            value = conv(value)
+        if not isinstance(value, str):
+            value = str(value)
+        if any(x in value for x in ',:[](){};\"\'<>'):
+            raise SuffixGenerationError(
+                f'{name} contains invalid characters: {value}'
+            )
+        if title:
+            value = str(value).title()
+        return f'{prefix}{value}{suffix}'
+
+    @classmethod
+    def _output_depends(cls, args, name, variables):
+        r"""Determine if an output is dependent on a variable.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of output to check dependency of.
+            variables (list): List of arguments to check if the affect
+                the named output.
+
+        Returns:
+            bool: True if the output depends on the named variables.
+
+        """
+        if isinstance(variables, str):
+            variables = [variables]
+        fname = cls._output_file(args, name, return_disabled=True,
+                                 regenerate=True, wildcards=variables)
+        return ('*' in fname)
+
+    def output_depends(self, name, variables):
+        r"""Determine if an output is dependent on a variable.
+
+        Args:
+            name (str): Name of output to check dependency of.
+            variables (list): List of arguments to check if the affect
+                the named output.
+
+        Returns:
+            bool: True if the output depends on the named variables.
+
+        """
+        if isinstance(variables, str):
+            variables = [variables]
+        fname = self.output_file(name, return_disabled=True,
+                                 regenerate=True, wildcards=variables)
+        return ('*' in fname)
+
+    @classmethod
+    def _output_file(cls, args, name=None, return_disabled=False,
+                     regenerate=False, wildcards=None, copy_args=False):
+        r"""Get the filename for an output.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, list, optional): Name(s) of one or more outputs
+                to get the files for.
+            return_disabled (bool, optional): If True, return the
+                generated filename even if the output is disabled.
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            copy_args (bool, optional): If True, the args should be
+                copied and initialized.
+
+        Returns:
+            str: Name of output file. If True, this indicates the output
+                should be generated, but not written. If False, the output
+                should not be generated.
+
+        """
+
+        def _output_file(task, name):
+            try:
+                if ((copy_args
+                     or getattr(args, f'output_{name}', None) is None)):
+                    args_local = task.copy_external_args(
+                        args, initialize=True,
+                        args_external=[
+                            '_parameter_inst', '_parameter_inst_function',
+                        ],
+                    )
+                else:
+                    args_local = args
+                output = getattr(args_local, f'output_{name}')
+                # if output is None:
+                #     output = cls._convert_composite(
+                #         args, f'output_{name}', base='output',
+                #     )
+                if not output.generated:
+                    cls.log_class(f'Filename for \"{name}\" output '
+                                  f'was not generated: {output.path}')
+                    assert output.generated
+                    return output.path
+                if output.path and not (regenerate or wildcards):
+                    return output.path
+                if (not return_disabled) and (not output.enabled):
+                    return False
+                return output.generate(task, args_local,
+                                       wildcards=wildcards)
+            except FilenameGenerationError as e:
+                cls.log_class(f"FILENAME GENERATION ERROR: {task} {e}")
+                return False
+
+        return cls._call_output_task(cls, _output_file, name)
+
+    def output_file(self, name=None, return_disabled=False,
+                    regenerate=False, wildcards=None, copy_args=False):
+        r"""Get the filename for an output.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to get the files for.
+            return_disabled (bool, optional): If True, return the
+                generated filename even if the output is disabled.
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            copy_args (bool, optional): If True, the args should be
+                copied and initialized.
+
+        Returns:
+            str: Name of output file. If True, this indicates the output
+                should be generated, but not written. If False, the output
+                should not be generated.
+
+        """
+        def _output_file(task, name):
+            return task._output_file(
+                task.args, name, return_disabled=return_disabled,
+                wildcards=wildcards, regenerate=regenerate,
+                copy_args=copy_args,
+            )
+
+        return self._call_output_task(self, _output_file, name)
+
+    @classmethod
+    def _remove_downstream(cls, args, name=None, wildcards=None):
+        r"""Remove downstream outputs.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, list, optional): Name(s) of one or more outputs
+                to remove downstream outputs for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        """
+        if wildcards is None:
+            wildcards = []
+
+        def _remove_downstream(task, name):
+            args_base = task.argument_names()
+            for ext, outputs in task._output_info[name].get(
+                    'downstream', {}).items():
+                ext_wildcards = copy.deepcopy(wildcards)
+                for k in ext.argument_names():
+                    if k not in args_base and k not in ext_wildcards:
+                        ext_wildcards.append(k)
+                for k in outputs:
+                    ext._remove_output(
+                        args, name=k, wildcards=ext_wildcards,
+                        copy_args=True,
+                    )
+
+        return cls._call_output_task(cls, _remove_downstream, name)
+
+    def remove_downstream(self, name=None, wildcards=None):
+        r"""Remove downstream outputs.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to remove downstream outputs for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        """
+        def _remove_downstream(task, name):
+            task._remove_downstream(task.args, name=name,
+                                    wildcards=wildcards)
+
+        return self._call_output_task(self, _remove_downstream, name)
+
+    @classmethod
+    def _remove_output(cls, args, name=None, wildcards=None,
+                       copy_args=False, skip_downstream=False):
+        r"""Remove existing output file.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str, list, optional): Name(s) of one or more outputs
+                to remove.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            copy_args (bool, optional): If True, the args should be
+                copied and initialized.
+            skip_downstream (bool, optional): If True, downstream
+                outputs will not be removed.
+
+        """
+
+        def _remove_output(task, name):
+            output = task._output_file(args, name, return_disabled=True,
+                                       wildcards=wildcards,
+                                       copy_args=copy_args)
+            # cls.log_class(f'Remove \"{name}\": {output}')
+            if output:
+                if wildcards:
+                    files = glob.glob(output)
+                    if files:
+                        cls.log_class(
+                            f'Removing existing \"{name}\" outputs:\n'
+                            f'{pprint.pformat(files)}')
+                        pdb.set_trace()
+                        for x in files:
+                            os.remove(x)
+                else:
+                    if os.path.isfile(output):
+                        cls.log_class(
+                            f'Removing existing \"{name}\" output: '
+                            f'{output}')
+                        pdb.set_trace()
+                        os.remove(output)
+            if not skip_downstream:
+                task._remove_downstream(args, name, wildcards=wildcards)
+
+        cls._call_output_task(cls, _remove_output, name)
+
+    def remove_output(self, name=None, wildcards=None,
+                      copy_args=False, skip_downstream=False):
+        r"""Remove existing output file.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to remove.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            copy_args (bool, optional): If True, the args should be
+                copied and initialized.
+            skip_downstream (bool, optional): If True, downstream
+                outputs will not be removed.
+
+        """
+        def _remove_output(task, name):
+            return task._remove_output(task.args, name=name,
+                                       wildcards=wildcards,
+                                       copy_args=copy_args,
+                                       skip_downstream=skip_downstream)
+
+        self._call_output_task(self, _remove_output, name)
+
+    def cache_output(self, name=None):
+        r"""Cache output on the root task for later use.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to remove.
+
+        """
+        def _cache_output(task, name):
+            fname = task.output_file(name, return_disabled=True)
+            task._cached_outputs[fname] = task.get_output(name)
+
+        self._call_output_task(self, _cache_output, name)
+
+    def reset_outputs(self, regenerate=False):
+        r"""Remove existing files that should be overwritten.
+
+        Args:
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
+
+        """
+        for name in self._outputs_local:
+            self.reset_output(name, regenerate=regenerate)
+        for task in self.external_tasks.values():
+            task.reset_outputs(regenerate=regenerate)
+        if self.root is self:
+            for k in list(self._cached_outputs.keys()):
+                if not os.path.isfile(k):
+                    self._cached_outputs.pop(k)
+
+    def reset_output(self, name=None, regenerate=False):
+        r"""Prepare an output for a run. If overwrite specified, any
+        existing data/files for the output will be removed. If the
+        output file is not fully specified on the args, it will be set.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to handle overwrite for.
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
 
         """
         if name is None:
-            name = cls._name
-        output_var = f'output_{name}'
-        x = getattr(args, output_var)
-        if x is False:
+            name = self._name
+        task = self._get_output_task(self, name)
+        output = getattr(task.args, f'output_{name}')
+        if ((output.enabled and output.generated
+             and (regenerate or (not output.path)))):
+            fname = output.generate(self, self.args, reset=True)
+            # self.log(f'Generated \"{name}\" path: {output.path}', force=True)
+        else:
+            fname = output.path
+        overwrite = output.overwrite
+        if fname and not (name in task._outputs or output.exists
+                          or output.dont_write):
+            # self.log(f'Output \"{name}\" does not exist, removing '
+            #          f'downstream files ({fname}) '
+            #          f'isfile = {os.path.isfile(fname)}', force=True)
+            overwrite = True
+        if overwrite:
+            task._outputs.pop(name, None)
+            task.remove_output(name)
+        output.clear_overwrite(task.args)
+
+    # Methods for executing a run
+    def get_output(self, name=None):
+        r"""Get a task output, generating or loading it if necessary.
+
+        Args:
+            name (str, list, optional): Name(s) of one or more outputs
+                to return.
+
+        Returns:
+            object: Output.
+
+        """
+        def _get_output(task, name):
+            if name in task._outputs:
+                return task._outputs[name]
+            if task.output_exists(name=name):
+                fname = task.output_file(name)
+                if fname in task._cached_outputs:
+                    self.log(f'Using cached \"{name}\" output: {fname}',
+                             force=True)
+                    task._outputs[name] = task._cached_outputs[fname]
+                else:
+                    self.log(f'Loading existing \"{name}\" output: '
+                             f'{fname}',
+                             force=True)
+                    task._outputs[name] = task._read_output(
+                        task.args, name, fname)
+                return task._outputs[name]
+            self.log(f'Generating \"{name}\"', force=True)
+            task.generate_output(name)
+            assert name in task._outputs
+            if task.output_enabled(name, for_write=True):
+                task.write_output(name, task._outputs[name])
+            return task._outputs[name]
+
+        return self._call_output_task(self, _get_output, name)
+
+    def set_output(self, name, output, overwrite=False):
+        r"""Set an output value for the task.
+
+        Args:
+            name (str): Name of the output to set.
+            output (object): Output instance.
+            overwrite (bool, optional): If True, overwrite existing
+                output.
+
+        """
+        task = self._get_output_task(self, name)
+        if not overwrite:
+            assert name not in task._outputs
+        task._outputs[name] = output
+        if task.output_enabled(name, for_write=True):
+            task.write_output(name, output, overwrite=overwrite)
+
+    def generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        raise NotImplementedError
+
+    def run(self, output_name=None):
+        r"""Run the process associated with this subparser.
+
+        Args:
+            output_name (str, optional): Name of output that should be
+                returned. Defaults to the output with the same name as
+                the task.
+
+        Returns:
+            object: Output named by output_name.
+
+        """
+        output_names = self.enabled_outputs()
+        if output_name is None:
+            output_name = self._name
+        assert output_name in ['instance'] + self._outputs_local
+        for k in output_names:
+            assert getattr(self.args, f'overwrite_{k}') is False
+            if not self.output_exists(k):
+                self.get_output(k)
+                # self.log(f'Generating \"{k}\"', force=True)
+                # self.generate_output(k)
+                assert self.output_exists(k)
+            # else:
+            #     self.log(f'Output \"{k}\" already exists', force=True)
+        if output_name == 'instance':
+            return self
+        return self.get_output(output_name)
+
+    def run_iteration(self, cls=None, **kwargs):
+        r"""Run an iteration, regenerating output file names.
+
+        Args:
+            cls (type, optional): Task class that should be run in
+                iteration. Defaults to the type of the current task.
+            **kwargs: Additional keyword arguments are passed to
+                run_iteration_class.
+
+        Returns:
+            object: Result of the run.
+
+        """
+        if cls is None:
+            cls = type(self)
+        kwargs.setdefault('root', self.root)
+        return cls.run_iteration_class(self.args, **kwargs)
+
+    @classmethod
+    def run_iteration_class(cls, args, args_external=None, **kwargs):
+        r"""Run an iteration, regenerating output file names.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to
+                run_class.
+
+        Returns:
+            object: Result of the run.
+
+        """
+        kwargs.setdefault('regenerate_output', True)
+        if args_external is None:
+            args_external = ['_parameter_inst']
+        return cls.run_class(args, args_external=args_external, **kwargs)
+
+    @classmethod
+    def run_class(cls, args, output_name=None, args_preserve=None,
+                  cache_outputs=None, **kwargs):
+        r"""Run the process associated with this subparser.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output_name (str, optional): Name of output that should be
+                returned. Defaults to the output with the same name as
+                the task. If 'instance' is provided, the created task
+                instance will be returned.
+            args_preserve (list, optional): Set of argument names to
+                preserve following a run.
+            cache_outputs (list, optional): Set of outputs that should be
+                cached.
+            **kwargs: Additional keyword arguments are passed to
+                from_external_args.
+
+        Returns:
+            object: Result of the run.
+
+        """
+        self = cls.from_external_args(args, **kwargs)
+        out = self.run(output_name=output_name)
+        if args_preserve:
+            for k in args_preserve:
+                setattr(args, k, getattr(self.args, k))
+        if cache_outputs:
+            assert 'root' in kwargs
+            self.cache_output(cache_outputs)
+        return out
+
+    def copy_matching_outputs(self, other):
+        r"""Copy existing outputs from another task to prevent repeated
+        I/O when the files match.
+
+        Args:
+            other (TaskBase): Instance to copy from.
+
+        """
+        assert isinstance(other, type(self))
+        for k in self._outputs_local:
+            if ((self.output_file(k, return_disabled=True)
+                 != other.output_file(k, return_disabled=True)
+                 or k in self._outputs
+                 or k not in other._outputs)):
+                continue
+            self._outputs[k] = other._outputs[k]
+            # if k != 'parametrize':
+            #     self.log(f'Copied output \"{k}\" from other', force=True)
+            #     pdb.set_trace()
+        for k, v in self.external_tasks.items():
+            vother = other.external_tasks[k]
+            v.copy_matching_outputs(vother)
+
+    @classmethod
+    def run_series(cls, args, over=None, per_iter=None, **kwargs):
+        r"""Run the process for a series of arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            over (dict, optional): Mapping between argument names and
+                values that should be iterated over.
+            per_iter (dict, optional): Dictionary of argument values that
+                should be added for each iteration. This can be updated
+                between iterations.
+            **kwargs: Additional keyword arguments are passed to
+                cls.run_iteration.
+
+        Yields:
+            object: Results from each step.
+
+        """
+        if over is None:
+            if per_iter:
+                kwargs['args_overwrite'] = dict(
+                    kwargs.get('args_overwrite', {}), **per_iter)
+            yield cls.run_iteration_class(args, **kwargs)
             return
-        elif not isinstance(x, str):
-            if ((getattr(args, '_in_argument_defaults', False)
-                 and (not cls.default_filename_applies(args)))):
-                setattr(args, output_var, False)
-                return
-            directory = cls.output_dir(args, name=name)
-            base = cls.output_base(args, name=name)
-            suffix = cls.output_suffix(args, name=name)
-            if suffix is False:
-                setattr(args, output_var, False)
-                return
-            ext = cls.output_ext(args, name=name)
-            x = utils.generate_filename(
-                base, ext=ext, suffix=suffix, directory=directory,
-            )
-            setattr(args, output_var, x)
-            # cls.log_class(f'Using generated value for {output_var}: '
-            #               f'\"{x}\"')
-        overwrite_var = f'overwrite_{name}'
-        if args.overwrite_all:
-            setattr(args, overwrite_var, True)
-        # TODO: Remove all dependencies?
-        if getattr(args, overwrite_var) and os.path.isfile(x):
-            cls.log_class(f'Removing existing {output_var}: \"{x}\"')
-            os.remove(x)
-
-    @classmethod
-    def output_dir(cls, args, name=None):
-        r"""Determine the directory that should be used to generate
-        an output file name.
-
-        Args:
-
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: Directory.
-
-        """
-        if cls._output_dir is None and cls._name is not None:
-            return os.path.join(utils._output_dir, cls._name)
-        return cls._output_dir
-
-    @classmethod
-    def output_base(cls, args, name=None):
-        r"""Generate the base file name that should be used to generate
-        an output file name.
-
-        Args:
-
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: File base.
-
-        """
-        if cls._name is None:
-            raise NotImplementedError
-        return cls._name
-
-    @classmethod
-    def output_suffix(cls, args, name=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: Suffix.
-
-        """
-        raise NotImplementedError
-
-    @classmethod
-    def output_ext(cls, args, name=None):
-        r"""Determine the extension that should be used for output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Base name for variable to set. Defaults
-                to the task make.
-
-        Returns:
-            str: Output file extension.
-
-        """
-        return cls._ext
-
-    @classmethod
-    def _run(cls, self):
-        raise NotImplementedError
+        step_output = f'output_{cls._name}'
+        args_overwrite = copy.deepcopy(kwargs.pop('args_overwrite', {}))
+        args_preserve = copy.deepcopy(kwargs.pop('args_preserve', []))
+        keys = list(over.keys())
+        for k in keys:
+            if not isinstance(over[k], list):
+                over[k] = [over[k]]
+        args_overwrite[step_output] = True
+        values = itertools.product(*[over[k] for k in keys])
+        print("STARTING LOOP")
+        for x in values:
+            for k, v in zip(keys, x):
+                args_overwrite[k] = v
+            print("ITERATION", {k: v for k, v in zip(keys, x)})
+            iargs_overwrite = copy.deepcopy(args_overwrite)
+            if per_iter is not None:
+                iargs_overwrite.update(**per_iter)
+            repeat = True
+            while repeat:
+                try:
+                    yield cls.run_iteration_class(
+                        args, args_overwrite=iargs_overwrite,
+                        args_preserve=args_preserve, **kwargs
+                    )
+                    repeat = False
+                except RepeatIterationError as e:
+                    iargs_overwrite.update(e.args_overwrite)
 
     @cached_property
     def figure(self):
@@ -1754,190 +4362,476 @@ class TaskBase(SubparserBase):
         return data
 
 
-def TemporalTaskBase(step_task, step_alias=None):
-    r"""Factory for creating a time-step based base class.
+class IterationTaskBase(TaskBase):
+    r"""Base class for iterating over a task."""
 
-    Args:
-        step_task (TaskBase): Class for task that will be performed for
-            each time step.
-        step_alias (str, optional): Alias name for time steps within the
-            base class that will be returned.
+    _step_task = None
+    _step_vary = None
 
-    Returns:
-        type: New base class.
+    def __init__(self, *args, **kwargs):
+        self._step_results = []
+        super(IterationTaskBase, self).__init__(*args, **kwargs)
 
-    """
+    @staticmethod
+    def _on_registration(cls):
+        if cls._step_task is not None:
+            step_prop = cls._external_tasks.get(cls._step_task, {})
+            if cls._step_vary is not None:
+                step_prop.setdefault('exclude', [])
+                if cls._step_vary not in step_prop['exclude']:
+                    step_prop['exclude'].append(cls._step_vary)
+            cls._external_tasks = copy.deepcopy(cls._external_tasks)
+            cls._external_tasks[cls._step_task] = step_prop
+            cls._output_info.setdefault(cls._name, {})
+            cls._output_info[cls._name].setdefault(
+                'base', cls._step_task._name)
+        TaskBase._on_registration(cls)
 
-    classname = f'TemporalTaskBase_{step_task._name}'
+    def reset_outputs(self, regenerate=False, vary=None):
+        r"""Remove existing files that should be overwritten.
 
-    def add_step_alias(key):
-        if step_alias is None:
-            return key
-        if isinstance(key, tuple):
-            out = list(key)
-            for k in key:
-                out.append(add_step_alias(k)[-1])
-            return tuple(out)
-        return tuple([key, key.replace('step', step_alias)])
+        Args:
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
 
-    class TemporalTask(step_task):
-        r"""Base class for performing a task for a set of times."""
+        """
+        for k in self._step_task._outputs_total:
+            if not getattr(self.args, f'overwrite_{k}', False):
+                continue
+            step_task = self._get_output_task(self, k)
+            args_base = self.argument_names()
+            args_step = step_task.argument_names()
+            wildcards = list(set(args_step) - set(args_base))
+            if self._step_vary is not None:
+                assert self._step_vary in wildcards
+            if vary is not None:
+                wildcards += [x for x in vary if x not in wildcards]
+            self.remove_output(k, wildcards=wildcards)
+        super(IterationTaskBase, self).reset_outputs(
+            regenerate=regenerate)
 
-        __name__ = classname
-        __qualname__ = classname
-        _name = None
-        _step_task = step_task
-        _step_alias = step_alias
-        _time_vars = ['start_time', 'stop_time']
-        _hour_defaults = {}
-        _arguments_suffix_ignore = [
-            'start_time', 'stop_time',
-        ]
-        _alternate_outputs_write_required = []
-        _alternate_outputs_write_optional = []
-        _arguments = [
-            (('--start-time', ), {
-                'type': str, 'default': 'sunrise',
-                'help': ('Date time (in any ISO 8601 format) that the '
-                         'animation should start at. If not provided, the '
-                         'time of sunrise for the selected \"location\" (or '
-                         '\"latitude\"/\"longitude\") & \"doy\" will be '
-                         'used.'),
-            }),
-            (('--stop-time', ), {
-                'type': str, 'default': 'sunset',
-                'help': ('Date time (in any ISO 8601 format) that the '
-                         'animation should stop at. If not provided, the '
-                         'time of sunset for the selected \"location\" (or '
-                         '\"latitude\"/\"longitude\") & \"doy\" will be '
-                         'used.'),
-            }),
-            (add_step_alias(('--step-count', )), {
-                'type': int,
-                'help': ('The number of time steps that should be taken '
-                         'between the start and end time. If not provided, '
-                         'the number of time steps will be determined from '
-                         '\"step_interval\"'),
-            }),
-            (add_step_alias(('--step-interval', )), {
-                'type': parse_quantity, 'units': 'hours',
-                'help': ('The interval (in hours) that should be used '
-                         'between time steps. If not provided, '
-                         '\"step_count\" will be used to calculate the '
-                         'step interval. If \"step_count\" is not '
-                         'provided, a step interval of 1 hour will be '
-                         'used.'),
-            }),
-            (add_step_alias((
-                f'--output-{step_task._name}', '--output-steps'
-            )), {
-                'action': 'store_true',
-                'help': 'Output the step data to disk',
-            }),
-            (add_step_alias((
-                f'--overwrite-{step_task._name}', '--overwrite-steps'
-            )), {
-                'action': 'store_true',
-                'help': 'Regenerate step data that already exist',
-            }),
-        ]
-        _excluded_arguments = [
-            '--time',
-        ]
+    def step_args(self):
+        r"""Yield the updates that should be made to the arguments for
+        each step.
 
-        @classmethod
-        def adjust_args(cls, args, **kwargs):
-            r"""Adjust the parsed arguments including setting defaults that
-            depend on other provided arguments.
+        Yields:
+            dict: Step arguments.
 
-            Args:
-                args (argparse.Namespace): Parsed arguments.
+        """
+        raise NotImplementedError
 
-            """
-            super(TemporalTask, cls).adjust_args(args, **kwargs)
-            duration = args.stop_time - args.start_time
-            duration = duration.total_seconds() / 3600
-            if not args.step_count:
-                if not args.step_interval:
-                    args.step_interval = 1.0
-                args.step_count = int(duration / args.step_interval)
-            elif not args.step_interval:
-                args.step_interval = duration / args.step_count
+    def finalize_step(self, x):
+        r"""Finalize the output from a step.
 
-        @classmethod
-        def adjust_args_time(cls, args, timevar=None):
-            r"""Adjust the time related variables in a set of parsed
-            arguments.
+        Args:
+            x (object): Result of step.
 
-            Args:
-                args (argparse.Namespace): Parsed arguments.
-                timevar (str, optional): Time variable to adjust. If not
-                    provided, all of the time variables associated with this
-                    subparser will be adjusted.
+        Returns:
+            object: Finalized step result.
 
-            """
-            super(TemporalTask, cls).adjust_args_time(args, timevar=timevar)
-            if timevar is not None:
-                return
-            if args.stop_time == args.start_time:
-                args.stop_time = args.stop_time.replace(hour=0, minute=0,
-                                                        microsecond=0)
-                cls.adjust_args_time(args, timevar='stop_time')
-            start_time_str = getattr(args, 'start_time_str', None)
-            stop_time_str = getattr(args, 'stop_time_str', None)
-            if start_time_str and stop_time_str:
-                start_parts = start_time_str.rsplit('-', 1)
-                stop_parts = stop_time_str.rsplit('-', 1)
-                if start_parts[0] == stop_parts[0]:
-                    args.stop_time_str = stop_parts[-1]
-            if not hasattr(args, 'time'):
-                args.time = None
-                args.time_str = None
+        """
+        return x
 
-        @cached_factory_property(classname)
-        def times(self):
-            r"""list: Set of times for steps in the task."""
-            dt = timedelta(hours=self.args.step_interval)
-            time = self.args.start_time
-            out = []
-            for i in range(self.args.step_count):
-                out.append(time)
-                time += dt
-            if time < self.args.stop_time:
-                out.append(self.args.stop_time)
-            return out
+    def join_steps(self, xlist):
+        r"""Join the output form all of the steps.
 
-        @classmethod
-        def _run_step(cls, self, time, **kwargs):
-            if cls._step_task is None:
-                raise NotImplementedError
-            step_output = f'output_{cls._step_task._name}'
-            kwargs.setdefault('args_overwrite', {})
-            kwargs.setdefault('args_preserve', [])
-            kwargs['args_overwrite']['time'] = time.isoformat()
-            kwargs['args_overwrite'].setdefault(step_output, True)
-            kwargs['args_preserve'].append(step_output)
-            return cls._step_task.run_class(self, **kwargs)
+        Args:
+            xlist (list): Result of all steps.
 
-        @classmethod
-        def _run(cls, self):
-            r"""Run the process associated with this subparser."""
-            result = []
-            if ((cls._output_dir is not None
-                 and not os.path.isdir(cls._output_dir))):
-                os.mkdir(cls._output_dir)
-            for time in self.times:
-                result.append(cls._run_step(self, time))
-            return result
+        Returns:
+            object: Joined output from all steps.
 
-    return TemporalTask
+        """
+        return xlist
+
+    def run_steps(self, output_name='instance'):
+        r"""Run the steps.
+
+        Args:
+            output_name (str, optional): Step output that should be
+                passed to finalize_step for each step.
+
+        Returns:
+            list: Output from each step.
+
+        """
+        self._step_results = []
+        x_prev = None
+        for args_overwrite in self.step_args():
+            iargs_overwrite = copy.deepcopy(args_overwrite)
+            pprint.pprint(iargs_overwrite)
+            # pdb.set_trace()
+            repeat = True
+            while repeat:
+                try:
+                    x = self.run_iteration(
+                        cls=self._step_task,
+                        args_overwrite=iargs_overwrite,
+                        output_name=output_name,
+                        copy_outputs_from=x_prev,
+                    )
+                    self._step_results.append(self.finalize_step(x))
+                    if isinstance(x, TaskBase):
+                        x_prev = x
+                    repeat = False
+                except RepeatIterationError as e:
+                    iargs_overwrite.update(e.args_overwrite)
+        return self._step_results
+
+    def generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name != self._name:
+            return super(IterationTaskBase, self).generate_output(name)
+        if self._step_task is None:
+            raise NotImplementedError
+        if hasattr(self._step_task, 'adjust_args_step'):
+            self._step_task.adjust_args_step(self.args, self._step_vary)
+        out = self.join_steps(self.run_steps())
+        self.set_output(self._name, out)
+
+
+class OptimizationTaskBase(IterationTaskBase):
+    r"""Base class for tasks that iterate to achieve a result."""
+
+    _arguments = [
+        (('--vary', ), {
+            'type': str,
+            'help': 'Argument that should be varied.'
+        }),
+        (('--goal', ), {
+            'help': 'Goal of the optimization.',
+        }),
+        # (('--max-steps', ), {
+        #     'type': int,
+        #     'help': 'Maximum number of steps to perform',
+        # }),
+        (('--method', ), {
+            'type': str, 'choices': ['nelder-mead', 'powell'],
+            'default': 'nelder-mead',
+            'help': (
+                'Method that should be used to minimize the objective'
+            ),
+        }),
+        (('--tolerance', ), {
+            'type': float, 'default': 1e-5,
+            'help': 'Tolerance for achieving result',
+        }),
+    ]
+
+    @classmethod
+    def _output_suffix(cls, args, name, wildcards=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            str: Suffix.
+
+        """
+        out = ''
+        out += cls._make_suffix(
+            args, 'vary', wildcards=wildcards,
+        )
+        out += cls._make_suffix(
+            args, 'goal', wildcards=wildcards,
+        )
+        out += cls._make_suffix(
+            args, 'method', noteq='nelder-mead', wildcards=wildcards,
+        )
+        return out
+
+    @classmethod
+    def _read_output(cls, args, name, fname):
+        r"""Load an output file produced by this task.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output to read.
+            fname (str): Path of file that should be read from.
+
+        Returns:
+            object: Contents of the output file.
+
+        """
+        if name != cls._name:
+            return super(OptimizationTaskBase, cls)._read_output(
+                args, name, fname)
+        with open(fname, 'r') as fd:
+            return rapidjson.load(fd)
+
+    @classmethod
+    def _write_output(cls, args, name, fname, output):
+        r"""Write to an output file.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output to write.
+            fname (str): Path of the file that should be written to.
+            output (object): Output object to write to file.
+
+        """
+        if name != cls._name:
+            super(OptimizationTaskBase, cls)._write_output(
+                args, name, fname, output)
+            return
+        with open(fname, 'w') as fd:
+            rapidjson.dump(output, fd,
+                           write_mode=rapidjson.WM_PRETTY)
+
+    def reset_outputs(self, regenerate=False):
+        r"""Remove existing files that should be overwritten.
+
+        Args:
+            regenerate (bool, optional): If True, regenerate all output
+                file names.
+
+        """
+        super(OptimizationTaskBase, self).reset_outputs(
+            regenerate=regenerate, vary=[self.args.vary])
+
+    @cached_property
+    def goal(self):
+        r"""units.Quantity: Value that should be achieved."""
+        if self.args.goal in ['minimize', 'maximize']:
+            return self.args.goal
+        # TODO: Fix units
+        return parse_quantity(self.args.goal)
+
+    def objective(self, x):
+        r"""Objective function for use with scipy.optimize.minimize.
+
+        Args:
+            x (np.ndarray): Input arguments.
+
+        Returns:
+            float: Result.
+
+        """
+        assert len(x) == 1
+        iargs_overwrite = {
+            self.args.vary: x[0]
+        }
+        for k in self._step_task._outputs_local:
+            iargs_overwrite[f'dont_write_{k}'] = True
+        repeat = True
+        out = None
+        while repeat:
+            try:
+                x = self.run_iteration(
+                    cls=self._step_task,
+                    args_overwrite=iargs_overwrite,
+                    output_name='instance',
+                    copy_outputs_from=self._prev_instance,
+                )
+                out = self.finalize_step(x)
+                if self.goal == 'minimize':
+                    pass
+                elif self.goal == 'maximize':
+                    out = -out
+                else:
+                    out = np.abs(float(
+                        (out - self.goal) / self.goal))
+                self._prev_instance = x
+                repeat = False
+            except RepeatIterationError as e:
+                iargs_overwrite.update(e.args_overwrite)
+        return out
+
+    def run_steps(self, output_name='instance'):
+        r"""Run the steps.
+
+        Args:
+            output_name (str, optional): Step output that should be
+                passed to finalize_step for each step.
+
+        Returns:
+            list: Output from each step.
+
+        """
+        from scipy.optimize import minimize
+        x0 = np.array([getattr(self.args, self.args.vary)])
+        res = minimize(
+            self.objective, x0, method=self.args.method,
+            tol=self.args.tolerance,
+            # options={
+            #     'xatol': self.args.tolerance,
+            # }
+        )
+        assert res.success
+        out = {
+            self.args.vary: res.x[0],
+        }
+        return out
+
+
+class TemporalTaskBase(IterationTaskBase):
+    r"""Base class for tasks that iterate over another class."""
+
+    _step_task = None
+    _step_vary = 'time'
+    _composite_arguments = {
+        'time': {
+            'start_time': {
+                'description': ' to start at.',
+                'defaults': {'hour': 'sunrise'},
+            },
+            'stop_time': {
+                'description': ' to stop at.',
+                'defaults': {'hour': 'sunset'},
+                'name_base': 'start_time',
+            },
+        }
+    }
+    _arguments = [
+        (('--duration', ), {
+            'type': parse_quantity, 'units': 'hours',
+            'help': 'The time that the animation should last',
+        }),
+        (('--step-count', ), {
+            'type': int,
+            'help': ('The number of time steps that should be taken '
+                     'between the start and end time. If not provided, '
+                     'the number of time steps will be determined from '
+                     '\"step_interval\"'),
+        }),
+        (('--step-interval', ), {
+            'type': parse_quantity, 'units': 'hours',
+            'help': ('The interval (in hours) that should be used '
+                     'between time steps. If not provided, '
+                     '\"step_count\" will be used to calculate the '
+                     'step interval. If \"step_count\" is not '
+                     'provided, a step interval of 1 hour will be '
+                     'used.'),
+        }),
+    ]
+
+    @classmethod
+    def adjust_args_internal(cls, args):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        """
+        cls._convert_composite(args, 'start_time', base='time')
+        if not TimeArgument.any_arguments_set(args, 'stop_time'):
+            if args.duration is None and (args.step_interval is None
+                                          or args.step_count is None):
+                if args.start_time.crop_age_string == 'planting':
+                    args.stop_age = 'maturity'
+                    args.planting_date = args.start_time.date
+                    if args.start_time.solar_time_string:
+                        args.stop_hour = (
+                            args.start_time.solar_time_string
+                        )
+                elif args.start_time.solar_time_string == 'sunrise':
+                    args.stop_hour = 'sunset'
+                    args.stop_date = args.start_time.date
+                    if args.start_time.crop_age_string:
+                        args.stop_age = (
+                            args.start_time.crop_age_string
+                        )
+                else:
+                    args.duration = units.Quantity(24.0, 'hours')
+            else:
+                if args.duration is None:
+                    args.duration = (
+                        args.step_interval * args.step_count
+                    )
+                args.stop_time = (
+                    args.start_time.time
+                    + utils.quantity2timedelta(args.duration)
+                )
+        super(TemporalTaskBase, cls).adjust_args_internal(args)
+        if args.stop_time.time == args.start_time.time:
+            args.stop_time = args.stop_time.time.replace(
+                hour=0, minute=0, microsecond=0)
+            cls._convert_composite(args, 'stop_time', base='time',
+                                   overwrite=True)
+        start_time_str = args.start_time.string
+        stop_time_str = args.stop_time.string
+        if start_time_str and stop_time_str:
+            start_parts = start_time_str.rsplit('-', 1)
+            stop_parts = stop_time_str.rsplit('-', 1)
+            if start_parts[0] == stop_parts[0]:
+                args.stop_time.string = stop_parts[-1]
+        assert args.stop_time.time > args.start_time.time
+        duration = args.stop_time.time - args.start_time.time
+        duration = utils.timedelta2quantity(duration)
+        if not args.step_count:
+            if not args.step_interval:
+                ndays = int(duration.to('days'))
+                if ndays > 2:
+                    args.step_interval = units.Quantity(1.0, 'days')
+                else:
+                    args.step_interval = units.Quantity(1.0, 'hours')
+            args.step_count = int(duration / args.step_interval)
+        elif not args.step_interval:
+            args.step_interval = duration / args.step_count
+        args.start_time.update_args(args, name='time')
+
+    @classmethod
+    def _output_suffix(cls, args, name, wildcards=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            str: Suffix.
+
+        """
+        return cls._make_suffix(
+            args, 'stop_time', wildcards=wildcards,
+        )
+
+    def step_args(self):
+        r"""Yield the updates that should be made to the arguments for
+        each step.
+
+        Yields:
+            dict: Step arguments.
+
+        """
+        constant_age = None
+        if ((self.args.start_time.crop_age_string
+             == self.args.stop_time.crop_age_string)):
+            constant_age = self.args.start_time.crop_age_string
+        dt = self.args.step_interval
+        iargs = None
+        for i in range(self.args.step_count):
+            iargs = self.args.start_time.iteration_args(i * dt)
+            if constant_age is not None:
+                iargs['age'] = constant_age
+            yield iargs
+        time = TimeArgument.from_kwargs(None, iargs)
+        if time.time < self.args.stop_time.time:
+            yield self.args.stop_time.iteration_args()
 
 
 #################################################################
 # CLI
 #################################################################
 
-def main(**kwargs):
+def parse(**kwargs):
     r"""Parse arguments provided via the command line or keyword
     arguments
 
@@ -1961,9 +4855,31 @@ def main(**kwargs):
     for k in list(kwargs.keys()):
         if hasattr(args, k):
             setattr(args, k, kwargs.pop(k))
-    parser.run_subparser('task', args)
-    return args, kwargs
+    if kwargs:
+        raise AssertionError(f'Unparsed kwargs: {pprint.pformat(kwargs)}')
+    args.SUBPARSER_CLASS = parser.subparser_class('task', args)
+    return args
+
+
+def main(**kwargs):
+    r"""Parse arguments provided via the command line or keyword
+    arguments and run the parsed task.
+
+    Args:
+        **kwargs: If any keyword args are passed, they are parsed
+            instead of the command line arguments.
+
+    Returns:
+        argparse.Namespace, dict: Argument namespace and keyword
+            keyword arguments that were not parsed.
+
+    """
+    if not os.path.isdir(utils._output_dir):
+        os.mkdir(utils._output_dir)
+    args = parse(**kwargs)
+    inst = args.SUBPARSER_CLASS(args)
+    return inst.run(output_name='instance')
 
 
 if __name__ == "__main__":
-    args, _ = main()
+    main()
