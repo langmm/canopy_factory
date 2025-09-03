@@ -686,6 +686,30 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
 
 
 ############################################################
+# Methods for user input
+############################################################
+
+def input_yes_or_no(question, default=True):
+    r"""Ask for user response to a yes or no question.
+
+    Args:
+        question (str): Question to ask.
+        default (bool, optional): If True, the default response will be
+            True if no input is provided.
+
+    Returns:
+        bool: True if the user responds in the affirmative.
+
+    """
+    default_str = ' [Y/n]' if default else ' [y/N]'
+    value = input(question + default_str + ': ')
+    yes_values = ['y', 'yes']
+    if default:
+        yes_values.append('')
+    return (value.lower() in yes_values)
+
+
+############################################################
 # Methods for I/O
 ############################################################
 

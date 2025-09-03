@@ -3,6 +3,7 @@ import pdb
 import numpy as np
 import itertools
 import pprint
+import copy
 from datetime import datetime
 from collections import OrderedDict
 from yggdrasil import units
@@ -10,22 +11,32 @@ from yggdrasil.serialize.PlySerialize import PlyDict
 from yggdrasil.serialize.ObjSerialize import ObjDict
 from canopy_factory import utils
 from canopy_factory.utils import (
-    rapidjson, RegisteredClassBase, get_class_registry,
+    RegisteredClassBase, get_class_registry,
     parse_quantity, parse_axis,
     cached_property, cached_args_property, readonly_cached_args_property,
     # Geometry
     scene2geom, _lpy_rays,
 )
 from canopy_factory.cli import (
-    TaskBase, TemporalTaskBase,
-    RepeatIterationError, OutputArgument,
+    TaskBase, TemporalTaskBase, OutputArgument,
     OptimizationTaskBase,
 )
-from canopy_factory.crops import GenerateTask
+from canopy_factory.crops import GenerateTask, LayoutTask
 
 
-_query_options = [
-    'flux_density', 'flux', 'hits', 'areas', 'plantids', 'componentids',
+_query_options_adm = [
+    'plantids', 'componentids',
+]
+_query_options_phy = [
+    'flux_density', 'flux', 'hits', 'areas',
+]
+_query_options = _query_options_phy + _query_options_adm
+_query_options_calc_prefix = [
+    'total_', 'average_', 'scene_average_',
+]
+_query_options_calc = [
+    prefix + q for prefix, q in
+    itertools.product(_query_options_calc_prefix, _query_options_phy)
 ]
 
 
@@ -90,8 +101,6 @@ class RayTracerBase(RegisteredClassBase):
         self.mesh_dict = utils.get_mesh_dict(self.mesh)
         self.areas = np.array(self.mesh.areas)
         self.area_mask = (self.areas > self._area_min)
-        # print(f'{np.logical_not(self.area_mask).sum()} '
-        #       f'faces have areas of 0')
         if self.args.include_units:
             self.areas = parse_quantity(
                 self.areas, self.args.mesh_units**2)
@@ -594,8 +603,6 @@ class RayTracerBase(RegisteredClassBase):
         """
         faces = self.mesh_dict['face'][self.area_mask, :]
         face_scalar = face_scalar[self.area_mask]
-        # if face_scalar.shape == self.idx_faces.shape:
-        #     face_scalar = face_scalar[self.idx_faces]
         if method == 'deposit':
             face_scalar /= faces.shape[1]
         vertex_scalar = np.zeros((self.mesh_dict['vertex'].shape[0], ))
@@ -627,8 +634,7 @@ class HothouseRayTracer(RayTracerBase):
             from hothouse.scene import PeriodicScene as Scene
             kws.update(period=self.args.periodic_period.astype('f4'),
                        direction=self.args.periodic_direction.astype('f4'),
-                       count=(self.args.periodic_canopy_count
-                              * np.ones((3, ), 'i4')))
+                       count=self.args.periodic_canopy_count_array)
         else:
             from hothouse.scene import Scene
         out = Scene(
@@ -696,8 +702,7 @@ class HothouseRayTracer(RayTracerBase):
             kws.update(
                 period=self.args.periodic_period.astype('f4'),
                 periodic_direction=self.args.periodic_direction.astype('f4'),
-                periodic_count=(self.args.periodic_canopy_count
-                                * np.ones((3, ), 'i4')),
+                periodic_count=self.args.periodic_canopy_count_array,
             )
         return self.scene.get_sun_blaster(
             self.solar_model.latitude.value,
@@ -853,6 +858,7 @@ class RayTraceTask(TaskBase):
                 'the mesh with faces colored by a ray tracer result'
             ),
             'optional': True,
+            'merge_all': True,
         },
     }
     _external_tasks = {
@@ -964,12 +970,6 @@ class RayTraceTask(TaskBase):
                      'belongs to, and \"componentids\" uses the IDs '
                      'of the plant architecture component.'),
         }),
-        # (('--query-units', ), {
-        #     'type': str,
-        #     'help': ('Units that query should be expressed in. Defaults '
-        #              'to Watts for query=\"flux\" and unitless '
-        #              'otherwise.'),
-        # }),
         (('--show-rays', ), {
             'action': "store_true",
             'help': ('Show the rays in the generated mesh if '
@@ -1028,30 +1028,6 @@ class RayTraceTask(TaskBase):
     ]
 
     @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        if name == 'traced_mesh':
-            return utils.read_3D(fname, file_format=args.mesh_format,
-                                 verbose=args.verbose,
-                                 include_units=args.include_units)
-        elif name == 'raytrace_limits':
-            with open(fname, 'r') as fd:
-                return rapidjson.load(fd)
-        elif name == 'raytrace':
-            return utils.read_csv(fname, verbose=args.verbose)
-        return super(RayTraceTask, cls)._read_output(args, name, fname)
-
-    @classmethod
     def _write_output(cls, args, name, fname, output):
         r"""Write to an output file.
 
@@ -1062,19 +1038,7 @@ class RayTraceTask(TaskBase):
             output (object): Output object to write to file.
 
         """
-        if args.id == 'all_split' and name != 'traced_mesh':
-            return
-        if name == 'traced_mesh':
-            return utils.write_3D(output, fname,
-                                  file_format=args.mesh_format,
-                                  verbose=args.verbose)
-        elif name == 'raytrace_limits':
-            assert output
-            with open(fname, 'w') as fd:
-                rapidjson.dump(output, fd, write_mode=rapidjson.WM_PRETTY)
-            return
-        elif name == 'raytrace':
-            utils.write_csv(output, fname, verbose=args.verbose)
+        if args.id == 'all' and name != 'traced_mesh':
             return
         super(RayTraceTask, cls)._write_output(args, name, fname, output)
 
@@ -1093,6 +1057,14 @@ class RayTraceTask(TaskBase):
             'raytracer', self.args.raytracer)(
                 self.args, self.mesh,
                 geometryids=self.geometryids)
+
+    @cached_property
+    def scene_area(self):
+        r"""units.Quantity: Area that the scene covers."""
+        if self.args.canopy != 'single':
+            return self.args.plot_width * self.args.plot_length
+        assert self.args.periodic_canopy
+        return self.args.row_spacing * self.args.plant_spacing
 
     @cached_property
     def mesh(self):
@@ -1126,7 +1098,7 @@ class RayTraceTask(TaskBase):
         args.include_units = True
         if ((isinstance(args.output_generate, str)
              or (isinstance(args.output_generate, OutputArgument)
-                 and args.output_generate.generated))):
+                 and not args.output_generate.generated))):
             args.periodic_canopy = False
         super(RayTraceTask, cls).adjust_args_internal(args)
         assert args.output_generate.generated
@@ -1143,7 +1115,7 @@ class RayTraceTask(TaskBase):
         super(RayTraceTask, self).reset_outputs(**kwargs)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -1152,6 +1124,7 @@ class RayTraceTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -1160,38 +1133,36 @@ class RayTraceTask(TaskBase):
         suffix = ''
         if name == 'traced_mesh':
             suffix += cls._make_suffix(
-                args, 'query', wildcards=wildcards, cond=True,
+                args, 'query', cond=True,
+                wildcards=wildcards, skip=skip,
             )
             suffix += cls._make_suffix(
-                args, 'show_rays', value='rays', wildcards=wildcards,
+                args, 'show_rays', value='rays',
+                wildcards=wildcards, skip=skip,
             )
             suffix += cls._make_suffix(
                 args, 'highlight', prefix='_highlight', title=True,
-                wildcards=wildcards,
+                wildcards=wildcards, skip=skip,
             )
             return suffix
         elif name != 'raytrace':
             return suffix
         suffix += cls._make_suffix(
-            args, 'time', wildcards=wildcards,
+            args, 'time', wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'nrays', cond=True, wildcards=wildcards,
+            args, 'nrays', cond=True, wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'multibounce', value='multibounce',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'any_direction', value='anydirection',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
-        suffix += cls._make_suffix(
-            args, 'periodic_canopy_count', prefix='_periodic',
-            cond=bool(args.periodic_canopy), wildcards=wildcards,
-        )
-        suffix += cls._make_suffix(
-            args, 'periodic_canopy', wildcards=wildcards,
+        suffix += LayoutTask._output_suffix_periodic(
+            args, name, wildcards=wildcards, skip=skip,
         )
         return suffix
 
@@ -1227,12 +1198,108 @@ class RayTraceTask(TaskBase):
 
         """
         if query in query_values:
-            face_values = query_values[query]
+            return query_values[query]
+        elif query == 'flux':
+            return query_values['flux_density'] * query_values['areas']
+        raise NotImplementedError(query)
+
+    @classmethod
+    def extract_query_average(cls, values, query):
+        r"""Calculate average of total per plant.
+
+        Args:
+            values (dict): Query values for each face.
+            query (str, list): Query value(s) to return total(s) for. If
+                a list is provided, a dictionary mapping from query name
+                to value will be returned.
+
+        Returns:
+            units.Quantity: Average for the specified query across plants.
+
+        """
+        def mean(x):
+            if isinstance(x[0], units.Quantity):
+                return units.Quantity(np.mean([xx.value for xx in x]),
+                                      x[0].units)
+            return np.mean(x)
+
+        totals = cls.extract_query_total(values, query, per_plant=True)
+        if isinstance(query, list):
+            out = {k: mean([v[k] for v in totals.values()])
+                   for k in query}
         else:
-            face_values = (
-                query_values['flux_density'] * query_values['areas']
-            )
-        return face_values
+            out = mean(list(totals.values()))
+        return out
+
+    @classmethod
+    def extract_query_averages(cls, values):
+        r"""Calculate average of total per plant.
+
+        Args:
+            values (dict): Query values for each face.
+
+        Returns:
+            dict: Mapping between query names and averages.
+
+        """
+        query = [k for k in _query_options_phy if k in values]
+        if (('flux' not in query
+             and all(k in query for k in ['flux_density', 'areas']))):
+            query.append('flux')
+        return cls.extract_query_average(values, query)
+
+    @classmethod
+    def extract_query_total(cls, values, query, per_plant=False,
+                            include_base=False):
+        r"""Calculate sums over one query options.
+
+        Args:
+            values (dict): Query values for each face.
+            query (str, list): Query value(s) to return total(s) for. If
+                a list is provided, a dictionary mapping from query name
+                to value will be returned.
+            per_plant (bool, optional): If True, the query values should
+                be totaled for each plant. If an int is provided,
+                the number of unique plant IDs should match the provided
+                value.
+            include_base (bool, optional): If True, include the total
+                for the whole scene when per_plant is True.
+
+        Returns:
+            units.Quantity: Total for the specified query.
+
+        """
+        def sum(x):
+            if isinstance(x, units.QuantityArray):
+                return units.Quantity(x.value.sum(), x.units)
+            return x.sum()
+
+        if 'flux' not in values and ((isinstance(query, list)
+                                      and 'flux' in query)
+                                     or query == 'flux'):
+            values['flux'] = cls.extract_query(values, 'flux')
+
+        if not per_plant:
+            if isinstance(query, list):
+                return {k: sum(values[k]) for k in query}
+            return sum(values[query])
+        out = {}
+        plantids = values['plantids']
+        plantids_unique = np.unique(plantids)
+        if not isinstance(per_plant, bool):
+            assert len(plantids_unique) == per_plant
+        for i in plantids_unique:
+            idx = (plantids == i)
+            if isinstance(query, list):
+                out[str(i)] = {k: sum(values[k][idx]) for k in query}
+            else:
+                out[str(i)] = sum(values[query][idx])
+        if include_base:
+            if isinstance(query, list):
+                out['total'] = {k: sum(values[k]) for k in query}
+            else:
+                out['total'] = sum(values[query])
+        return out
 
     @classmethod
     def extract_query_totals(cls, values, per_plant=False):
@@ -1245,24 +1312,88 @@ class RayTraceTask(TaskBase):
                 the number of unique plant IDs should match the provided
                 value.
 
+        Returns:
+            dict: Mapping between query names and totals. If per_plant
+                is True, this is nested as a value for each plant ID.
+
         """
-        values['flux'] = cls.extract_query(values, 'flux')
-
-        def sum(x):
-            if isinstance(x, units.QuantityArray):
-                return units.Quantity(x.value.sum(), x.units)
-            return x.sum()
-
-        out = {k: {'total': sum(values[k])} for k in _query_options}
+        query = [k for k in _query_options_phy if k in values]
+        if (('flux' not in query
+             and all(k in query for k in ['flux_density', 'areas']))):
+            query.append('flux')
+        out = cls.extract_query_total(values, query, per_plant=per_plant)
         if per_plant:
-            plantids = values['plantids']
-            plantids_unique = np.unique(plantids)
-            if isinstance(per_plant, int):
-                assert len(plantids_unique) == per_plant
-            for i in plantids_unique:
-                idx = (plantids == i)
-                for k in _query_options:
-                    out[k][i] = sum(values[k][idx])
+            out['total'] = cls.extract_query_total(values, query)
+        return out
+
+    def calculate_query(self, query, prevent_output=False,
+                        per_plant=False):
+        r"""Calculate a query value for the scene.
+
+        Args:
+            query (str): Query value to return.
+            prevent_output (bool, optional): If True, don't output
+                raytracer results if they don't already exist.
+            per_plant (bool, optional): If True, the query values should
+                also be totaled for each plant. If an int is provided,
+                the number of unique plant IDs should match the provided
+                value. Only used for "total_*" query names.
+
+        Returns:
+            units.Quantity: Calculated query value.
+
+        """
+        query_sorted = {}
+
+        def get_base(x):
+            for prefix in _query_options_calc_prefix:
+                if x.startswith(prefix):
+                    out = x.split(prefix, 1)[-1]
+                    query_sorted.setdefault(prefix, [])
+                    query_sorted[prefix].append(out)
+                    return out
+            else:
+                query_sorted.setdefault('', [])
+                query_sorted[''].append(x)
+                return x
+
+        singular = (not isinstance(query, list))
+        if singular:
+            query = [query]
+        query_base = set(get_base(k) for k in query)
+        if (not prevent_output) or self.output_exists():
+            values = self.get_output('raytrace')
+        else:
+            values.raytrace_scene(query=list(query_base))
+        out = {}
+        for prefix, kquery in query_sorted.items():
+            if prefix == 'total_':
+                iout = self.extract_query_total(values, kquery,
+                                                per_plant=per_plant,
+                                                include_base=True)
+                if per_plant:
+                    for k in kquery:
+                        out.setdefault(f'{prefix}{k}', {})
+                    for i in iout.keys():
+                        for k in kquery:
+                            out[f'{prefix}{k}'][i] = iout[i][k]
+                    continue
+            elif prefix == 'average_':
+                iout = self.extract_query_average(values, kquery)
+            elif prefix == 'scene_average_':
+                iout = {
+                    k: v / self.scene_area for k, v in
+                    self.extract_query_total(values, kquery).items()
+                }
+            elif prefix == '':
+                iout = {k: self.extract_query(values, k)
+                        for k in kquery}
+            else:
+                raise NotImplementedError(prefix)
+            for k, v in iout.items():
+                out[f'{prefix}{k}'] = v
+        if singular:
+            return out[query[0]]
         return out
 
     @classmethod
@@ -1320,9 +1451,13 @@ class RayTraceTask(TaskBase):
         return out
 
     @classmethod
-    def _get_base_id(cls, args):
+    def _get_all_ids(cls, args):
         generator_class = get_class_registry().get('crop', args.crop)
-        return generator_class.ids_from_file(args.data)[0]
+        return generator_class.ids_from_file(args.data)
+
+    @classmethod
+    def _get_base_id(cls, args):
+        return cls._get_all_ids(args)[0]
 
     @classmethod
     def _adjust_color_limits(cls, self, name=None):
@@ -1394,7 +1529,6 @@ class RayTraceTask(TaskBase):
         query_values = self.get_output('raytrace')
         if self.args.show_rays:
             inst = self.run_iteration(
-                output_name='instance',
                 args_overwrite={'show_rays': False,
                                 'output_traced_mesh': True},
             )
@@ -1409,8 +1543,7 @@ class RayTraceTask(TaskBase):
                               ray_width=self.args.ray_width.value,
                               arrow_width=self.args.arrow_width.value)
             )
-            self.set_output('traced_mesh', mesh)
-            return
+            return mesh
         self._adjust_color_limits(self)
         mesh = self.mesh
         face_values = self.extract_query(query_values, self.args.query)
@@ -1428,7 +1561,7 @@ class RayTraceTask(TaskBase):
             highlight_color=self.args.highlight_color.value,
         )
         mesh.add_colors('vertex', vertex_colors)
-        self.set_output('traced_mesh', mesh)
+        return mesh
 
     @classmethod
     def _check_for_plantids(cls, self, values):
@@ -1441,7 +1574,6 @@ class RayTraceTask(TaskBase):
         if len(plantids_unique) != self.args.nrows * self.args.ncols:
             print(len(plantids), len(plantids_unique),
                   self.args.nrows * self.args.ncols)
-            import pdb
             pdb.set_trace()
         return len(plantids_unique) == self.args.nrows * self.args.ncols
 
@@ -1460,6 +1592,9 @@ class RayTraceTask(TaskBase):
             query = _query_options
         if isinstance(query, list):
             values = {}
+            if 'flux' in query:
+                query = query + [k for k in ['flux_density', 'areas']
+                                 if k not in query]
             for k in query:
                 if k == 'flux':
                     continue
@@ -1471,37 +1606,12 @@ class RayTraceTask(TaskBase):
             values = self.raytrace_scene(query=['flux_density', 'areas'])
             return self.extract_query(values, query)
         query0 = self.args.query
+        self.raytracer.args.query = query
         try:
-            self.raytracer.args.query = query
             out = self.raytracer.raytrace()
         finally:
             self.raytracer.args.query = query0
         return out
-
-    def _raytrace_scene(self):
-        r"""Run the ray tracer on the selected geometry.
-
-        Returns:
-            dict: Dictionary of ray tracer queries.
-
-        """
-        values = {}
-        for k in _query_options:
-            if k == 'flux':  # calculated from flux_density & areas
-                continue
-            query0 = self.args.query
-            # self.cache_args(args_overwrite={'query': k},
-            #                 properties_preserve=['raytracer'],
-            #                 recursive=False)
-            try:
-                self.raytracer.args.query = k
-                # self.raytracer.args = self.args
-                values[k] = self.raytracer.raytrace()
-                # self.restore_args()
-                # self.raytracer.args = self.args
-            finally:
-                self.raytracer.args.query = query0
-        self.set_output('raytrace', values)
 
     @classmethod
     def _generate_limits_class(cls, args, base_limits_args=None,
@@ -1612,7 +1722,22 @@ class RayTraceTask(TaskBase):
         )
         return out
 
-    def generate_output(self, name):
+    def _merge_output(self, name, output):
+        r"""Merge the output for multiple IDs.
+
+        Args:
+            name (str): Name of the output to generate.
+            output (dict): Mapping from ID to the output for each ID.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name != 'traced_mesh':
+            return super(RayTraceTask, self)._merge_output(name, output)
+        return GenerateTask.merge_mesh(self.args, list(output.values()))
+
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -1622,41 +1747,14 @@ class RayTraceTask(TaskBase):
             object: Generated output.
 
         """
-        if ((self.args.id == 'all_split'
-             and self.args.output_generate.generated
-             and not self.output_exists('generate'))):
-            over = {'id': self.external_tasks['generate'].all_ids}
-            mesh = None
-            x = 0.0 * self.args.x
-            y = 0.0 * self.args.y
-            plantid = 0
-            for inst in self.run_series(self.args, over=over,
-                                        output_name='instance'):
-                if self.output_enabled('traced_mesh'):
-                    if mesh is None:
-                        mesh = inst.get_output('traced_mesh')
-                    else:
-                        mesh.append(self.shift_mesh(
-                            inst.get_output('traced_mesh'),
-                            x, y, plantid=plantid,
-                        ))
-                    x += self.args.row_spacing * (self.args.nrows + 2)
-                    plantid += (self.args.nrows * self.args.ncols)
-            if self.output_enabled('traced_mesh'):
-                assert mesh is not None
-                self.set_output('traced_mesh', mesh)
-            self.set_output('raytrace', None)
-            self.set_output('raytrace_limits', None)
-            return
+        assert self.args.id != 'all'
         if name == 'raytrace':
-            self._raytrace_scene()
+            return self.raytrace_scene()
         elif name == 'raytrace_limits':
-            out = self._generate_limits()
-            self.set_output('raytrace_limits', out)
+            return self._generate_limits()
         elif name == 'traced_mesh':
-            self._color_scene()
-        else:
-            super(RayTraceTask, self).generate_output(name)
+            return self._color_scene()
+        super(RayTraceTask, self)._generate_output(name)
 
 
 class RenderTask(TaskBase):
@@ -1668,6 +1766,7 @@ class RenderTask(TaskBase):
             'ext': '.png',
             'base': 'raytrace',
             'description': 'the rendered image',
+            'merge_all': True,
         },
         'render_camera': {
             'ext': '.json',
@@ -1720,11 +1819,9 @@ class RenderTask(TaskBase):
                      'scene'),
         }),
         (('--scene-mins', ), {
-            # 'type': parse_axis,
             'help': 'Minimum extent of scene along each dimension',
         }),
         (('--scene-maxs', ), {
-            # 'type': parse_axis,
             'help': 'Maximum extent of scene along each dimension',
         }),
         (('--camera-direction', ), {
@@ -1806,42 +1903,6 @@ class RenderTask(TaskBase):
     ]
 
     @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        if name == 'render_camera':
-            with open(fname, 'r') as fd:
-                return rapidjson.load(fd)
-        return utils.read_png(fname, verbose=args.verbose)
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        if name == 'render_camera':
-            with open(fname, 'w') as fd:
-                rapidjson.dump(output, fd,
-                               write_mode=rapidjson.WM_PRETTY)
-            return
-        utils.write_png(output, fname, verbose=args.verbose)
-
-    @classmethod
     def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
@@ -1883,7 +1944,7 @@ class RenderTask(TaskBase):
         super(RenderTask, self).reset_outputs(**kwargs)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -1892,6 +1953,7 @@ class RenderTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -1900,61 +1962,58 @@ class RenderTask(TaskBase):
         suffix = ''
         if name != 'render_camera':
             suffix += cls._make_suffix(
-                args, 'query', wildcards=wildcards, cond=True,
+                args, 'query', cond=True,
+                wildcards=wildcards, skip=skip,
             )
         suffix += cls._make_suffix(
-            args, 'camera_direction', wildcards=wildcards,
+            args, 'camera_direction',
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'camera_location', prefix='_from_',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'scene_age', wildcards=wildcards,
+            args, 'scene_age', wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'camera_type', noteq='projection',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         if args.camera_type == 'projection':
-            suffix += cls._make_suffix(
-                args, 'camera_fov_width', conv=int, prefix='',
-                wildcards=wildcards,
-            )
-            suffix += cls._make_suffix(
-                args, 'camera_fov_height', conv=int, prefix='x',
-                wildcards=wildcards,
+            suffix += cls._make_suffix_set(
+                args, ['camera_fov_width', 'camera_fov_height'],
+                set_sep='x', set_prefix='', conv=int,
+                wildcards=wildcards, skip=skip,
             )
         suffix += cls._make_suffix(
-            args, 'camera_up', prefix='up', wildcards=wildcards,
+            args, 'camera_up', prefix='up', sep='x',
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'background_color', noteq='transparent',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
-        suffix += cls._make_suffix(
-            args, 'image_nx', wildcards=wildcards,
+        suffix += cls._make_suffix_set(
+            args, ['image_nx', 'image_ny'], set_sep='x',
+            wildcards=wildcards, skip=skip,
         )
-        suffix += cls._make_suffix(
-            args, 'image_ny', prefix='x', wildcards=wildcards,
-        )
-        suffix += cls._make_suffix(
-            args, 'image_width', conv=int,
-            wildcards=wildcards,
-        )
-        suffix += cls._make_suffix(
-            args, 'image_height', conv=int, prefix='x', suffix='cm',
-            wildcards=wildcards,
+        suffix += cls._make_suffix_set(
+            args, ['image_width', 'image_height'],
+            conv=int, set_sep='x', set_suffix='cm',
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
             args, 'resolution', conv=int, suffix='percm',
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'scene_mins', wildcards=wildcards,
+            args, 'scene_mins', sep='x', prefix='_SCMIN',
+            wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'scene_maxs', wildcards=wildcards,
+            args, 'scene_maxs', sep='x', prefix='_SCMAX',
+            wildcards=wildcards, skip=skip,
         )
         return suffix
 
@@ -2103,36 +2162,22 @@ class RenderTask(TaskBase):
             out[k] = getattr(self.raytracer, k)
         return out
 
-    # def _adjust_camera_scene_age(self):
-    #     r"""Set camera attributes for a specific scene age."""
-    #     assert self.args.scene_age.age is not None
-    #     assert self.args.output_render.path
-    #     age_args = {
-    #         'age': self.args.scene_age.args['age'],
-    #         'output_render': False,
-    #         'output_render_camera': True,
-    #         'scene_age': None,
-    #         'scene_mins': None,
-    #         'scene_maxs': None,
-    #         'time': None,
-    #     }
-    #     print(80 * '-')
-    #     print(f"GENERATING CAMERA PROPERTIES FOR "
-    #           f"{self.args.scene_age.age}")
-    #     pprint.pprint(age_args)
-    #     camera_args = self.run_iteration(
-    #         args_overwrite=age_args,
-    #         output_name='render_camera',
-    #         cache_outputs=['render_camera'],
-    #     )
-    #     pprint.pprint(camera_args)
-    #     for k, v in camera_args.items():
-    #         setattr(self.args, k, v)
-    #     print("END GENERATING CAMERA PROPERTIES")
-    #     print(80 * '-')
-    #     return camera_args
+    def _merge_output(self, name, output):
+        r"""Merge the output for multiple IDs.
 
-    def generate_output(self, name):
+        Args:
+            name (str): Name of the output to generate.
+            output (dict): Mapping from ID to the output for each ID.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name == 'render':
+            return np.concatenate(list(output.values()), axis=1)
+        return super(RenderTask, self)._merge_output(name, output)
+
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -2142,35 +2187,19 @@ class RenderTask(TaskBase):
             object: Generated output.
 
         """
-        if name not in ['render', 'render_camera']:
-            return super(RenderTask, self).generate_output(name)
-        if ((self.args.id == 'all_split'
-             and self.args.output_generate.generated
-             and not self.output_exists(self.output_file('generate')))):
-            over = {'id': self.external_tasks['generate'].all_ids}
-            images = []
-            for x in self.run_series(self.args, over=over,
-                                     output_name=name):
-                images.append(x)
-            if name == 'render':
-                image = np.concatenate(images, axis=1)
-                self.set_output('render', image)
-            else:
-                self.set_output('render_camera', None)
-            return
+        assert self.args.id != 'all'
         if name == 'render_camera':
-            out = self._generate_camera()
-            self.set_output(name, out)
-            return
-        if self.args.scene_age.age is not None:
-            before = self.args.output_render.path
-            camera_args = self.get_output('render_camera')
-            for k, v in camera_args.items():
-                setattr(self.args, k, v)
-            after = self.args.output_render.path
-            assert after == before
-        image = self._render_scene()
-        self.set_output('render', image)
+            return self._generate_camera()
+        elif name == 'render':
+            if self.args.scene_age.age is not None:
+                before = self.args.output_render.path
+                camera_args = self.get_output('render_camera')
+                for k, v in camera_args.items():
+                    setattr(self.args, k, v)
+                after = self.args.output_render.path
+                assert after == before
+            return self._render_scene()
+        return super(RenderTask, self)._generate_output(name)
 
 
 class TotalsTask(TemporalTaskBase):
@@ -2187,12 +2216,25 @@ class TotalsTask(TemporalTaskBase):
             'base': 'totals',
             'description': 'a plot of raytraced query totals',
             'optional': True,
+            'merge_all': True,
+            'merge_all_output': 'totals',
+        },
+    }
+    _external_tasks = {
+        RayTraceTask: {
+            'modifications': {
+                'query': {
+                    'default': 'total_flux',
+                    'choices': _query_options_calc,
+                },
+            },
         },
     }
     _arguments = [
         (('--per-plant', ), {
             'action': 'store_true',
-            'help': ('Calculate the totals on a per-plant basis'),
+            'help': ('Plot the totals on a per-plant basis (valid for '
+                     'totals_plot only'),
         }),
     ]
 
@@ -2209,16 +2251,12 @@ class TotalsTask(TemporalTaskBase):
             object: Contents of the output file.
 
         """
+        out = super(TotalsTask, cls)._read_output(args, name, fname)
         if name == 'totals':
-            with open(fname, 'r') as fd:
-                out = rapidjson.load(fd)
             out['times'] = [
                 datetime.fromisoformat(x) for x in out['times']
             ]
-            return out
-        # elif name == 'totals_plot':
-        #     return utils.read_png(fname, verbose=args.verbose)
-        return super(TotalsTask, cls)._read_output(args, name, fname)
+        return out
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -2231,20 +2269,13 @@ class TotalsTask(TemporalTaskBase):
             output (object): Output object to write to file.
 
         """
-        if name == 'totals_plot':
-            output.savefig(fname, dpi=300)
-            return
-        elif name == 'totals':
+        if name == 'totals':
             output = dict(output,
                           times=[x.isoformat() for x in output['times']])
-            with open(fname, 'w') as fd:
-                rapidjson.dump(output, fd,
-                               write_mode=rapidjson.WM_PRETTY)
-            return
         super(TotalsTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -2253,6 +2284,7 @@ class TotalsTask(TemporalTaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -2260,15 +2292,32 @@ class TotalsTask(TemporalTaskBase):
         """
         suffix = ''
         if name == 'totals_plot':
+            suffix += cls._make_suffix(
+                args, 'query', cond=True,
+                wildcards=wildcards, skip=skip,
+            )
+            suffix += cls._make_suffix(
+                args, 'per_plant', value='per_plant',
+                wildcards=wildcards, skip=skip,
+            )
             return suffix
         suffix += super(TotalsTask, cls)._output_suffix(
-            args, name, wildcards=wildcards,
-        )
-        suffix += cls._make_suffix(
-            args, 'per_plant', value='per_plant',
-            wildcards=wildcards
+            args, name, wildcards=wildcards, skip=skip,
         )
         return suffix
+
+    @classmethod
+    def adjust_args_internal(cls, args, **kwargs):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        """
+        super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
+        if args.canopy == 'single':
+            args.per_plant = False
 
     @cached_property
     def time_marker(self):
@@ -2285,68 +2334,87 @@ class TotalsTask(TemporalTaskBase):
         """
         self.time_marker.set_xdata([time, time])
 
-    def plot_data(self, times, totals, id=None, iclass=0):
+    def plot_query(self, query, times, values, id=None, plantid=None,
+                   reset=False):
         r"""Plot the data for a single crop ID.
 
         Args:
-            times (list): Times for the data in totals.
+            query (str): Name of property contained by values.
+            times (np.ndarray): Times.
+            values (np.ndarray): Query values for each time step.
+            id (str, optional): ID of the crop that should be used for
+                the label.
+            plantid (int, optional): Plant ID for provided data.
+            reset (bool, optional): Reset the figure.
+
+        """
+        ax = self.axes
+        first = (reset or not hasattr(self, '_lines'))
+        if first:
+            self._lines = {}
+            ax.cla()
+        if id is None:
+            id = self.args.id
+        iclass = len(self._lines)
+        self._lines.setdefault(id, {'interior': 0, 'exterior': 0})
+        linestyles = ['-', ':']
+        colors = ['blue', 'orange']
+        if first:
+            ylabel = query.title()
+            if isinstance(values, units.QuantityArray):
+                ylabel += f" ({values.units})"
+            elif isinstance(values[0], units.Quantity):
+                ylabel += f" ({values[0].units})"
+            ax.set_xlabel('Time')
+            ax.set_ylabel(ylabel)
+        layout_task = self.output_task('layout')
+        loc = 0
+        locStr = None
+        label = None
+        if plantid is not None:
+            if layout_task.isExteriorPlant(int(plantid)):
+                loc = 1
+                locStr = 'exterior'
+            else:
+                loc = 0
+                locStr = 'interior'
+            self._lines[id] += 1
+            if self._lines[locStr] == 1:
+                label = f'{locStr.title()} plants ({id})'
+        else:
+            label = id
+        color = colors[iclass]
+        style = linestyles[loc]
+        ax.plot(times, values, label=label, color=color,
+                linestyle=style)
+
+    def plot_data(self, totals, id=None, reset=False):
+        r"""Plot the data for a single crop ID.
+
+        Args:
             totals (dict): Mapping between query name and dictionaries
                 of totals for each component.
             id (str, optional): ID of the crop that should be used for
                 the label.
-            iclass (int, optional): Index of the ID that should be used
-                to select the color.
+            reset (bool, optional): Reset the figure.
 
         """
         if id is None:
             id = self.args.id
-            iclass = 0
+        times = totals['times']
         totals = totals[self.args.query]
-        first = getattr(self, 'first', True)
-        ax = self.axes
-        linestyles = ['-', ':']
-        colors = ['blue', 'orange']
-        if first:
-            ylabel = self.args.query.title()  # TODO: Add units
-            if isinstance(totals['total'], units.QuantityArray):
-                ylabel += f" ({totals['total'].units})"
-            elif isinstance(totals['total'][0], units.Quantity):
-                ylabel += f" ({totals['total'][0].units})"
-            ax.set_xlabel('Time')
-            ax.set_ylabel(ylabel)
-        if self.args.per_plant:
-            lines = {'interior': {}, 'exterior': {}}
-            # TODO: Split plants by crop class when they are
-            # combined in the same mesh
-            for k, v in totals.items():
-                if k == 'total':
-                    continue
-                loc = None
-                locStr = None
-                label = None
-                if self.isExteriorPlant(k):
-                    loc = 1
-                    locStr = 'exterior'
-                else:
-                    loc = 0
-                    locStr = 'interior'
-                lines[locStr][k] = v
-                if len(lines[locStr]) == 1:
-                    label = f'{locStr.title()} plants ({id})'
-                color = colors[iclass]
-                style = linestyles[loc]
-                ax.plot(times, v, label=label, color=color,
-                        linestyle=style)
-            # print(f'INTERIOR PLANTS [{id}]: '
-            #       f'{len(lines["interior"])}/{len(totals) - 1}')
-            # print(f'EXTERIOR PLANTS [{id}]: '
-            #       f'{len(lines["exterior"])}/{len(totals) - 1}')
-        else:
-            color = colors[iclass]
-            style = linestyles[0]
-            ax.plot(times, totals['total'], color=color,
-                    label=f'total ({id})',
-                    linestyle=style)
+        if self.args.query.startswith('total_'):
+            if self.args.per_plant:
+                for i, v in totals.items():
+                    if i == 'total':
+                        continue
+                    self.plot_query(self.args.query, times, v,
+                                    id=id, plantid=i, reset=reset)
+                    reset = False
+                return
+            totals = totals['total']
+        self.plot_query(self.args.query, times, totals, id=id,
+                        reset=reset)
 
     def finalize_step(self, x):
         r"""Finalize the output from a step.
@@ -2358,18 +2426,13 @@ class TotalsTask(TemporalTaskBase):
             object: Finalized step result.
 
         """
-        values = x.get_output('raytrace')
-        if not RayTraceTask._check_for_plantids(self, values):
-            assert not x.args.overwrite_raytrace
-            print("REGENERATING RAY TRACE WITHOUT PLANTIDS")
-            raise RepeatIterationError(args_overwrite={
-                'overwrite_raytrace': True})
-        per_plant = ((self.args.nrows * self.args.ncols)
-                     if self.args.per_plant else False)
-        return (
-            x.args.id, x.args.time.time,
-            RayTraceTask.extract_query_totals(values, per_plant=per_plant),
-        )
+        if self.args.canopy == 'single':
+            per_plant = False
+        else:
+            per_plant = (self.args.nrows * self.args.ncols)
+        query = _query_options_calc
+        value = x.calculate_query(query, per_plant=per_plant)
+        return (x.args.time.time, value)
 
     def join_steps(self, xlist):
         r"""Join the output form all of the steps.
@@ -2381,24 +2444,61 @@ class TotalsTask(TemporalTaskBase):
             object: Joined output from all steps.
 
         """
-        if self.args.id == 'all_split':
-            idlist = self.external_tasks['generate'].all_ids
-        else:
-            idlist = sorted(list(set([x[0] for x in xlist])))
-        # print(xlist[0])
-        # import pdb; pdb.set_trace()
-        times = sorted(list(set([x[1] for x in xlist])))
-        out = {id: {k: {i: [] for i in ids.keys()}
-                    for k, ids in xlist[0][-1].items()}
-               for id in idlist}
-        for id, time, x in xlist:
-            for k, ids in x.items():
-                for i, v in ids.items():
-                    out[id][k][i].append(v)
+        assert self.args.id != 'all'
+        times = [x[0] for x in xlist]
+        values = [x[1] for x in xlist]
+        N = len(values)
+        out = {}
+        for k, v in values[0].items():
+            if k.startswith('total_'):
+                out[k] = {i: np.zeros(N, dtype='float64')
+                          for i in v.keys()}
+            else:
+                out[k] = np.zeros(N, dtype='float64')
+        field_units = {}
+
+        def get_value(k, x):
+            if not isinstance(x, units.Quantity):
+                return x
+            if k not in field_units:
+                field_units[k] = str(x.units)
+            return float(x.value)
+
+        for idx, value in enumerate(values):
+            for k, v in value.items():
+                if k.startswith('total_'):
+                    for i, x in v.items():
+                        out[k][i][idx] = get_value(k, x)
+                else:
+                    out[k][idx] = get_value(k, v)
+        for k, unit in field_units.items():
+            if k.startswith('total_'):
+                for i in list(out[k].keys()):
+                    out[k][i] = parse_quantity(out[k][i], unit)
+            else:
+                out[k] = parse_quantity(out[k], unit)
         out['times'] = times
         return out
 
-    def generate_output(self, name):
+    def _merge_output(self, name, output):
+        r"""Merge the output for multiple IDs.
+
+        Args:
+            name (str): Name of the output to generate.
+            output (dict): Mapping from ID to the output for each ID.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name == 'totals_plot':
+            for id, values in output.items():
+                self.plot_data(values, id=id)
+            self.axes.legend()
+            return self.figure
+        return super(TotalsTask, self)._merge_output(name, output)
+
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -2409,34 +2509,12 @@ class TotalsTask(TemporalTaskBase):
 
         """
         if name == 'totals_plot':
+            assert self.args.id != 'all'
             out = self.get_output('totals')
-            if self.args.id == 'all_split':
-                idlist = self.external_tasks['generate'].all_ids
-            else:
-                idlist = sorted([k for k in out.keys() if k != 'times'])
-            for iclass, id in enumerate(idlist):
-                self.plot_data(out['times'], out[id], id=id,
-                               iclass=iclass)
+            self.plot_data(out)
             self.axes.legend()
-            self.set_output('totals_plot', self.figure)
-            return
-        super(TotalsTask, self).generate_output(name)
-
-    def step_args(self):
-        r"""Yield the updates that should be made to the arguments for
-        each step.
-
-        Yields:
-            dict: Step arguments.
-
-        """
-        if self.args.id == 'all_split':
-            for id in self.external_tasks['generate'].all_ids:
-                for args_overwrite in super(TotalsTask, self).step_args():
-                    yield dict(args_overwrite, id=id)
-            return
-        for args_overwrite in super(TotalsTask, self).step_args():
-            yield args_overwrite
+            return self.figure
+        return super(TotalsTask, self)._generate_output(name)
 
 
 class AnimateTask(TemporalTaskBase):
@@ -2514,7 +2592,7 @@ class AnimateTask(TemporalTaskBase):
         super(AnimateTask, cls).adjust_args_internal(args, **kwargs)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -2523,6 +2601,7 @@ class AnimateTask(TemporalTaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -2531,18 +2610,19 @@ class AnimateTask(TemporalTaskBase):
         assert name == cls._name
         suffix = ''
         suffix += super(AnimateTask, cls)._output_suffix(
-            args, name, wildcards=wildcards,
+            args, name, wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'inset_totals', value='totals', wildcards=wildcards,
+            args, 'inset_totals', value='totals',
+            wildcards=wildcards, skip=skip,
         )
-        # suffix += cls._make_suffix(
-        #     args, 'per_plant_totals', value='per_plant',
-        #     wildcards=wildcards
-        # )
+        # if args.inset_totals:
+        #     suffix += TotalsTask._output_suffix(
+        #         args, name, wildcards=wildcards, skip=skip,
+        #     )
         suffix += cls._make_suffix(
             args, 'frame_rate', suffix='fps', noteq=1,
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         return suffix
 
@@ -2612,6 +2692,7 @@ class MatchQuery(OptimizationTaskBase):
 
     _step_task = RayTraceTask
     _name = 'match_query'
+    _final_outputs = ['totals_plot']
     _arguments = [
         (('--vary', ), {
             'type': str,
@@ -2623,7 +2704,7 @@ class MatchQuery(OptimizationTaskBase):
         }),
         (('--goal', ), {
             'help': 'Goal of the optimization.',
-            'default': 'flux',
+            'default': 'scene_average_flux',
             'choices': _query_options,
         }),
     ]
@@ -2637,35 +2718,131 @@ class MatchQuery(OptimizationTaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
+        args.final_args = {}
+        for k in ['canopy', 'periodic_canopy', 'nrows', 'ncols',
+                  'periodic_canopy_count']:
+            args.final_args[k] = getattr(args, k)
+        if args.canopy != 'single':
+            # Regenerating unique canopies is very time intensive
+            args.canopy = 'single'
+            if not args.periodic_canopy:
+                args.periodic_canopy = 'scene'
         if args.goal_id is None:
-            args.goal_id = RayTraceTask._get_base_id(args)
-            # args.goal_id = self.external_tasks['generate'].all_ids[0]
+            ids = RayTraceTask._get_all_ids(args)
+            for x in ids:
+                if x != args.id:
+                    args.goal_id = x
+                    break
+            else:
+                raise ValueError(f'No other ID to match {args.id} to')
         super(MatchQuery, cls).adjust_args_internal(args)
         assert args.id != args.goal_id
+
+    @classmethod
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
+
+        Returns:
+            str: Suffix.
+
+        """
+        if name != cls._name:
+            return f'_{name}'
+        suffix = cls._make_suffix(
+            args, 'goal_id', prefix='_matchTo_',
+            wildcards=wildcards, skip=skip,
+        )
+        suffix += super(MatchQuery, cls)._output_suffix(
+            args, name, wildcards=wildcards, skip=skip,
+        )
+        return suffix
 
     @cached_property
     def goal(self):
         r"""units.Quantity: Value that should be achieved."""
         args_overwrite = {
             'id': self.args.goal_id,
-            self.args.vary: None,
+            self.args.vary: getattr(self.args, self.args.vary)
         }
         inst = self.run_iteration(
-            output_name='instance',
+            cls=self._step_task,
             args_overwrite=args_overwrite,
         )
-        return self.finalize_step(inst)
+        out = self.finalize_step(inst, force_output=True)
+        self.log(f'GOAL: {out}', force=True)
+        return out
 
-    def finalize_step(self, x):
+    def finalize_step(self, x, force_output=False):
         r"""Finalize the output from a step.
 
         Args:
             x (object): Result of step.
+            force_output (bool, optional): If True, force output to
+                disk.
 
         Returns:
             object: Finalized step result.
 
         """
-        # TODO: Only run requested query
-        if x.output_exists('raytrace'):
-            return x.get_output('raytrace')[self.args.goal]
+        if getattr(self, '_prev_instance', None) is None:
+            force_output = True
+        return x.calculate_query(
+            self.args.goal, prevent_output=(not force_output)
+        )
+
+    def final_output_args(self, name):
+        r"""Get the arguments that should be used generate the final
+        output.
+
+        Args:
+            name (str): Name of the final output to generate.
+
+        Returns:
+            dict: Arguments to use.
+
+        """
+        out = copy.deepcopy(self.args.final_args)
+        if name == 'totals_plot':
+            out['query'] = self.args.goal
+            if ((out['canopy'] != 'single'
+                 and out['query'].startswith('total_'))):
+                out['per_plant'] = True
+        return out
+
+    def _generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        out = super(MatchQuery, self)._generate_output(name)
+        if name == 'totals_plot':
+            args_overwrite = dict(
+                self.final_output_args(name),
+                id=self.args.goal_id,
+            )
+            goal_totals = self.run_iteration(
+                cls=TotalsTask,
+                args_overwrite=args_overwrite,
+                output_name='totals',
+            )
+            out = super(MatchQuery, self)._generate_output(
+                name, output_name='instance')
+            match_totals = out.get_output('totals')
+            out.plot_data(goal_totals, id=self.args.goal_id, reset=True)
+            out.plot_data(match_totals, id=self.args.id)
+            out.axes.legend()
+            return out.figure
+        return super(MatchQuery, self)._generate_output(name)

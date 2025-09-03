@@ -1,4 +1,5 @@
 import os
+import gc
 import sys
 import pdb
 import copy
@@ -66,10 +67,6 @@ class InstrumentedParserSet(SetBase):
         parent (ArgumentParser, optional): Parser containing this group.
 
     """
-
-    # def __init__(self, parent, members):
-    #     self.parent = parent
-    #     self.members = members
 
     def add_subparsers(self, group, **kwargs):
         r"""Add a subparsers group to this parser.
@@ -847,7 +844,6 @@ class InstrumentedParser(argparse.ArgumentParser):
             'subparser_specific_dest', False)
         assert not subparsers
         assert not subparser_options
-        # for x in self.subparsers(subparsers=subparsers):
         if self._subparsers_action is not None:
             x = self._subparsers_action
         else:
@@ -1148,11 +1144,6 @@ class CompositeArgument(RegisteredClassBase):
                     if ((kk == k or kk in (ignore + v.ignore)
                          or v.args[kk] is None)):
                         continue
-                    # if v.args[kk] != out[kk] and out[kk] is None:
-                    #     out[kk] = v.args[kk]
-                    if v.args[kk] != out[kk]:
-                        print(kk, v.args[kk], out[kk])
-                        pdb.set_trace()
                     assert v.args[kk] == out[kk]
                 out[k] = v.args[k]
         return out
@@ -1319,7 +1310,6 @@ class CompositeArgument(RegisteredClassBase):
         dst._argument_conversions.setdefault(cls._name, [])
         if name not in dst._argument_conversions[cls._name]:
             dst._argument_conversions[cls._name].append(name)
-        # TODO: Add _parameter_inst to dst._external_arg_attributes
 
     @classmethod
     def is_date(cls, x):
@@ -1485,7 +1475,6 @@ class CompositeArgument(RegisteredClassBase):
         return {
             (prefix + k + suffix): v
             for k, v in self.args.items()
-            # if k not in self._defaults_set else None
         }
 
     @property
@@ -1587,14 +1576,13 @@ class OutputArgument(CompositeArgument):
     ]
     _attributes_kwargs = CompositeArgument._attributes_kwargs + [
         'ext', 'base', 'base_string', 'directory',
-        'upstream', 'downstream',
+        'upstream', 'downstream', 'merge_all', 'merge_all_output',
     ]
-    # _attributes_copy = CompositeArgument._attributes_copy + [
-    # ]
 
     def __init__(self, name, args, ext=None, base=None,
                  base_string=None, directory=None,
-                 upstream=None, downstream=None, **kwargs):
+                 upstream=None, downstream=None, merge_all=False,
+                 merge_all_output=None, **kwargs):
         if upstream is None:
             upstream = []
         if downstream is None:
@@ -1606,6 +1594,17 @@ class OutputArgument(CompositeArgument):
         self.upstream = upstream
         self.downstream = downstream
         self.directory = directory
+        self.merge_all = merge_all
+        self.merge_all_output = merge_all_output
+        self.is_unmerged = (
+            getattr(args, 'id', None) == 'all'
+            and merge_all is not True
+        )
+        self.is_merged = (
+            (getattr(args, 'id', None) == 'all'
+             and merge_all is True)
+            or (getattr(args, 'id', None) == merge_all)
+        )
         kwargs.setdefault('description', 'output')
         super(OutputArgument, self).__init__(name, args, **kwargs)
         if 'output' not in self.defaults:
@@ -1725,6 +1724,8 @@ class OutputArgument(CompositeArgument):
             value (str, optional): New value for the generated path.
 
         """
+        if value is False:
+            value = None
         if value is not None:
             assert self.generated
             assert isinstance(value, str)
@@ -1782,13 +1783,22 @@ class OutputArgument(CompositeArgument):
 
         """
         assert self.generated
-        iparts = {}
         assert task is not None and args is not None
         assert self.output_name in task._outputs_local
-        # if task is None:
-        #     task = self.task_class
-        # if args is None:
-        #     args = self.default_args
+        try:
+            fname = self._generate(task, args, wildcards=wildcards)
+        except FilenameGenerationError as e:
+            task.log_class(f"FILENAME GENERATION ERROR: {task} {e}")
+            self.args['dont_write'] = True
+            self.dont_write = True
+            fname = False
+        if reset:
+            assert not wildcards
+            self.reset_generated(value=fname)
+        return fname
+
+    def _generate(self, task, args, wildcards=None):
+        iparts = {}
         for k in ['directory', 'base', 'suffix', 'ext']:
             if k not in iparts and hasattr(task, f'_output_{k}'):
                 iparts[k] = getattr(task, f'_output_{k}')(
@@ -1821,9 +1831,6 @@ class OutputArgument(CompositeArgument):
         if wildcards:
             while '**' in fname:
                 fname = fname.replace('**', '*')
-        if reset:
-            assert not wildcards
-            self.reset_generated(value=fname)
         return fname
 
 
@@ -2220,8 +2227,12 @@ class TimeArgument(AgeArgument):
                      'used for solar light calculations.'),
         }),
     ]
+    _attributes_copy = AgeArgument._attributes_copy + [
+        'ignore_date',
+    ]
 
     def __init__(self, name, args, **kwargs):
+        self.ignore_date = False
         super(TimeArgument, self).__init__(name, args, **kwargs)
         if 'location' not in self.ignore:
             self.setdefaults(['location'])
@@ -2360,7 +2371,8 @@ class TimeArgument(AgeArgument):
             return self.date.replace(month=6, day=21)
         return self.date.replace(month=12, day=21)
 
-    def iteration_args(self, dt=None, include_bookends=False):
+    def iteration_args(self, dt=None, include_bookends=False,
+                       dont_age=False):
         r"""Arguments that should be passed to represent this time
         in an iteration.
 
@@ -2368,6 +2380,7 @@ class TimeArgument(AgeArgument):
             dt (units.Quantity, optional): Time interval to apply.
             include_bookends (bool, optional): If True, the keys in the
                 returned arguments should include the prefix & suffix.
+            dont_age (bool, optional): If True, don't change the age.
 
         Returns:
             dict: Arguments.
@@ -2382,7 +2395,7 @@ class TimeArgument(AgeArgument):
             'time': self.time + utils.quantity2timedelta(dt),
             'date': None,
             'age': None,
-            'planting_date': self.planting_date,
+            'planting_date': None,
         }
         for k in self.argument_names(no_universal=True):
             out.setdefault(k, None)
@@ -2391,13 +2404,21 @@ class TimeArgument(AgeArgument):
                 time=self.solar_time_string,
                 date=(self.date + utils.quantity2timedelta(dt)),
             )
-        if self.crop_age_string and dt_null:
+        if self.crop_age_string and (dt_null or dont_age):
             out.update(
                 age=self.crop_age_string,
             )
-        elif dt_days:
+        elif dont_age:
+            out.update(
+                age=self.age,
+            )
+        elif self.args['age'] is not None:
             out.update(
                 age=(self.age + dt),
+            )
+        else:
+            out.update(
+                planting_date=self.planting_date,
             )
         if not include_bookends:
             return out
@@ -2432,7 +2453,8 @@ class TimeArgument(AgeArgument):
     def string(self):
         r"""str: String representation of the time."""
         out = ''
-        if self.args['location'] is not None:
+        if ((self.args['location'] is not None
+             and self.args['location'] != self._defaults['location'])):
             out += f"{self.args['location']}-"
         if self.is_wildcard(['time', 'date', 'hour', 'year',
                              'timezone']):
@@ -2444,9 +2466,14 @@ class TimeArgument(AgeArgument):
         if self.args['location'] is not None:
             x = x.replace(tzinfo=None)
         if self.solar_time_string:
-            date = self.to_date(x)
-            return date.date().isoformat() + '-' + self.solar_time_string
-        return x.replace(microsecond=0).isoformat().replace(':', '-')
+            if not self.ignore_date:
+                date = self.to_date(x)
+                out += date.date().isoformat() + '-'
+            out += self.solar_time_string
+            return out
+        assert not self.ignore_date  # TODO
+        out += x.replace(microsecond=0).isoformat().replace(':', '-')
+        return out
 
     @cached_property
     def date(self):
@@ -2646,10 +2673,6 @@ class SubparserBase(RegisteredClassBase):
             if idest in modifications:
                 iargs, ikwargs = SubparserBase._modify_argument(
                     (iargs, ikwargs), **modifications[idest])
-            # ikwargs.setdefault('subparsers', {})
-            # ikwargs['subparsers'].setdefault(cls._registry_key,
-            #                                  [cls._name])
-            # parser.add_argument(*iargs, **ikwargs)
             try:
                 subparser.add_argument(*iargs, **ikwargs)
             except argparse.ArgumentError:
@@ -2691,10 +2714,7 @@ class SubparserBase(RegisteredClassBase):
         kws = dict(
             cls._composite_arguments.get(base, {}).get(k, {}), **kwargs
         )
-        out = arg_class.from_args(k, args, **kws)
-        # if base in ['age', 'time']:
-        #     out.ensure_parameter_inst(args)
-        return out
+        return arg_class.from_args(k, args, **kws)
 
     @classmethod
     def arg2dest(cls, iargs, ikwargs):
@@ -2958,6 +2978,9 @@ class TaskBase(SubparserBase):
 
     Args:
         args (argparse.Namespace): Parsed arguments.
+        root (TaskBase, optional): Top level task.
+        cached_outputs (dict, optional): Outputs that have been cached in
+            memory.
         regenerate_output (bool, optional): If True, regenerate output
             file names.
 
@@ -3010,8 +3033,8 @@ class TaskBase(SubparserBase):
             return
         cls._build_arguments(cls)
 
-    def __init__(self, args, regenerate_output=False, dont_adjust=False,
-                 dont_reset=False, root=None, cached_outputs=None):
+    def __init__(self, args, root=None, cached_outputs=None,
+                 regenerate_output=False):
         if root is None:
             root = self
         self.root = root
@@ -3026,22 +3049,22 @@ class TaskBase(SubparserBase):
         self.external_tasks = {}
         super(TaskBase, self).__init__()
         self.args = args
-        # self.log(f'EXTERNAL_TASKS: {list(self._external_tasks.keys())}',
-        #          force=True)
         for cls in self._external_tasks.keys():
             if cls._name in self.external_tasks:
                 continue
             else:
                 self.external_tasks[cls._name] = cls(
                     self.args, root=self.root,
-                    dont_adjust=True, dont_reset=True,
                 )
-        if not dont_adjust:
+        if self.is_root:
             args._parameter_inst_function = self.get_parameter_inst
             self.adjust_args(self.args)
-        if not dont_reset:
-            # self.ensure_parameter_inst()
             self.reset_outputs(regenerate=regenerate_output)
+
+    @property
+    def is_root(self):
+        r"""bool: True if this is the root task."""
+        return (self.root is self)
 
     @classmethod
     def adjust_args(cls, args, skip_external=False, only_external=False):
@@ -3070,7 +3093,7 @@ class TaskBase(SubparserBase):
              ParametrizeCropTask: Instance that parametrizes geometries.
 
         """
-        return self.root._get_output_task(self, 'parametrize')
+        return self.output_task('parametrize', from_root=True)
 
     @classmethod
     def adjust_args_internal(cls, args):
@@ -3142,6 +3165,8 @@ class TaskBase(SubparserBase):
                         x for x in v.argument_names(kk, no_universal=True)
                         if x not in args_changing
                     ]
+        if 'id' not in args_changing:
+            args_external += ['_parameter_inst_function']
         out = {}
         for k, props in cls.argument_dict(
                 include_subparser='explicit').items():
@@ -3177,9 +3202,6 @@ class TaskBase(SubparserBase):
             assert not initialize
             return out
         kws = out
-        # if use_parse:
-        #     kws = {k: v for k, v in kws.items() if v is not None}
-        #     out = parse(**kws)
         out = argparse.Namespace()
         for k, v in kws.items():
             setattr(out, k, v)
@@ -3422,7 +3444,24 @@ class TaskBase(SubparserBase):
             object: Contents of the output file.
 
         """
-        raise NotImplementedError
+        ext = os.path.splitext(fname)[-1]
+        if ext == '.json':
+            with open(fname, 'r') as fd:
+                return rapidjson.load(fd)
+        elif ext == '.csv':
+            return utils.read_csv(fname, verbose=args.verbose)
+        elif ext in ['.obj', '.ply']:
+            return utils.read_3D(
+                fname, file_format=getattr(args, 'mesh_format', None),
+                verbose=args.verbose,
+                # include_units=getattr(args, 'include_units', False),
+            )
+        elif ext == '.png':
+            return utils.read_png(fname, verbose=args.verbose)
+        elif ext in ['.lpy']:
+            with open(fname, 'r') as fd:
+                return fd.read()
+        raise NotImplementedError(f'{name}: {fname}')
 
     def read_output(self, name=None):
         r"""Load an output file produced by this task.
@@ -3454,7 +3493,33 @@ class TaskBase(SubparserBase):
             output (object): Output object to write to file.
 
         """
-        raise NotImplementedError
+        ext = os.path.splitext(fname)[-1]
+        if ext == '.json':
+            assert output
+            with open(fname, 'w') as fd:
+                rapidjson.dump(output, fd,
+                               write_mode=rapidjson.WM_PRETTY)
+            return
+        elif ext == '.csv':
+            utils.write_csv(output, fname, verbose=args.verbose)
+            return
+        elif ext in ['.obj', '.ply']:
+            utils.write_3D(output, fname,
+                           file_format=args.mesh_format,
+                           verbose=args.verbose)
+            return
+        elif ext == '.png':
+            from matplotlib.figure import Figure
+            if isinstance(output, Figure):
+                output.savefig(fname, dpi=300)
+                return
+            utils.write_png(output, fname, verbose=args.verbose)
+            return
+        elif ext in ['.lpy']:
+            with open(fname, 'w') as fd:
+                fd.write(output)
+            return
+        raise NotImplementedError(f'{name}: {fname}')
 
     def write_output(self, name, output, overwrite=False):
         r"""Write to an output file.
@@ -3483,6 +3548,25 @@ class TaskBase(SubparserBase):
             task._write_output(task.args, name, fname, output)
 
         return self._call_output_task(self, _write_output, name)
+
+    def output_task(self, name, default=NoDefault, from_root=False):
+        r"""Get the task instance responsible for producing an output.
+
+        Args:
+            name (str): Name of output to get task for.
+            default (object, optional): Value to return if the task
+                instance cannot be located.
+            from_root (bool, optional): If True, start from the root
+                task.
+
+        Returns:
+            TaskBase: Task that produces the output.
+
+        """
+        if from_root:
+            return self.root._get_output_task(self.root, name,
+                                              default=default)
+        return self._get_output_task(self, name, default=default)
 
     @classmethod
     def get_output_task(cls, name, default=NoDefault):
@@ -3627,7 +3711,7 @@ class TaskBase(SubparserBase):
 
         def _output_enabled(task, name):
             output = getattr(args, f'output_{name}')
-            if for_write and output.dont_write:
+            if for_write and (output.dont_write or output.is_unmerged):
                 return False
             return output.enabled
 
@@ -3716,15 +3800,69 @@ class TaskBase(SubparserBase):
         return self._output_names(self.args, **kwargs)
 
     @classmethod
-    def _make_suffix(cls, args, name, value=NoDefault, prefix='_',
-                     suffix='', cond=NoDefault, noteq=NoDefault,
-                     default=NoDefault, title=False, conv=NoDefault,
-                     wildcards=None):
+    def _make_suffix_set(cls, args, names, set_sep=NoDefault,
+                         set_prefix='_', set_suffix='',
+                         wildcards=None, skip=None, **kwargs):
+        r"""Create a suffix by combining multiple arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            names (list): Argument names.
+            set_sep (str, optional): Separator to use between arguments.
+            set_prefix (str, optional): Prefix to use before set suffix.
+            set_suffix (str, optional): Suffix to use after set suffix.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
+            **kwargs: Additional keyword arguments are passed to
+                _make_suffix. If different values for these keywords are
+                required for each argument, a dictionary should be
+                provided.
+
+        Returns:
+            str: Generated suffix.
+
+        """
+        kwargs.setdefault('prefix', '')
+        kwargs.setdefault('suffix', '')
+        for k in list(kwargs.keys()):
+            if not isinstance(kwargs.get(k, NoDefault), dict):
+                kwargs[k] = {name: kwargs.get(k, NoDefault)
+                             for name in names}
+        values = []
+        for name in names:
+            ikws = {k: v[name] for k, v in kwargs.items()}
+            ivalue = cls._make_suffix(
+                args, name, wildcards=wildcards, skip=skip, **ikws
+            )
+            if ivalue == '*':
+                return '*'
+            values.append(ivalue)
+        if not any(values):
+            return ''
+        if any(values) and not all(values):
+            for i in range(len(values)):
+                if values[i]:
+                    continue
+                ikws = {k: v[name] for k, v in kwargs.items()}
+                ikws.update(cond=True, noteq=NoDefault)
+                values[i] = cls._make_suffix(
+                    args, name, wildcards=wildcards, skip=skip, **ikws
+                )
+        if set_sep is NoDefault:
+            set_sep = '_'
+        return set_prefix + set_sep.join(values) + set_suffix
+
+    @classmethod
+    def _make_suffix(cls, args, name, value=NoDefault, prefix=NoDefault,
+                     suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
+                     default=NoDefault, title=NoDefault, conv=NoDefault,
+                     sep=NoDefault, wildcards=None, skip=None):
         r"""Create a suffix associated with an argument.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str): Argument name.
+            name (str, list): Argument name(s).
             value (object, optional): Value to use in the suffix when
                 the argument is set.
             prefix (str, optional): Prefix to use with value.
@@ -3739,16 +3877,27 @@ class TaskBase(SubparserBase):
                 value.
             conv (callable, optional): Function that should be used to
                 convert the argument value to a string.
+            sep (str, optional): Separator to use between list/array
+                arguments.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Generated suffix.
 
         """
         assert name is not None
+        if skip is not None and name in skip:
+            return ''
         if wildcards and name in wildcards:
             return '*'
+        if prefix is NoDefault:
+            prefix = '_'
+        if suffix is NoDefault:
+            suffix = ''
+        if title is NoDefault:
+            title = False
         if not hasattr(args, name):
             if wildcards and name in wildcards:
                 value0 = None
@@ -3780,9 +3929,21 @@ class TaskBase(SubparserBase):
             value = default
         if conv is not NoDefault:
             value = conv(value)
+
+        def float2str(x):
+            # Allow precision?
+            # TODO: Handle arithmetic operators
+            if isinstance(x, (float, units.Quantity)):
+                return str(x).replace('.', 'p').replace(' ', '')
+            return str(x)
+
+        if ((isinstance(value, (list, np.ndarray, units.QuantityArray))
+             and sep is not NoDefault)):
+            value = sep.join([float2str(x) for x in value])
         if not isinstance(value, str):
-            value = str(value)
-        if any(x in value for x in ',:[](){};\"\'<>'):
+            value = float2str(value)
+        if ((any(x in value for x in ',:[](){};\"\'<>/+ ')
+             or ((not wildcards) and '*' in value))):
             raise SuffixGenerationError(
                 f'{name} contains invalid characters: {value}'
             )
@@ -3854,36 +4015,25 @@ class TaskBase(SubparserBase):
         """
 
         def _output_file(task, name):
-            try:
-                if ((copy_args
-                     or getattr(args, f'output_{name}', None) is None)):
-                    args_local = task.copy_external_args(
-                        args, initialize=True,
-                        args_external=[
-                            '_parameter_inst', '_parameter_inst_function',
-                        ],
-                    )
-                else:
-                    args_local = args
-                output = getattr(args_local, f'output_{name}')
-                # if output is None:
-                #     output = cls._convert_composite(
-                #         args, f'output_{name}', base='output',
-                #     )
-                if not output.generated:
-                    cls.log_class(f'Filename for \"{name}\" output '
-                                  f'was not generated: {output.path}')
-                    assert output.generated
-                    return output.path
-                if output.path and not (regenerate or wildcards):
-                    return output.path
-                if (not return_disabled) and (not output.enabled):
-                    return False
-                return output.generate(task, args_local,
-                                       wildcards=wildcards)
-            except FilenameGenerationError as e:
-                cls.log_class(f"FILENAME GENERATION ERROR: {task} {e}")
+            if ((copy_args
+                 or getattr(args, f'output_{name}', None) is None)):
+                args_local = task.copy_external_args(
+                    args, initialize=True,
+                )
+            else:
+                args_local = args
+            output = getattr(args_local, f'output_{name}')
+            if not output.generated:
+                cls.log_class(f'Filename for \"{name}\" output '
+                              f'was not generated: {output.path}')
+                assert output.generated
+                return output.path
+            if output.path and not (regenerate or wildcards):
+                return output.path
+            if (not return_disabled) and (not output.enabled):
                 return False
+            return output.generate(task, args_local,
+                                   wildcards=wildcards)
 
         return cls._call_output_task(cls, _output_file, name)
 
@@ -3987,7 +4137,6 @@ class TaskBase(SubparserBase):
             output = task._output_file(args, name, return_disabled=True,
                                        wildcards=wildcards,
                                        copy_args=copy_args)
-            # cls.log_class(f'Remove \"{name}\": {output}')
             if output:
                 if wildcards:
                     files = glob.glob(output)
@@ -3995,7 +4144,8 @@ class TaskBase(SubparserBase):
                         cls.log_class(
                             f'Removing existing \"{name}\" outputs:\n'
                             f'{pprint.pformat(files)}')
-                        pdb.set_trace()
+                        if not utils.input_yes_or_no("Remove file(s)?"):
+                            return
                         for x in files:
                             os.remove(x)
                 else:
@@ -4003,7 +4153,8 @@ class TaskBase(SubparserBase):
                         cls.log_class(
                             f'Removing existing \"{name}\" output: '
                             f'{output}')
-                        pdb.set_trace()
+                        if not utils.input_yes_or_no("Remove file?"):
+                            return
                         os.remove(output)
             if not skip_downstream:
                 task._remove_downstream(args, name, wildcards=wildcards)
@@ -4059,7 +4210,7 @@ class TaskBase(SubparserBase):
             self.reset_output(name, regenerate=regenerate)
         for task in self.external_tasks.values():
             task.reset_outputs(regenerate=regenerate)
-        if self.root is self:
+        if self.is_root:
             for k in list(self._cached_outputs.keys()):
                 if not os.path.isfile(k):
                     self._cached_outputs.pop(k)
@@ -4083,19 +4234,23 @@ class TaskBase(SubparserBase):
         if ((output.enabled and output.generated
              and (regenerate or (not output.path)))):
             fname = output.generate(self, self.args, reset=True)
-            # self.log(f'Generated \"{name}\" path: {output.path}', force=True)
+            # self.log(f'Generated \"{name}\" path: {output.path}',
+            #          force=True)
         else:
             fname = output.path
-        overwrite = output.overwrite
-        if fname and not (name in task._outputs or output.exists
-                          or output.dont_write):
+        if output.overwrite:
+            wildcards = []
+            if output.is_merged or output.is_unmerged:
+                wildcards.append('id')
+            task._outputs.pop(name, None)
+            task.remove_output(name, wildcards=wildcards)
+        elif fname and not (name in task._outputs or output.exists
+                            or output.dont_write
+                            or output.is_unmerged):
             # self.log(f'Output \"{name}\" does not exist, removing '
             #          f'downstream files ({fname}) '
             #          f'isfile = {os.path.isfile(fname)}', force=True)
-            overwrite = True
-        if overwrite:
-            task._outputs.pop(name, None)
-            task.remove_output(name)
+            task.remove_downstream(name)
         output.clear_overwrite(task.args)
 
     # Methods for executing a run
@@ -4162,6 +4317,52 @@ class TaskBase(SubparserBase):
             object: Generated output.
 
         """
+        output = getattr(self.args, f'output_{name}')
+        if output.is_merged or output.is_unmerged:
+            assert self.args.output_generate.generated
+            over = {'id': self.output_task('generate').all_ids}
+            merge_all = output.is_merged
+            merge_all_output = output.merge_all_output
+            if merge_all_output is None:
+                merge_all_output = name
+            out = OrderedDict()
+            i = 0
+            for x in self.run_series(over=over):
+                if merge_all:
+                    out[over['id'][i]] = x.get_output(merge_all_output)
+                i += 1
+            if merge_all:
+                out = self._merge_output(name, out)
+            else:
+                out = None
+        else:
+            out = self._generate_output(name)
+        self.set_output(name, out)
+        return out
+
+    def _generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        raise NotImplementedError
+
+    def _merge_output(self, name, output):
+        r"""Merge the output for multiple IDs.
+
+        Args:
+            name (str): Name of the output to generate.
+            output (dict): Mapping from ID to the output for each ID.
+
+        Returns:
+            object: Generated output.
+
+        """
         raise NotImplementedError
 
     def run(self, output_name=None):
@@ -4184,11 +4385,7 @@ class TaskBase(SubparserBase):
             assert getattr(self.args, f'overwrite_{k}') is False
             if not self.output_exists(k):
                 self.get_output(k)
-                # self.log(f'Generating \"{k}\"', force=True)
-                # self.generate_output(k)
                 assert self.output_exists(k)
-            # else:
-            #     self.log(f'Output \"{k}\" already exists', force=True)
         if output_name == 'instance':
             return self
         return self.get_output(output_name)
@@ -4208,11 +4405,11 @@ class TaskBase(SubparserBase):
         """
         if cls is None:
             cls = type(self)
-        kwargs.setdefault('root', self.root)
+        kwargs.setdefault('cached_outputs', self._cached_outputs)
         return cls.run_iteration_class(self.args, **kwargs)
 
     @classmethod
-    def run_iteration_class(cls, args, args_external=None, **kwargs):
+    def run_iteration_class(cls, args, **kwargs):
         r"""Run an iteration, regenerating output file names.
 
         Args:
@@ -4221,13 +4418,18 @@ class TaskBase(SubparserBase):
                 run_class.
 
         Returns:
-            object: Result of the run.
+            object: Result of the run (defaults to the task instance).
 
         """
+        kwargs.setdefault('output_name', 'instance')
         kwargs.setdefault('regenerate_output', True)
-        if args_external is None:
-            args_external = ['_parameter_inst']
-        return cls.run_class(args, args_external=args_external, **kwargs)
+        while True:
+            try:
+                return cls.run_class(args, **kwargs)
+            except RepeatIterationError as e:
+                kwargs['args_overwrite'] = dict(
+                    kwargs.get('args_overwrite', {}),
+                    **e.args_overwrite)
 
     @classmethod
     def run_class(cls, args, output_name=None, args_preserve=None,
@@ -4270,22 +4472,43 @@ class TaskBase(SubparserBase):
 
         """
         assert isinstance(other, type(self))
+        copied = []
         for k in self._outputs_local:
-            if ((self.output_file(k, return_disabled=True)
-                 != other.output_file(k, return_disabled=True)
+            self_fname = self.output_file(k, return_disabled=True)
+            other_fname = other.output_file(k, return_disabled=True)
+            if (((not self_fname)
+                 or self_fname != other_fname
                  or k in self._outputs
                  or k not in other._outputs)):
                 continue
             self._outputs[k] = other._outputs[k]
-            # if k != 'parametrize':
-            #     self.log(f'Copied output \"{k}\" from other', force=True)
-            #     pdb.set_trace()
+            copied.append(k)
         for k, v in self.external_tasks.items():
             vother = other.external_tasks[k]
             v.copy_matching_outputs(vother)
 
+    def run_series(self, cls=None, **kwargs):
+        r"""Run the process for a series of arguments.
+
+        Args:
+            cls (type, optional): Task class that should be run in
+                iteration. Defaults to the type of the current task.
+            **kwargs: Additional keyword arguments are passed to
+                cls.run_series_class.
+
+        Yields:
+            object: Results from each step.
+
+        """
+        if cls is None:
+            cls = type(self)
+        kwargs.setdefault('cached_outputs', self._cached_outputs)
+        for x in cls.run_series_class(self.args, **kwargs):
+            yield x
+
     @classmethod
-    def run_series(cls, args, over=None, per_iter=None, **kwargs):
+    def run_series_class(cls, args, over=None, per_iter=None,
+                         args_overwrite=None, **kwargs):
         r"""Run the process for a series of arguments.
 
         Args:
@@ -4295,6 +4518,7 @@ class TaskBase(SubparserBase):
             per_iter (dict, optional): Dictionary of argument values that
                 should be added for each iteration. This can be updated
                 between iterations.
+            args_overwrite (dict, optional): Arguments to overwrite.
             **kwargs: Additional keyword arguments are passed to
                 cls.run_iteration.
 
@@ -4302,39 +4526,31 @@ class TaskBase(SubparserBase):
             object: Results from each step.
 
         """
-        if over is None:
-            if per_iter:
-                kwargs['args_overwrite'] = dict(
-                    kwargs.get('args_overwrite', {}), **per_iter)
-            yield cls.run_iteration_class(args, **kwargs)
+        if per_iter is None:
+            per_iter = {}
+        if args_overwrite is None:
+            args_overwrite = {}
+        if not over:
+            yield cls.run_iteration_class(
+                args, args_overwrite=dict(args_overwrite, **per_iter),
+                **kwargs
+            )
             return
-        step_output = f'output_{cls._name}'
-        args_overwrite = copy.deepcopy(kwargs.pop('args_overwrite', {}))
-        args_preserve = copy.deepcopy(kwargs.pop('args_preserve', []))
         keys = list(over.keys())
         for k in keys:
             if not isinstance(over[k], list):
                 over[k] = [over[k]]
-        args_overwrite[step_output] = True
-        values = itertools.product(*[over[k] for k in keys])
-        print("STARTING LOOP")
-        for x in values:
+        cls.log_class(f"STARTING LOOP OVER: {keys}")
+        for x in itertools.product(*[over[k] for k in keys]):
+            iargs_overwrite = dict(args_overwrite, **per_iter)
+            iargs_overwrite[f'output_{cls._name}'] = True
             for k, v in zip(keys, x):
-                args_overwrite[k] = v
-            print("ITERATION", {k: v for k, v in zip(keys, x)})
-            iargs_overwrite = copy.deepcopy(args_overwrite)
-            if per_iter is not None:
-                iargs_overwrite.update(**per_iter)
-            repeat = True
-            while repeat:
-                try:
-                    yield cls.run_iteration_class(
-                        args, args_overwrite=iargs_overwrite,
-                        args_preserve=args_preserve, **kwargs
-                    )
-                    repeat = False
-                except RepeatIterationError as e:
-                    iargs_overwrite.update(e.args_overwrite)
+                iargs_overwrite[k] = v
+            cls.log_class(f'ITERATION: {dict(zip(keys, x))}')
+            yield cls.run_iteration_class(
+                args, args_overwrite=iargs_overwrite,
+                **kwargs
+            )
 
     @cached_property
     def figure(self):
@@ -4460,9 +4676,7 @@ class IterationTaskBase(TaskBase):
         for args_overwrite in self.step_args():
             iargs_overwrite = copy.deepcopy(args_overwrite)
             pprint.pprint(iargs_overwrite)
-            # pdb.set_trace()
-            repeat = True
-            while repeat:
+            while True:
                 try:
                     x = self.run_iteration(
                         cls=self._step_task,
@@ -4472,13 +4686,15 @@ class IterationTaskBase(TaskBase):
                     )
                     self._step_results.append(self.finalize_step(x))
                     if isinstance(x, TaskBase):
+                        del x_prev
                         x_prev = x
-                    repeat = False
+                        gc.collect()
+                    break
                 except RepeatIterationError as e:
                     iargs_overwrite.update(e.args_overwrite)
         return self._step_results
 
-    def generate_output(self, name):
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -4489,18 +4705,18 @@ class IterationTaskBase(TaskBase):
 
         """
         if name != self._name:
-            return super(IterationTaskBase, self).generate_output(name)
+            return super(IterationTaskBase, self)._generate_output(name)
         if self._step_task is None:
             raise NotImplementedError
         if hasattr(self._step_task, 'adjust_args_step'):
             self._step_task.adjust_args_step(self.args, self._step_vary)
-        out = self.join_steps(self.run_steps())
-        self.set_output(self._name, out)
+        return self.join_steps(self.run_steps())
 
 
 class OptimizationTaskBase(IterationTaskBase):
     r"""Base class for tasks that iterate to achieve a result."""
 
+    _final_outputs = []
     _arguments = [
         (('--vary', ), {
             'type': str,
@@ -4509,10 +4725,6 @@ class OptimizationTaskBase(IterationTaskBase):
         (('--goal', ), {
             'help': 'Goal of the optimization.',
         }),
-        # (('--max-steps', ), {
-        #     'type': int,
-        #     'help': 'Maximum number of steps to perform',
-        # }),
         (('--method', ), {
             'type': str, 'choices': ['nelder-mead', 'powell'],
             'default': 'nelder-mead',
@@ -4526,8 +4738,24 @@ class OptimizationTaskBase(IterationTaskBase):
         }),
     ]
 
+    @staticmethod
+    def _on_registration(cls):
+        for k in cls._final_outputs:
+            kcls = cls.get_output_task(k)
+            cls._output_info.setdefault(
+                k, {
+                    'base': cls._name,
+                    'ext': kcls._output_info[k]['ext'],
+                    'description': kcls._output_info[k]['description'],
+                    'optional': True,
+                }
+            )
+        IterationTaskBase._on_registration(cls)
+        if cls._step_task is not None:
+            cls._output_info[cls._name].setdefault('ext', '.json')
+
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -4536,6 +4764,7 @@ class OptimizationTaskBase(IterationTaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -4543,53 +4772,16 @@ class OptimizationTaskBase(IterationTaskBase):
         """
         out = ''
         out += cls._make_suffix(
-            args, 'vary', wildcards=wildcards,
+            args, 'goal', wildcards=wildcards, skip=skip,
         )
         out += cls._make_suffix(
-            args, 'goal', wildcards=wildcards,
+            args, 'vary', prefix='_vs_', wildcards=wildcards, skip=skip,
         )
         out += cls._make_suffix(
-            args, 'method', noteq='nelder-mead', wildcards=wildcards,
+            args, 'method', noteq='nelder-mead',
+            wildcards=wildcards, skip=skip,
         )
         return out
-
-    @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        if name != cls._name:
-            return super(OptimizationTaskBase, cls)._read_output(
-                args, name, fname)
-        with open(fname, 'r') as fd:
-            return rapidjson.load(fd)
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        if name != cls._name:
-            super(OptimizationTaskBase, cls)._write_output(
-                args, name, fname, output)
-            return
-        with open(fname, 'w') as fd:
-            rapidjson.dump(output, fd,
-                           write_mode=rapidjson.WM_PRETTY)
 
     def reset_outputs(self, regenerate=False):
         r"""Remove existing files that should be overwritten.
@@ -4610,6 +4802,21 @@ class OptimizationTaskBase(IterationTaskBase):
         # TODO: Fix units
         return parse_quantity(self.args.goal)
 
+    @cached_property
+    def goal_units(self):
+        r"""str: Goal units."""
+        if isinstance(self.goal, units.Quantity):
+            return str(self.goal.units)
+        return None
+
+    @cached_property
+    def vary_units(self):
+        r"""str: Units of argument to vary."""
+        x = getattr(self.args, self.args.vary)
+        if isinstance(x, units.Quantity):
+            return str(x.units)
+        return None
+
     def objective(self, x):
         r"""Objective function for use with scipy.optimize.minimize.
 
@@ -4622,28 +4829,32 @@ class OptimizationTaskBase(IterationTaskBase):
         """
         assert len(x) == 1
         iargs_overwrite = {
-            self.args.vary: x[0]
+            self.args.vary: parse_quantity(x[0], self.vary_units)
         }
-        for k in self._step_task._outputs_local:
+        # TODO: Does this work?
+        for k in self._step_task._outputs_total:
             iargs_overwrite[f'dont_write_{k}'] = True
         repeat = True
         out = None
         while repeat:
             try:
+                self.log(f'OBJECTIVE:\n{pprint.pformat(iargs_overwrite)}',
+                         force=True)
                 x = self.run_iteration(
                     cls=self._step_task,
                     args_overwrite=iargs_overwrite,
-                    output_name='instance',
                     copy_outputs_from=self._prev_instance,
                 )
-                out = self.finalize_step(x)
+                result = self.finalize_step(x)
                 if self.goal == 'minimize':
-                    pass
+                    out = result
                 elif self.goal == 'maximize':
-                    out = -out
+                    out = -result
                 else:
                     out = np.abs(float(
-                        (out - self.goal) / self.goal))
+                        (result - self.goal) / self.goal))
+                self.log(f'OBJECTIVE RESULT: {out} ({result})',
+                         force=True)
                 self._prev_instance = x
                 repeat = False
             except RepeatIterationError as e:
@@ -4662,7 +4873,9 @@ class OptimizationTaskBase(IterationTaskBase):
 
         """
         from scipy.optimize import minimize
+        self.goal  # Initialize
         x0 = np.array([getattr(self.args, self.args.vary)])
+        self._prev_instance = None
         res = minimize(
             self.objective, x0, method=self.args.method,
             tol=self.args.tolerance,
@@ -4675,6 +4888,44 @@ class OptimizationTaskBase(IterationTaskBase):
             self.args.vary: res.x[0],
         }
         return out
+
+    def final_output_args(self, name):
+        r"""Get the arguments that should be used generate the final
+        output.
+
+        Args:
+            name (str): Name of the final output to generate.
+
+        Returns:
+            dict: Arguments to use.
+
+        """
+        return {}
+
+    def _generate_output(self, name, output_name=None):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name in self._final_outputs:
+            if output_name is None:
+                output_name = name
+            cls = self.get_output_task(name)
+            args_overwrite = dict(
+                self.get_output(self._name),
+                **self.final_output_args(name)
+            )
+            return self.run_iteration(
+                cls=cls,
+                args_overwrite=args_overwrite,
+                output_name=output_name,
+            )
+        return super(OptimizationTaskBase, self)._generate_output(name)
 
 
 class TemporalTaskBase(IterationTaskBase):
@@ -4716,6 +4967,14 @@ class TemporalTaskBase(IterationTaskBase):
                      'provided, a step interval of 1 hour will be '
                      'used.'),
         }),
+        (('--dont-age', ), {
+            'action': 'store_true',
+            'help': (
+                'Don\' age the generated scene. Currently this is set '
+                'to true if the start and end date are the same, but '
+                'this may change in the future.'
+            )
+        }),
     ]
 
     @classmethod
@@ -4732,6 +4991,7 @@ class TemporalTaskBase(IterationTaskBase):
             if args.duration is None and (args.step_interval is None
                                           or args.step_count is None):
                 if args.start_time.crop_age_string == 'planting':
+                    assert not args.dont_age
                     args.stop_age = 'maturity'
                     args.planting_date = args.start_time.date
                     if args.start_time.solar_time_string:
@@ -4762,13 +5022,6 @@ class TemporalTaskBase(IterationTaskBase):
                 hour=0, minute=0, microsecond=0)
             cls._convert_composite(args, 'stop_time', base='time',
                                    overwrite=True)
-        start_time_str = args.start_time.string
-        stop_time_str = args.stop_time.string
-        if start_time_str and stop_time_str:
-            start_parts = start_time_str.rsplit('-', 1)
-            stop_parts = stop_time_str.rsplit('-', 1)
-            if start_parts[0] == stop_parts[0]:
-                args.stop_time.string = stop_parts[-1]
         assert args.stop_time.time > args.start_time.time
         duration = args.stop_time.time - args.start_time.time
         duration = utils.timedelta2quantity(duration)
@@ -4783,9 +5036,12 @@ class TemporalTaskBase(IterationTaskBase):
         elif not args.step_interval:
             args.step_interval = duration / args.step_count
         args.start_time.update_args(args, name='time')
+        # TODO: Update this?
+        if args.start_time.date == args.stop_time.date:
+            args.dont_age = True
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -4794,13 +5050,16 @@ class TemporalTaskBase(IterationTaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
 
         """
+        if args.stop_time.date == args.start_time.date:
+            args.stop_time.ignore_date = True
         return cls._make_suffix(
-            args, 'stop_time', wildcards=wildcards,
+            args, 'stop_time', wildcards=wildcards, skip=skip,
         )
 
     def step_args(self):
@@ -4811,16 +5070,11 @@ class TemporalTaskBase(IterationTaskBase):
             dict: Step arguments.
 
         """
-        constant_age = None
-        if ((self.args.start_time.crop_age_string
-             == self.args.stop_time.crop_age_string)):
-            constant_age = self.args.start_time.crop_age_string
         dt = self.args.step_interval
         iargs = None
         for i in range(self.args.step_count):
-            iargs = self.args.start_time.iteration_args(i * dt)
-            if constant_age is not None:
-                iargs['age'] = constant_age
+            iargs = self.args.start_time.iteration_args(
+                i * dt, dont_age=self.args.dont_age)
             yield iargs
         time = TimeArgument.from_kwargs(None, iargs)
         if time.time < self.args.stop_time.time:

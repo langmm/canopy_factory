@@ -5,10 +5,12 @@ from yggdrasil import units, rapidjson
 from canopy_factory import utils
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_axis, parse_color,
-    get_class_registry, UnitSet,
+    get_class_registry, UnitSet, NoDefault,
     cached_property, readonly_cached_property,
 )
-from canopy_factory.cli import TaskBase, TimeArgument
+from canopy_factory.cli import (
+    TaskBase, TimeArgument,
+)
 from canopy_factory.crops import (
     monocot, maize,
     dicot,
@@ -94,8 +96,19 @@ class ParametrizeCropTask(TaskBase):
             UnitSet.add_unit_arguments(cls, k, **v)
         TaskBase._on_registration(cls)
 
+    def __init__(self, *args, **kwargs):
+        super(ParametrizeCropTask, self).__init__(*args, **kwargs)
+        if ((isinstance(self.args.id, str)
+             and self.args.id.startswith('all') and not self.is_root)):
+            self.args = copy.deepcopy(self.args)
+            self.args.id = self.generator_class.ids_from_file(
+                self.args.data)[0]
+            self.adjust_args(self.args)
+            self.reset_outputs(regenerate=kwargs.get(
+                'regenerate_output', False))
+
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -104,6 +117,7 @@ class ParametrizeCropTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -111,51 +125,15 @@ class ParametrizeCropTask(TaskBase):
         """
         suffix = ''
         suffix += cls._make_suffix(
-            args, 'crop', cond=True, prefix='', wildcards=wildcards,
+            args, 'crop', cond=True, prefix='',
+            wildcards=wildcards, skip=skip,
         )
         if name == 'lpy_model':
             return suffix
         suffix += cls._make_suffix(
-            args, 'id', cond=True, wildcards=wildcards,
+            args, 'id', cond=True, wildcards=wildcards, skip=skip,
         )
         return suffix
-
-    @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        if name == 'lpy':
-            with open(fname, 'r') as fd:
-                return fd.read()
-        with open(fname, 'r') as fd:
-            return rapidjson.load(fd)
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        if name == 'lpy_model':
-            with open(fname, 'w') as fd:
-                fd.write(output)
-            return
-        with open(fname, 'w') as fd:
-            rapidjson.dump(output, fd, write_mode=rapidjson.WM_PRETTY)
 
     @cached_property
     def generator_class(self):
@@ -308,7 +286,7 @@ class ParametrizeCropTask(TaskBase):
         with open(self.output_file('lpy_model'), 'w') as fd:
             fd.write('\n'.join(contents))
 
-    def generate_output(self, name):
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -319,11 +297,10 @@ class ParametrizeCropTask(TaskBase):
 
         """
         if name == 'lsystem':
-            self.set_output('lpy_model', self.generator.lsystem)
+            return self.generator.lsystem
         elif name == 'parametrize':
-            self.set_output('parametrize', self.generate_parameters())
-        else:
-            super(ParametrizeCropTask, self).generate_output(name)
+            return self.generate_parameters()
+        super(ParametrizeCropTask, self)._generate_output(name)
 
 
 class LayoutTask(TaskBase):
@@ -378,6 +355,24 @@ class LayoutTask(TaskBase):
             'type': int,
             'help': 'Number of plants to generate in each row',
         }),
+        # (('--match-id', ), {
+        #     'type': str, 'nargs': '?', 'const': True,
+        #     'help': ('Match the \"--match-goal\" raytraced value '
+        #              'for this ID by varying the \"--match-vary\" '
+        #              'argument.'),
+        # }),
+        # (('--match-goal', ), {
+        #     'type': str, 'default': 'flux_per_area',
+        #     'help': ('Raytraced property that should be matched to '
+        #              '\"--match-id\" by varying \"--match-vary\" '
+        #              'argument.'),
+        # }),
+        # (('--match-vary', ), {
+        #     'type': str, 'default': 'row_spacing',
+        #     'help': ('Argument that should be varied in order to match '
+        #              'the raytraced property from \"--match-goal\" to '
+        #              '\"--match-id\".'),
+        # }),
         (('--row-spacing', ), {
             'type': parse_quantity, 'default': 76.2, 'units': 'cm',
             'help': 'Space between adjacent rows in plot (in cm)',
@@ -407,7 +402,7 @@ class LayoutTask(TaskBase):
                      'that is infinitely wide')
         }),
         (('--periodic-canopy-count', ), {
-            'type': int, 'default': 2,
+            'type': int,
             'help': ('Number of times the canopy should be repeated in '
                      'each direction'),
         }),
@@ -458,34 +453,6 @@ class LayoutTask(TaskBase):
     ]
 
     @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        return utils.read_png(fname, verbose=args.verbose)
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        output.savefig(fname, dpi=300)
-
-    @classmethod
     def _convert_mesh_units(cls, args, k, v):
         if isinstance(args.mesh_units, str):
             args.mesh_units = units.Units(args.mesh_units)
@@ -505,6 +472,8 @@ class LayoutTask(TaskBase):
             args.nrows = 1
             args.ncols = 1
         else:
+            if args.periodic_canopy_count is None:
+                args.periodic_canopy_count = 2
             if args.plot_width is None:
                 args.plot_width = args.nrows * args.row_spacing
             if args.plot_length is None:
@@ -524,9 +493,24 @@ class LayoutTask(TaskBase):
                 args.axis_cols,
                 args.axis_up,
             ])
+            if args.periodic_canopy_count is None:
+                assert args.canopy == 'single'
+                periodic_canopy_count = 2
+                nrows = 4
+                ncols = int(args.plot_length / args.plant_spacing)
+                args.periodic_canopy_count_array = np.array([
+                    periodic_canopy_count * nrows,
+                    periodic_canopy_count * ncols,
+                    0,
+                ], 'i4')
+            else:
+                args.periodic_canopy_count_array = (
+                    args.periodic_canopy_count
+                    * np.ones((3, ), 'i4')
+                )
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -535,6 +519,7 @@ class LayoutTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -543,18 +528,106 @@ class LayoutTask(TaskBase):
         suffix = ''
         suffix += cls._make_suffix(
             args, 'canopy', prefix='_canopy', title=True,
-            noteq='single', wildcards=wildcards,
+            noteq='single', wildcards=wildcards, skip=skip,
         )
+        suffix += cls._output_suffix_periodic(
+            args, name, wildcards=wildcards, skip=skip,
+        )
+        if args.canopy != 'single':
+            suffix += cls._output_suffix_geometry(
+                args, name, wildcards=wildcards, skip=skip,
+            )
+        # suffix += cls._make_suffix(
+        #     args, 'match_id', prefix='_match_', suffix='-',
+        #     wildcards=wildcards, skip=skip,
+        # )
+        # suffix += cls._make_suffix_set(
+        #     args, ['match_goal', 'match_vary'],
+        #     set_sep='-vs-', set_prefix='',
+        #     cond=bool(args.match_id),
+        #     wildcards=wildcards, skip=skip,
+        # )
         suffix += cls._make_suffix(
-            args, 'time', wildcards=wildcards,
+            args, 'time', wildcards=wildcards, skip=skip,
         )
+        return suffix
+
+    @classmethod
+    def _output_suffix_geometry(cls, args, name, wildcards=None,
+                                skip=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
+
+        Returns:
+            str: Suffix.
+
+        """
+        suffix = ''
+        suffix += cls._make_suffix_set(
+            args, ['row_spacing', 'plant_spacing'], set_sep='x',
+            noteq={
+                'row_spacing': parse_quantity(76.2, 'cm'),
+                'plant_spacing': parse_quantity(18.3, 'cm'),
+            },
+            wildcards=wildcards, skip=skip,
+        )
+        if args.canopy == 'single':
+            default_nrows = 1
+            default_ncols = 1
+        else:
+            default_nrows = 4
+            default_ncols = int(args.plot_length / args.plant_spacing)
+        suffix += cls._make_suffix_set(
+            args, ['nrows', 'ncols'], set_sep='x',
+            noteq={'nrows': default_nrows, 'ncols': default_ncols},
+            wildcards=wildcards, skip=skip,
+        )
+        return suffix
+
+    @classmethod
+    def _output_suffix_periodic(cls, args, name, wildcards=None,
+                                skip=None):
+        r"""Generate the suffix containing information about parameters
+        that should be added to generated output files.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Base name for variable to set.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
+
+        Returns:
+            str: Suffix.
+
+        """
+        suffix = ''
+        if skip and 'periodic_canopy' in skip:
+            return suffix
+        count_value = NoDefault
+        if args.periodic_canopy_count is None:
+            count_value = getattr(args, 'periodic_canopy_count_array',
+                                  NoDefault)
         suffix += cls._make_suffix(
             args, 'periodic_canopy_count', prefix='_periodic',
-            cond=bool(args.periodic_canopy), wildcards=wildcards,
+            cond=bool(args.periodic_canopy), value=count_value,
+            wildcards=wildcards, skip=skip, sep='x',
         )
         suffix += cls._make_suffix(
             args, 'periodic_canopy', wildcards=wildcards,
+            skip=skip,
         )
+        if args.periodic_canopy and args.canopy == 'single':
+            suffix += cls._output_suffix_geometry(
+                args, name, wildcards=wildcards,
+            )
         return suffix
 
     @cached_property
@@ -592,10 +665,10 @@ class LayoutTask(TaskBase):
         # TODO: Allow multiple crop classes?
         if not self.args.periodic_canopy:
             return 0
-        if self.args.canopy == 'single':
-            return (2 * self.args.periodic_canopy_count + 1)**2 - 1
-        return self.nplants * (
-            (2 * self.args.periodic_canopy_count + 1)**2 - 1)
+        out = np.prod(2 * self.args.periodic_canopy_count_array + 1) - 1
+        if self.args.canopy != 'single':
+            out *= self.nplants
+        return out
 
     @cached_property
     def plant_positions_periodic(self):
@@ -611,7 +684,8 @@ class LayoutTask(TaskBase):
             Scene.get_periodic_shifts(
                 self.args.periodic_period.astype('f4'),
                 self.args.periodic_direction.astype('f4'),
-                self.args.periodic_canopy_count * np.ones((3, ), 'i4')),
+                self.args.periodic_canopy_count_array,
+            ),
             pos_units0,
         )
         out = []
@@ -872,7 +946,7 @@ class LayoutTask(TaskBase):
                 self.plot_sun(t, plant_min, plant_max,
                               arrow_length=arrow_length)
 
-    def generate_output(self, name):
+    def _generate_output(self, name):
         r"""Generate the specified output value.
 
         Args:
@@ -884,9 +958,8 @@ class LayoutTask(TaskBase):
         """
         if name == 'layout':
             self.plot_layout(self.scene_layout)
-            self.set_output('layout', self.figure)
-            return
-        super(LayoutTask, self).generate_output(name)
+            return self.figure
+        return super(LayoutTask, self)._generate_output(name)
 
 
 class GenerateTask(TaskBase):
@@ -899,6 +972,7 @@ class GenerateTask(TaskBase):
             'base': 'parametrize',
             'description': 'mesh',
             'upstream': ['parametrize', 'lpy_model'],
+            'merge_all': 'all_combined',
         },
         'geometryids': {
             'ext': '.csv',
@@ -907,6 +981,7 @@ class GenerateTask(TaskBase):
                 'the IDs of the plant/component each face '
                 'belongs to'
             ),
+            'merge_all': 'all_combined',
         },
     }
     _external_tasks = {
@@ -929,7 +1004,7 @@ class GenerateTask(TaskBase):
             ],
             'modifications': {
                 'id': {
-                    'append_choices': ['all', 'all_split'],
+                    'append_choices': ['all', 'all_combined'],
                 }
             },
         },
@@ -1000,18 +1075,18 @@ class GenerateTask(TaskBase):
             object: Contents of the output file.
 
         """
-        if name == 'geometryids':
-            with open(fname, 'r') as fd:
-                components = rapidjson.loads(fd.readline().lstrip('#'))
-            return components, utils.read_csv(fname)
         if ((args.age.string != 'maturity'
              and args.age.string not in fname)):
             print(args.age.string, fname)
             import pdb
             pdb.set_trace()
             raise AssertionError('Reading the wrong file')
-        return utils.read_3D(fname, file_format=args.mesh_format,
-                             verbose=args.verbose)
+        out = super(GenerateTask, cls)._read_output(args, name, fname)
+        if name == 'geometryids':
+            with open(fname, 'r') as fd:
+                components = rapidjson.loads(fd.readline().lstrip('#'))
+            return components, out
+        return out
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -1024,13 +1099,12 @@ class GenerateTask(TaskBase):
             output (object): Output object to write to file.
 
         """
-        if args.id == 'all_split':  # or args.animate:
+        if args.id == 'all':
             return
         if name == 'geometryids':
             return utils.write_csv(output[1], fname,
                                    comments=[rapidjson.dumps(output[0])])
-        utils.write_3D(output, fname, file_format=args.mesh_format,
-                       verbose=args.verbose)
+        super(GenerateTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
     def adjust_args_internal(cls, args):
@@ -1050,7 +1124,7 @@ class GenerateTask(TaskBase):
         super(GenerateTask, cls).adjust_args_internal(args)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None):
+    def _output_suffix(cls, args, name, wildcards=None, skip=None):
         r"""Generate the suffix containing information about parameters
         that should be added to generated output files.
 
@@ -1059,6 +1133,7 @@ class GenerateTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skip (list, optional): Arguments to skip.
 
         Returns:
             str: Suffix.
@@ -1067,25 +1142,24 @@ class GenerateTask(TaskBase):
         if name in ['geometryids']:
             return f'_{name}'
         suffix = ''
-        suffix += cls._make_suffix(
-            args, 'canopy', prefix='_canopy', title=True,
-            noteq='single', wildcards=wildcards,
+        if skip is None:
+            skip = []
+        suffix += LayoutTask._output_suffix(
+            args, name, wildcards=wildcards,
+            skip=(
+                skip
+                + ['time', 'periodic_canopy', 'periodic_canopy_count']
+            ),
         )
-        # suffix += cls._make_suffix(
-        #     args, 'animate', value='animate', wildcards=wildcards,
-        # )
         suffix += cls._make_suffix(
-            args, 'age', noteq='maturity', wildcards=wildcards,
+            args, 'age', noteq='maturity', wildcards=wildcards, skip=skip,
         )
         suffix += cls._make_suffix(
-            args, 'color', noteq=None, wildcards=wildcards,
+            args, 'color', noteq=None, wildcards=wildcards, skip=skip,
         )
-        if args.plantid > 0 and not args.save_all_plantids:
-            assert not cls._output_enabled(args, 'generate',
-                                           for_write=True)
         suffix += cls._make_suffix(
             args, 'plantid', cond=(args.plantid > 0),
-            wildcards=wildcards,
+            wildcards=wildcards, skip=skip,
         )
         return suffix
 
@@ -1145,70 +1219,12 @@ class GenerateTask(TaskBase):
         r"""list: All crop classes for current data."""
         return self.generator_class.ids_from_file(self.args.data)
 
-    def generate_output(self, name):
-        r"""Generate the specified output value.
-
-        Args:
-            name (str): Name of the output to generate.
-
-        Returns:
-            object: Generated output.
-
-        """
-        if name not in ['generate', 'geometryids']:
-            super(GenerateTask, self).generate_output(name)
-            return
-        if self.args.id == 'all_split':
-            per_iter = {
-                'x': self.args.x, 'y': self.args.y,
-                'plantid': self.args.plantid,
-            }
-            for x in self.run_series(self.args,
-                                     over={'id': self.all_ids},
-                                     per_iter=per_iter,
-                                     output_name='instance'):
-                pass
-            self.set_output('generate', None)
-            self.set_output('geometryids', (None, None))
-        elif self.args.id == 'all':
-            mesh = None
-            geometryids = []
-            components = None
-            per_iter = {
-                'x': self.args.x, 'y': self.args.y,
-                'plantid': self.args.plantid,
-            }
-            mesh = None
-            for x in self.run_series(self.args,
-                                     over={'id': self.all_ids},
-                                     per_iter=per_iter,
-                                     output_name='instance'):
-                if mesh is None:
-                    mesh = x.get_output('generate')
-                else:
-                    mesh.append(x.get_output('generate'))
-                per_iter['x'] += (
-                    x.args.row_spacing * (x.args.nrows + 2)
-                )
-                per_iter['plantid'] += (x.args.nrows * x.args.ncols)
-                icomponents, igeometryids = x.get_output('geometryids')
-                if components is None:
-                    components = icomponents
-                geometryids.append(igeometryids)
-                # TODO: Labels
-            geometryids = {k: np.hstack([x[k] for x in geometryids])
-                           for k in geometryids[0].keys()}
-            self.set_output('generate', mesh)
-            self.set_output('geometryids', (components, geometryids))
-        elif self.args.canopy == 'single':
-            self._generate_single_plant()
-        else:
-            self._generate_field()
-
-    def shift_mesh(self, mesh, x, y, plantid=None):
+    @classmethod
+    def shift_mesh(cls, args, mesh, x, y, plantid=None):
         r"""Shift a mesh.
 
         Args:
+            args (argparse.Namespace): Parsed arguments.
             mesh (ObjDict): Mesh to shift.
             x (float): Amount to shift the plant in the x direction.
             y (float): Amount to shift the plant in the y direction.
@@ -1219,11 +1235,91 @@ class GenerateTask(TaskBase):
             ObjDict: Shifted mesh.
 
         """
-        xo = x.to(self.args.mesh_units).value
-        yo = y.to(self.args.mesh_units).value
+        xo = x.to(args.mesh_units).value
+        yo = y.to(args.mesh_units).value
         return utils.shift_mesh(mesh, xo, yo, plantid=plantid,
-                                axis_up=self.args.axis_up,
-                                axis_x=self.args.axis_rows)
+                                axis_up=args.axis_up,
+                                axis_x=args.axis_rows)
+
+    @classmethod
+    def merge_mesh(cls, args, output):
+        r"""Merge the output for multiple IDs.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (list): Set of meshes to merge according to args.
+
+        Returns:
+            object: Generated output.
+
+        """
+        mesh = output[0]
+        x = 0.0 * args.x
+        y = 0.0 * args.y
+        plantid = 0
+        for imesh in output[1:]:
+            x += args.row_spacing * (args.nrows + 2)
+            plantid += (args.nrows * args.ncols)
+            mesh.append(
+                cls.shift_mesh(args, imesh, x, y, plantid=plantid)
+            )
+        return mesh
+
+    def _merge_output(self, name, output):
+        r"""Merge the output for multiple IDs.
+
+        Args:
+            name (str): Name of the output to generate.
+            output (dict): Mapping from ID to the output for each ID.
+
+        Returns:
+            object: Generated output.
+
+        """
+        if name not in ['generate', 'geometryids']:
+            return super(GenerateTask, self)._merge_output(name, output)
+        assert self.args.id == 'all_combined'
+        if name == 'generate':
+            return self.merge_mesh(self.args, list(output.values()))
+        elif name == 'geometryids':
+            values = list(output.values())
+            components = values[0][0]
+            geometryids = []
+            plantid = self.args.plantid
+            assert plantid == 0
+            for x in values:
+                assert x[0] == components
+                x[1]['plantids'] += plantid
+                geometryids.append(x[1])
+                plantid += (self.args.nrows * self.args.ncols)
+            geometryids = {k: np.hstack([x[k] for x in geometryids])
+                           for k in geometryids[0].keys()}
+            return (components, geometryids)
+
+    def _generate_output(self, name):
+        r"""Generate the specified output value.
+
+        Args:
+            name (str): Name of the output to generate.
+
+        Returns:
+            object: Generated output.
+
+        """
+        assert self.args.id not in ['all', 'all_combined']
+        if name in ['generate', 'geometryids']:
+            if self.args.canopy == 'single':
+                mesh, geometryids = self._generate_single_plant()
+            else:
+                mesh, geometryids = self._generate_field()
+            # Store the unnamed output
+            if name == 'generate':
+                self.set_output('geometryids', geometryids)
+                return mesh
+            else:
+                self.set_output('generate', mesh)
+                return geometryids
+        return super(GenerateTask, self)._generate_output(name)
 
     def generate_single_plant(self, **kwargs):
         r"""Generate a 3D mesh for a single plant.
@@ -1237,7 +1333,8 @@ class GenerateTask(TaskBase):
 
         """
         kwargs.setdefault('canopy', 'single')
-        return self.run_iteration(args_overwrite=kwargs)
+        return self.run_iteration(args_overwrite=kwargs,
+                                  output_name='generate')
 
     def _generate_single_plant(self):
         r"""Generate a 3D mesh for a single plant.
@@ -1254,23 +1351,12 @@ class GenerateTask(TaskBase):
              and (plantid == 0 or self.args.save_all_plantids))):
             inst = self.run_iteration(
                 args_overwrite={'x': 0.0, 'y': 0.0},
-                output_name='instance',
             )
             mesh = self.shift_mesh(
-                inst.get_output('generate'), x, y, plantid,
+                self.args, inst.get_output('generate'), x, y, plantid,
             )
-            self.set_output(
-                'generate', self.shift_mesh(
-                    inst.get_output('generate'), x, y, plantid,
-                )
-            )
-            self.set_output(
-                'geometryids', inst.get_output('geometryids')
-            )
-            return
+            return (mesh, inst.get_output('geometryids'))
         assert 'RUNTIME_PARAM' not in self.parameters
-        # derivation_length = self.args.derivation_length
-        # if derivation_length is None:
         assert self.args.age is not None
         if isinstance(self.args.age.crop_age_string, str):
             age = ParametrizeCropTask.get_age_from_parameters(
@@ -1323,7 +1409,7 @@ class GenerateTask(TaskBase):
                                 to_units=self.args.mesh_units)
         if x.value > 0 or y.value > 0:
             mesh = self.shift_mesh(
-                mesh, x, y,
+                self.args, mesh, x, y,
             )
         plantids = plantid * np.ones(
             (mesh.count_elements('face'), ), dtype=np.uint32)
@@ -1333,12 +1419,12 @@ class GenerateTask(TaskBase):
         for i, k in enumerate(component_order):
             for prev, count in components[k]:
                 componentids[prev:(prev + count)] = i
-        self.set_output('generate', mesh)
-        self.set_output('geometryids', (
+        geometryids = (
             component_order, {
                 'plantids': plantids, 'componentids': componentids,
             }
-        ))
+        )
+        return (mesh, geometryids)
 
     def generate_field(self, **kwargs):
         r"""Generate a 3D mesh for a field of plants.
@@ -1352,7 +1438,8 @@ class GenerateTask(TaskBase):
 
         """
         kwargs.setdefault('canopy', 'unique')
-        return self.run_iteration(args_overwrite=kwargs)
+        return self.run_iteration(args_overwrite=kwargs,
+                                  output_name='generate')
 
     def _generate_field(self):
         r"""Generate a 3D mesh for a field of plants.
@@ -1371,11 +1458,10 @@ class GenerateTask(TaskBase):
         # Generate the unshifted field so it can be reused
         if x.value > 0 or y.value > 0 or plantid > 0:
             inst = self.run_iteration(
-                output_name='instance',
                 args_overwrite={'x': 0.0, 'y': 0.0, 'plantid': 0},
             )
             mesh = self.shift_mesh(
-                inst.get_output('generate'), x, y, plantid,
+                self.args, inst.get_output('generate'), x, y, plantid,
             )
             icomponents, igeometryids = inst.get_output('geometryids')
             if components is None:
@@ -1384,9 +1470,8 @@ class GenerateTask(TaskBase):
             geometryids.append(igeometryids)
             geometryids = {k: np.hstack([x[k] for x in geometryids])
                            for k in geometryids[0].keys()}
-            self.set_output('generate', mesh)
-            self.set_output('geometryids', (components, geometryids))
-            return
+            geometryids = (components, geometryids)
+            return (mesh, geometryids)
 
         generator = np.random.default_rng(seed=plantid)
 
@@ -1399,7 +1484,6 @@ class GenerateTask(TaskBase):
 
         # First plant
         inst = self.run_iteration(
-            output_name='instance',
             args_overwrite={
                 'x': x, 'y': y, 'plantid': plantid,
                 'canopy': 'single', 'nrows': 1, 'ncols': 1,
@@ -1422,7 +1506,6 @@ class GenerateTask(TaskBase):
                     if i == 0 and j == 0:
                         continue
                     inst = self.run_iteration(
-                        output_name='instance',
                         args_overwrite={
                             'x': ix + posdev(), 'y': iy + posdev(),
                             'plantid': plantid, 'canopy': 'single',
@@ -1444,7 +1527,8 @@ class GenerateTask(TaskBase):
                         continue
                     mesh.append(
                         self.shift_mesh(
-                            mesh_single, ix + posdev(), iy + posdev(),
+                            self.args, mesh_single,
+                            ix + posdev(), iy + posdev(),
                             plantid=plantid,
                         )
                     )
@@ -1457,8 +1541,8 @@ class GenerateTask(TaskBase):
                 f"Unsupported canopy type: {self.args.canopy}")
         geometryids = {k: np.hstack([x[k] for x in geometryids])
                        for k in geometryids[0].keys()}
-        self.set_output('generate', mesh)
-        self.set_output('geometryids', (components, geometryids))
+        geometryids = (components, geometryids)
+        return (mesh, geometryids)
 
 
 __all__ = ["monocot", "maize", "dicot"]
