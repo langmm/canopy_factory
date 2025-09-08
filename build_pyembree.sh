@@ -1,8 +1,7 @@
 #!/bin/bash
 set -e
-conda update -n lpy --file environment_raytrace.yml
 if [ ! -d pyembree ]; then
-    git clone git@github.com:langmm/pyembree.git
+    git clone --branch callbacks git@github.com:langmm/pyembree.git
 fi
 cd pyembree
 python -m ensurepip --upgrade

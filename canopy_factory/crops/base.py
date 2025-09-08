@@ -2701,14 +2701,14 @@ class ScalarPlantParameter(SimplePlantParameter):
             _help=('Standard deviation of {parents[1]} normal '
                    'distribution'),
             # properties={
-            #     'Var': {
+            #     'VarName': {
             #         'type': 'array', 'items': {'type': 'string'},
             #         'description': ('Names of index variables that the '
             #                         'variance should be dependent on'),
             #     },
             # },
             # defaults={
-            #     'Var': ['N'],
+            #     'VarName': ['N'],
             # },
         ),
         'RelStdDev': DelayedPlantParameter(
@@ -2877,7 +2877,7 @@ class CurvePlantParameter(SimplePlantParameter):
             _help=('Curve patch that should be sampled to generate the '
                    '{parent} curve'),
         ),
-        'PatchVar': {
+        'PatchVarName': {
             'type': 'string',
             'description': ('Parameter that should be used to sample '
                             'the {parent}Patch'),
@@ -2885,18 +2885,18 @@ class CurvePlantParameter(SimplePlantParameter):
         'PatchNorm': {
             'type': 'number',
             'description': ('Value that should be used to normalize '
-                            '{parent}PatchVar prior to '
+                            '{parent}PatchVarName prior to '
                             'sampling {parent}Patch'),
         },
         'PatchMin': {
             'type': 'number',
             'description': ('Minimum value over which '
-                            '{parent}PatchVar is valid'),
+                            '{parent}PatchVarName is valid'),
         },
         'PatchMax': {
             'type': 'number',
             'description': ('Maximum value over which '
-                            '{parent}PatchVar is valid'),
+                            '{parent}PatchVarName is valid'),
         },
     }
     _property_dependencies = {
@@ -2904,14 +2904,14 @@ class CurvePlantParameter(SimplePlantParameter):
         'Closed': {'ControlPoints': True},
         'Reverse': {'ControlPoints': True},
         'Thickness': {'ControlPoints': True},
-        'PatchVar': {'Patch': True},
-        'PatchNorm': {'Patch': True, 'PatchVar': True},
-        'PatchMin': {'Patch': True, 'PatchVar': True},
-        'PatchMax': {'Patch': True, 'PatchVar': True},
+        'PatchVarName': {'Patch': True},
+        'PatchNorm': {'Patch': True, 'PatchVarName': True},
+        'PatchMin': {'Patch': True, 'PatchVarName': True},
+        'PatchMax': {'Patch': True, 'PatchVarName': True},
     }
     _required = []
     _required_curve = ['ControlPoints']
-    _required_patch = ['Patch', 'PatchVar']
+    _required_patch = ['Patch', 'PatchVarName']
     _allow_patch = True
 
     @staticmethod
@@ -2930,7 +2930,7 @@ class CurvePlantParameter(SimplePlantParameter):
             cls._variables = [
                 k for k in cls._variables
                 if k not in cls._curve_properties
-            ] + ['PatchVar']
+            ] + ['PatchVarName']
 
     @classmethod
     def schema(cls):
@@ -3001,7 +3001,7 @@ class CurvePlantParameter(SimplePlantParameter):
                     patch.get('EndCurve', **kwargs),
                 )
             patch = self.get('Patch')
-            tvar = self.get('PatchVar')
+            tvar = self.get('PatchVarName')
             tnorm = self.get('PatchNorm', None)
             tmin = self.get('PatchMin', None)
             tmax = self.get('PatchMax', None)
@@ -3990,6 +3990,8 @@ class PlantGenerator(ParameterCollection):
     ]
     _components = {
         'Apex': {},
+        'Internode': {},
+        'Node': {},
     }
     _skip_arguments = {}
     _unit_dimensions = ['length', 'mass', 'time']

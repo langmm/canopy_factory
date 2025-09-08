@@ -1,17 +1,11 @@
 # Dependencies required to build pyembree (and embree 2.*.*)
-name: lpy
+name: canopy
 channels:
   - conda-forge
 dependencies:
   - cmake
   - cython
-  - ffmpeg
   # - freeglut  # Not required (or available) on mac as glut is installed
-  - imageio
-  - matplotlib
-  - numpy < 2  # Compatibility with pandas
-  - pvlib
-  - python
   - setuptools
   - setuptools_scm
   - tbb

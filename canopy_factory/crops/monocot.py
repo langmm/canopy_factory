@@ -8,24 +8,23 @@ class MonocotGenerator(PlantGenerator):
     r"""Class for generating generic monocot plant geometries."""
 
     _plant_name = 'monocot'
-    _components = {
-        'Apex': {},
-        'Leaf': {
+    _components = dict(
+        PlantGenerator._components,
+        Leaf={
             'defaults': {
                 'WMax': 1,
             },
         },
-        'Internode': {},
-        'Node': {},
-    }
+    )
     _defaults = dict(
         PlantGenerator._defaults,
         NMax=10,
+        LeafAngle=30,
         LeafMethod='sweep',
         LeafLength=60.0,
         LeafLengthRelStdDev=0.2,
         LeafWidthFunc='pow',
-        LeafWidthFuncVar='LeafLength',
+        LeafWidthFuncVarName='LeafLength',
         LeafWidthFuncExp=0.25,
         LeafWidthXFunc='linear',
         LeafWidthXFuncSlope=-1.0,
@@ -38,7 +37,6 @@ class MonocotGenerator(PlantGenerator):
         InternodeWidthNFuncIntercept=1.0,
         InternodeRotationAngle=180,
         InternodeRotationAngleRelStdDev=0.1,
-        LeafAngle=30,
     )
 
     def __init__(self, **kwargs):
@@ -46,7 +44,7 @@ class MonocotGenerator(PlantGenerator):
         if self.unfurl_leaves:
             self.update_curve_param(
                 'LeafProfile', 'circle',
-                patch_param={'Var': 'X'},
+                patch_param={'VarName': 'X'},
             )
 
     @property

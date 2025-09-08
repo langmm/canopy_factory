@@ -35,8 +35,9 @@ dependencies = [
   "matplotlib>=3.10.0",
   "numpy>=1.13.0,<2.0",
   "pandas",
-  # "pyembree",  # should be installed from source on maize branch
   "pvlib>=0.7.2",
+  # "pyembree",  # should be installed from source on callbacks branch
+  "pyshp",
   "scipy",
 ]
 description = "Tool for generating & utilizing 3D meshes for simulated canopies"
@@ -78,8 +79,9 @@ Issues = "https://github.com/langmm/canopy_factory/issues"
 Changelog = "https://github.com/langmm/canopy_factory/blob/main/HISTORY.rst"
 
 [project.optional-dependencies]
-test = [
-  'pytest',
+dev = [
+  'pytest>=8.4',
+  'pytest-cov',
 ]
 
 # [tool.scikit-build]
@@ -121,7 +123,9 @@ norecursedirs = [
   ".*", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg",
   "scripts", "utils", "embree",
 ]
-testpaths = "tests" 
+testpaths = "tests"
+addopts = "--disable-plugin-autoload"
+# -p no:yggdrasil-framework"
 
 [tool.coverage.run]
 omit = [

@@ -50,8 +50,6 @@ class MaizeGenerator(MonocotGenerator):
         LeafTwistXFunc='sin',
         LeafTwistXFuncAmplitude=(2.0 * np.pi * 0.5),
         LeafTwistXFuncPeriod=(1.0 / 3.0),
-        LeafWidthFuncExp=0.25,
-        LeafWidthFuncVar='LeafLength',
         LeafWidthXFunc='interp',
         LeafWidthXFuncXVals=(0, 1),
         LeafWidthXFuncYVals=np.array([
@@ -68,7 +66,7 @@ class MaizeGenerator(MonocotGenerator):
         # InternodeLengthAgeFuncAmplitude=(1 + np.exp(-1)),
         InternodeWidthAgeFunc='one',
         InternodeWidthFuncExp=0.15,  # 1.5 in Cieslak
-        InternodeWidthFuncVar='InternodeLength',
+        InternodeWidthFuncVarName='InternodeLength',
         InternodeWidthNFunc='linear',
         InternodeWidthNFuncSlope=-0.5,
         InternodeWidthNFuncIntercept=0.9,

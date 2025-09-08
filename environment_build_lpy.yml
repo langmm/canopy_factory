@@ -1,4 +1,4 @@
-name: lpy
+name: canopy
 channels:
     - conda-forge
 dependencies:

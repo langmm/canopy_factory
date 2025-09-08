@@ -1,11 +1,17 @@
-name: lpy
+name: canopy
 channels:
   - conda-forge
   - fredboudon
 dependencies:
+  - ffmpeg
+  - imageio
+  - matplotlib
+  - numpy < 2  # Compatibility with pandas
   - openalea.lpy
-  - yggdrasil
   - pandas
+  - pvlib
+  - python
   - pyshp
+  - pytest
   - scipy
-  - numpy
+  - yggdrasil

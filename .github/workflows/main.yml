@@ -1,0 +1,146 @@
+name: Build, test and upload to PyPI
+
+on:
+  push:
+    branches: [ main, package ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  tests:
+    name: All tests, on current Python
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    strategy:
+      matrix:
+        python-version: [3.11]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: (WINDOWS,CONDA) Set up MSVC Compiler
+        uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.os == 'Windows'
+      - name: (CONDA) Set up miniconda base environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: canopy
+          auto-update-conda: true
+          python-version: ${{ matrix.python-version }}
+          channels: msys,conda-forge,fredboudon
+          # use-only-tar-bz2: true
+          channel-priority: strict
+          miniforge-variant: Miniforge3
+          miniforge-version: latest
+
+      # Build embree & hothouse
+      - name: Install embree & hothouse build dependencies
+        run: |
+          conda update -n canopy --file environment_raytrace.yml        
+      # - name: Install embree
+      #   run: |
+      #     cd ..
+      #     ./build_embree.sh
+      - name: Install pyembree
+        run: |
+          cd ..
+          ./build_pyembree.sh
+      - name: Install hothouse
+        run: |
+          cd ..
+          ./build_hothouse.sh
+
+      - name: Install dependencies
+        run: |
+          pip install -v '.[dev]'
+
+      - name: Test CLI
+        run: |
+          python -m canopy_factory -h
+
+      - name: Tests
+        run: |
+          pytest -sv tests
+
+      # - name: Doctests
+      #   run: |
+      #     make -C docs doctest -e PYTHON=$(which python3)
+
+  # build_wheels:
+  #   name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
+  #   runs-on: ${{ matrix.os }}
+  #   strategy:
+  #     matrix:
+  #       os:
+  #         - ubuntu-22.04
+  #         - macos-12
+  #         - windows-2019
+  #       arch:
+  #         - auto
+  #       include:
+  #         - os: ubuntu-22.04
+  #           arch: aarch64
+  #         # - os: ubuntu-22.04
+  #         #   arch: ppc64le
+  #         - os: macos-14
+  #           arch: arm64
+  #     fail-fast: false
+            
+  #   steps:
+  #     - name: Checkout sources
+  #       uses: actions/checkout@v4
+  #       with:
+  #         submodules: true
+
+  #     - name: Install Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.11'
+
+  #     - uses: docker/setup-qemu-action@v3
+  #       if:  ${{ matrix.arch == 'aarch64' || matrix.arch == 'ppc64le' }}
+  #       name: Set up QEMU
+
+  #     - name: Build wheels
+  #       uses: pypa/cibuildwheel@v2.16.5
+  #       env:
+  #         CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+  #         CIBW_ARCHS_MACOS: ${{ matrix.arch }}
+  #         CIBW_TEST_REQUIRES: "pytest pytest-benchmark pytz"
+  #         CIBW_TEST_COMMAND: "pytest -sv {project}/tests"
+  #         CIBW_SKIP: "cp2* cp33* cp34* cp35* cp36* pp* cp310-manylinux_i686 cp311-manylinux_i686 cp312-manylinux_i686 *-musllinux_*"
+  #         CIBW_ENVIRONMENT: "PIP_ONLY_BINARY=numpy"
+  #         # CIBW_BEFORE_BUILD: python -m pip install oldest-supported-numpy
+  #         # CIBW_PRERELEASE_PYTHONS: True
+
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: wheels-for-${{ matrix.os }}-${{ matrix.arch }}
+  #         path: ./wheelhouse/*.whl
+
+  # upload_wheels:
+  #   name: Upload wheels to PyPI
+  #   needs: build_wheels
+  #   runs-on: ubuntu-latest
+
+  #   # Upload to PyPI on every tag starting with 'v'
+  #   if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
+
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: dist
+  #         pattern: wheels-for-*
+  #         merge-multiple: true
+
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  #       with:
+  #         user: __token__
+  #         password: ${{ secrets.PYPI_API_TOKEN }}

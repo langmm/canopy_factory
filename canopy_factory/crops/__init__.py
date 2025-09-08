@@ -1,3 +1,4 @@
+import os
 import copy
 import numpy as np
 from openalea.lpy import Lsystem
@@ -9,7 +10,7 @@ from canopy_factory.utils import (
     cached_property, readonly_cached_property,
 )
 from canopy_factory.cli import (
-    TaskBase, TimeArgument,
+    TaskBase, TimeArgument, OutputArgument, SuffixGenerator,
 )
 from canopy_factory.crops import (
     monocot, maize,
@@ -26,6 +27,9 @@ class ParametrizeCropTask(TaskBase):
 
     _name = 'parametrize'
     _help = 'Generate the parameters for an LSystem crop model.'
+    _runtime_param = [
+        'verbose', 'debug', 'debug_param', 'debug_param_prefix',
+    ]
     _output_info = {
         'parametrize': {
             'base_string': '',
@@ -60,6 +64,10 @@ class ParametrizeCropTask(TaskBase):
                      'be enabled for.'),
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('crop', {'cond': True, 'prefix': ''}),
+        ('id', {'cond': True, 'outputs': ['parametrize']}),
+    ])
     _age_strings = [
         'planting', 'maturity', 'senesce', 'remove',
     ]
@@ -103,37 +111,7 @@ class ParametrizeCropTask(TaskBase):
             self.args = copy.deepcopy(self.args)
             self.args.id = self.generator_class.ids_from_file(
                 self.args.data)[0]
-            self.adjust_args(self.args)
-            self.reset_outputs(regenerate=kwargs.get(
-                'regenerate_output', False))
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        suffix += cls._make_suffix(
-            args, 'crop', cond=True, prefix='',
-            wildcards=wildcards, skip=skip,
-        )
-        if name == 'lpy_model':
-            return suffix
-        suffix += cls._make_suffix(
-            args, 'id', cond=True, wildcards=wildcards, skip=skip,
-        )
-        return suffix
+            self.finalize()
 
     @cached_property
     def generator_class(self):
@@ -143,7 +121,13 @@ class ParametrizeCropTask(TaskBase):
     @cached_property
     def generator(self):
         r"""PlantGenerator: Parametrized plant generator."""
-        return self.generator_class(**self.parameters)
+        param = dict(self.parameters, **self.runtime_parameters)
+        return self.generator_class(**param)
+
+    @cached_property
+    def runtime_parameters(self):
+        r"""dict: Set of runtime parameters controling log."""
+        return {k: getattr(self.args, k) for k in self._runtime_param}
 
     @cached_property
     def parameters(self):
@@ -213,13 +197,13 @@ class ParametrizeCropTask(TaskBase):
             kattr = self.arg2dest(k, v)
             if getattr(self.args, kattr, None) is not None:
                 kwargs[kattr] = getattr(self.args, kattr)
-        for k in ['verbose', 'debug', 'debug_param',
-                  'debug_param_prefix']:
+        for k in self._runtime_param:
             kwargs[k] = getattr(self.args, k)
         inst = self.generator_class(**kwargs)
         out = copy.deepcopy(inst.all_parameters)
         if self.args.data:
             self.generator_class.parameters_from_file(self.args, out)
+            out['data'] = os.path.basename(out['data'])
         if 'AgeRemove' not in out:
             out['AgeRemove'] = (
                 out['NMax'] * out['Plastocron']
@@ -296,7 +280,7 @@ class ParametrizeCropTask(TaskBase):
             object: Generated output.
 
         """
-        if name == 'lsystem':
+        if name == 'lpy_model':
             return self.generator.lsystem
         elif name == 'parametrize':
             return self.generate_parameters()
@@ -451,6 +435,48 @@ class LayoutTask(TaskBase):
                      'as floats in the range [0, 1]'),
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('canopy', {
+            'prefix': '_canopy', 'title': True, 'noteq': 'single',
+        }),
+        ('periodic', SuffixGenerator(
+            [
+                ('periodic_canopy_count', {
+                    'value': lambda x: getattr(
+                        x, 'periodic_canopy_count_array', NoDefault),
+                    'sep': 'x',
+                }),
+                ('periodic_canopy', {}),
+            ],
+            cond=lambda x: bool(x.periodic_canopy),
+        )),
+        ('geometry', SuffixGenerator(
+            [
+                (('row_spacing', 'plant_spacing'), {
+                    'kwargs_set': {'sep': 'x'},
+                    'noteq': {
+                        'row_spacing': parse_quantity(76.2, 'cm'),
+                        'plant_spacing': parse_quantity(18.3, 'cm'),
+                    },
+                }),
+                (('nrows', 'ncols'), {
+                    'kwargs_set': {'sep': 'x'},
+                    'noteq': {
+                        'nrows': (
+                            lambda x: (1 if x.canopy == 'single'
+                                       else 4)
+                        ),
+                        'ncols': (
+                            lambda x: (1 if x.canopy == 'single'
+                                       else 10)
+                        ),
+                    },
+                }),
+            ],
+            cond=lambda x: (x.periodic_canopy or x.canopy != 'single'),
+        )),
+        ('time', {'composite': 'time'}),
+    ])
 
     @classmethod
     def _convert_mesh_units(cls, args, k, v):
@@ -471,17 +497,21 @@ class LayoutTask(TaskBase):
         if args.canopy == 'single':
             args.nrows = 1
             args.ncols = 1
+            args.plot_width = args.row_spacing
+            args.plot_length = args.plant_spacing
         else:
             if args.periodic_canopy_count is None:
                 args.periodic_canopy_count = 2
-            if args.plot_width is None:
-                args.plot_width = args.nrows * args.row_spacing
-            if args.plot_length is None:
-                args.plot_length = args.ncols * args.plant_spacing
-            args.nrows = int(args.plot_width / args.row_spacing)
-            args.ncols = int(args.plot_length / args.plant_spacing)
+        if args.plot_width is None:
+            args.plot_width = args.nrows * args.row_spacing
+        if args.plot_length is None:
+            args.plot_length = args.ncols * args.plant_spacing
+        args.nrows = int(args.plot_width / args.row_spacing)
+        args.ncols = int(args.plot_length / args.plant_spacing)
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
+        if args.periodic_canopy is True:
+            args.periodic_canopy = 'scene'
         if args.periodic_canopy:
             args.periodic_period = np.array([
                 args.nrows * args.row_spacing,
@@ -497,145 +527,23 @@ class LayoutTask(TaskBase):
                 assert args.canopy == 'single'
                 periodic_canopy_count = 2
                 nrows = 4
-                ncols = int(args.plot_length / args.plant_spacing)
+                ncols = 10
                 args.periodic_canopy_count_array = np.array([
                     periodic_canopy_count * nrows,
                     periodic_canopy_count * ncols,
                     0,
                 ], 'i4')
             else:
-                args.periodic_canopy_count_array = (
-                    args.periodic_canopy_count
-                    * np.ones((3, ), 'i4')
-                )
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        suffix += cls._make_suffix(
-            args, 'canopy', prefix='_canopy', title=True,
-            noteq='single', wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._output_suffix_periodic(
-            args, name, wildcards=wildcards, skip=skip,
-        )
-        if args.canopy != 'single':
-            suffix += cls._output_suffix_geometry(
-                args, name, wildcards=wildcards, skip=skip,
-            )
-        # suffix += cls._make_suffix(
-        #     args, 'match_id', prefix='_match_', suffix='-',
-        #     wildcards=wildcards, skip=skip,
-        # )
-        # suffix += cls._make_suffix_set(
-        #     args, ['match_goal', 'match_vary'],
-        #     set_sep='-vs-', set_prefix='',
-        #     cond=bool(args.match_id),
-        #     wildcards=wildcards, skip=skip,
-        # )
-        suffix += cls._make_suffix(
-            args, 'time', wildcards=wildcards, skip=skip,
-        )
-        return suffix
-
-    @classmethod
-    def _output_suffix_geometry(cls, args, name, wildcards=None,
-                                skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        suffix += cls._make_suffix_set(
-            args, ['row_spacing', 'plant_spacing'], set_sep='x',
-            noteq={
-                'row_spacing': parse_quantity(76.2, 'cm'),
-                'plant_spacing': parse_quantity(18.3, 'cm'),
-            },
-            wildcards=wildcards, skip=skip,
-        )
-        if args.canopy == 'single':
-            default_nrows = 1
-            default_ncols = 1
-        else:
-            default_nrows = 4
-            default_ncols = int(args.plot_length / args.plant_spacing)
-        suffix += cls._make_suffix_set(
-            args, ['nrows', 'ncols'], set_sep='x',
-            noteq={'nrows': default_nrows, 'ncols': default_ncols},
-            wildcards=wildcards, skip=skip,
-        )
-        return suffix
-
-    @classmethod
-    def _output_suffix_periodic(cls, args, name, wildcards=None,
-                                skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        if skip and 'periodic_canopy' in skip:
-            return suffix
-        count_value = NoDefault
-        if args.periodic_canopy_count is None:
-            count_value = getattr(args, 'periodic_canopy_count_array',
-                                  NoDefault)
-        suffix += cls._make_suffix(
-            args, 'periodic_canopy_count', prefix='_periodic',
-            cond=bool(args.periodic_canopy), value=count_value,
-            wildcards=wildcards, skip=skip, sep='x',
-        )
-        suffix += cls._make_suffix(
-            args, 'periodic_canopy', wildcards=wildcards,
-            skip=skip,
-        )
-        if args.periodic_canopy and args.canopy == 'single':
-            suffix += cls._output_suffix_geometry(
-                args, name, wildcards=wildcards,
-            )
-        return suffix
+                args.periodic_canopy_count_array = np.array([
+                    args.periodic_canopy_count,
+                    args.periodic_canopy_count,
+                    0,
+                ], 'i4')
 
     @cached_property
     def nplants(self):
         r"""int: Total number of plants in the canopy."""
         # TODO: Allow all?
-        if self.args.canopy == 'single':
-            return 1
         return self.args.nrows * self.args.ncols
 
     @cached_property
@@ -697,18 +605,38 @@ class LayoutTask(TaskBase):
         return units.QuantityArray(out, pos_units0)
 
     def get_solar_model(self, time=None):
+        r"""Get a solar model for the specified time.
+
+        Args:
+            time (str, datetime, optional): Time to get a solar model
+                for. If not provided, the instance solar model will be
+                returned.
+
+        Returns:
+            utils.SolarModel: Model for sun at provided time.
+
+        """
         if time is None:
             return self.solar_model
         return TimeArgument.parse(time, self.args).solar_model
 
     def get_solar_direction(self, time=None):
+        r"""Get the relative direction to the sun for the specified time.
+
+        Args:
+            time (str, datetime, optional): Time to get the solar
+                direction for. If not provided, the instance solar
+                direction will be returned.
+
+        Returns:
+            np.ndarray: Unit vector from the scene to the sun at the
+                provided time.
+
+        """
         if time is None:
             return self.solar_direction
         return self.get_solar_model(time).relative_direction(
             self.args.axis_up, self.args.axis_north)
-
-    # def get_solar_alititude(self, time=None):
-    #     return self.get_solar_model(time).apparent_elevation
 
     def isExteriorPlant(self, plantid, nbuffer_col=1, nbuffer_row=1):
         r"""Determine if a plant is on the edge of the field.
@@ -719,6 +647,9 @@ class LayoutTask(TaskBase):
                 along the columns to count as exterior.
             nbuffer_row (int, optional): Number of plants from the edge
                 along the rowss to count as exterior.
+
+        Returns:
+            bool: True if the plant is on the edge, False otherwise.
 
         """
         plantid -= self.args.plantid
@@ -731,25 +662,27 @@ class LayoutTask(TaskBase):
 
     @cached_property
     def solar_model(self):
-        if self.args.time is None:
-            return None
+        r"""utils.SolarModel: Model for sun."""
         return self.args.time.solar_model
 
     @cached_property
     def solar_direction(self):
-        if self.args.time is None:
+        r"""np.ndarray: Unit vector from the scene to the sun."""
+        if self.solar_model is None:
             return None
         return self.solar_model.relative_direction(
             self.args.axis_up, self.args.axis_north)
 
     @cached_property
     def solar_elevation(self):
-        if self.args.time is None:
+        r"""units.Quantity: Apparent elevation of the sun."""
+        if self.solar_model is None:
             return None
         return self.solar_model.apparent_elevation
 
     @cached_property
     def scene_layout(self):
+        r"""dict: Parameters describing the scene layout."""
         out = {
             'plants': self.project_onto_ground(self.plant_positions),
             'periodic_plants': self.project_onto_ground(
@@ -759,16 +692,11 @@ class LayoutTask(TaskBase):
             'east': self.project_onto_ground(
                 self.args.axis_east, ray=True),
         }
-        if self.solar_direction is not None:
-            out.update(
-                sun_ray=self.project_onto_ground(
-                    -self.solar_direction, ray=True),
-                sun_elevation=self.solar_elevation,
-            )
         return out
 
     @cached_property
     def subplot_ratio(self):
+        r"""double: Ratio of subplot width to height."""
         width = (self.args.plot_width / self.args.row_spacing) + 10
         return width
 
@@ -845,6 +773,21 @@ class LayoutTask(TaskBase):
 
     def plot_sun(self, time, plant_min, plant_max,
                  arrow_length=0.1, nrays=9):
+        r"""Plot the location of the sun for a given time as a set of
+        rays at the edge of the field.
+
+        Args:
+            time (str, datetime): Time that the sun should be plotted
+                for.
+            plant_min (np.ndarray): Minimum extent of plant data in each
+                dimension.
+            plant_max (np.ndarray): Maximum extent of plant data in each
+                dimension.
+            arrow_length (float, optional): Length of rays relative to
+                the field width.
+            nrays (int, optional): Number of rays to plot.
+
+        """
         plant_pad = np.array([
             self.args.row_spacing, self.args.row_spacing
         ]) / 5
@@ -894,6 +837,12 @@ class LayoutTask(TaskBase):
             )
 
     def plot_layout(self, layout):
+        r"""Plot the layout.
+
+        Args:
+            layout (dict): Layout parameters.
+
+        """
         ax = self.axes
         plantid = self.args.plantid
         for pos in layout['plants']:
@@ -938,7 +887,7 @@ class LayoutTask(TaskBase):
             verticalalignment='bottom',
         )
         # Sun direction
-        if self.args.time:
+        if self.args.time.time:
             self.plot_sun(self.args.time.time, plant_min, plant_max,
                           arrow_length=arrow_length)
         else:
@@ -1061,6 +1010,71 @@ class GenerateTask(TaskBase):
         #     'help': 'Generate a geometry for each iteration',
         # }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('geometryids', SuffixGenerator([
+            ('output', {'outputs': ['geometryids']}),
+        ])),
+        ('generate', SuffixGenerator(
+            [
+                (k, v) for k, v in
+                LayoutTask._output_suffix.arguments.items()
+                if k not in ['periodic', 'time']
+            ] + [
+                ('age', {'noteq': 'maturity'}),
+                ('color', {'noteq': None}),
+                ('plantid', {'cond': lambda x: (x.plantid > 0)}),
+            ],
+            outputs=['generate'],
+        )),
+    ])
+
+    @classmethod
+    def mesh_generated(cls, args):
+        r"""Inspect the provided arguments to determine if the mesh is
+        generated.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            bool: True if the mesh is generated, False otherwise.
+
+        """
+        if isinstance(args.output_generate, OutputArgument):
+            return args.output_generate.generated
+        return isinstance(args.output_generate, str)
+
+    @classmethod
+    def all_ids_class(cls, args):
+        r"""Determine the complete set of IDs for the provided args.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            list: All crop classes for current arguments.
+
+        """
+        if not (cls.mesh_generated(args) and args.data):
+            return []
+        generator_class = get_class_registry().get('crop', args.crop)
+        return generator_class.ids_from_file(args.data)
+
+    @classmethod
+    def base_id_class(cls, args):
+        r"""Determine the base ID for the provided args.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            str: Base ID.
+
+        """
+        ids = cls.all_ids_class(args)
+        if not ids:
+            return None
+        return ids[0]
 
     @classmethod
     def _read_output(cls, args, name, fname):
@@ -1124,46 +1138,6 @@ class GenerateTask(TaskBase):
         super(GenerateTask, cls).adjust_args_internal(args)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        if name in ['geometryids']:
-            return f'_{name}'
-        suffix = ''
-        if skip is None:
-            skip = []
-        suffix += LayoutTask._output_suffix(
-            args, name, wildcards=wildcards,
-            skip=(
-                skip
-                + ['time', 'periodic_canopy', 'periodic_canopy_count']
-            ),
-        )
-        suffix += cls._make_suffix(
-            args, 'age', noteq='maturity', wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'color', noteq=None, wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'plantid', cond=(args.plantid > 0),
-            wildcards=wildcards, skip=skip,
-        )
-        return suffix
-
-    @classmethod
     def _output_ext(cls, args, name, wildcards=None):
         r"""Determine the extension that should be used for output files.
 
@@ -1191,7 +1165,8 @@ class GenerateTask(TaskBase):
     @cached_property
     def generator(self):
         r"""PlantGenerator: Parametrized plant generator."""
-        return self.generator_class(**self.parameters)
+        param = dict(self.parameters, **self.runtime_parameters)
+        return self.generator_class(**param)
 
     def get_parameters(self):
         r"""Load/generate the parameter set for the model.
@@ -1203,6 +1178,12 @@ class GenerateTask(TaskBase):
         if getattr(self.args, 'parameters', None) is None:
             self.args.parameters = self.get_output('parametrize')
         return self.args.parameters
+
+    @cached_property
+    def runtime_parameters(self):
+        r"""dict: Set of runtime parameters controling log."""
+        return {k: getattr(self.args, k) for k in
+                ParametrizeCropTask._runtime_param}
 
     @cached_property
     def parameters(self):
@@ -1372,12 +1353,9 @@ class GenerateTask(TaskBase):
             'RUNTIME_PARAM': dict(
                 self.parameters,
                 seed=plantid,
-                verbose=self.args.verbose,
                 verbose_lpy=self.args.verbose_lpy,
-                debug=self.args.debug,
-                debug_param=self.args.debug_param,
-                debug_param_prefix=self.args.debug_param_prefix,
                 no_class_defaults=True,
+                **self.runtime_parameters
             ),
             'OUTPUT_TIME': self.parameter_unit_system.convert(
                 age, strip=True,
@@ -1390,7 +1368,11 @@ class GenerateTask(TaskBase):
             raise NotImplementedError
         else:
             color = self.args.color.value
-        lsys = Lsystem(self.output_file('lpy_model'), lpy_param)
+        lpy_model = self.output_file('lpy_model')
+        if not os.path.isfile(lpy_model):
+            self.get_output('lpy_model')
+            assert os.path.isfile(lpy_model)
+        lsys = Lsystem(lpy_model, lpy_param)
         tree = lsys.derive()
         # print(f"LSTRING: {tree}")
         generator = lsys.context().globals()['generator']

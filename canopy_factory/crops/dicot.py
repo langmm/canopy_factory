@@ -6,21 +6,20 @@ class DicotGenerator(PlantGenerator):
     r"""Class for generating generic dicot plant geometries."""
 
     _plant_name = 'dicot'
-    _components = {
-        'Leaf': {
+    _components = dict(
+        PlantGenerator._components,
+        Leaf={
             'defaults': {
                 'WMax': 2,
             },
         },
-        'Petiole': {},
-        'Cotyledon': {
+        Petiole={},
+        Cotyledon={
             'defaults': {
                 'WMax': 2,
             },
         },
-        'Node': {},
-        'Internode': {},
-    }
+    )
     _properties = dict(
         PlantGenerator._properties,
         LeavesPerNode={

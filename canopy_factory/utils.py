@@ -26,6 +26,8 @@ from yggdrasil.communication.AsciiTableComm import AsciiTableComm
 functools_cached_property = getattr(functools, "cached_property", None)
 _source_dir = os.path.abspath(os.path.dirname(__file__))
 _output_dir = os.path.join(os.getcwd(), 'output')
+_test_output_dir = os.path.join(
+    os.path.dirname(_source_dir), 'tests', 'data')
 _input_dir = os.path.join(os.getcwd(), 'input')
 _data_dir = os.path.join(_source_dir, 'data')
 _lpy_dir = os.path.join(_data_dir, 'lpy')
@@ -2060,6 +2062,16 @@ class SolarModel(object):
             self.solar_position["azimuth"].iloc[0], 'degrees')
 
     def relative_direction(self, up, north):
+        r"""Get the direction from the scene to the sun.
+
+        Args:
+            up (np.ndarray): Unit vector for up in the scene.
+            north (np.ndarray): Unit vector for north in the scene.
+
+        Returns:
+            np.ndarray: Unit vector from scene to sun.
+
+        """
         from hothouse.blaster import SunRayBlaster
         blaster = SunRayBlaster(
             latitude=self.latitude.value, longitude=self.longitude.value,

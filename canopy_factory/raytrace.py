@@ -18,8 +18,8 @@ from canopy_factory.utils import (
     scene2geom, _lpy_rays,
 )
 from canopy_factory.cli import (
-    TaskBase, TemporalTaskBase, OutputArgument,
-    OptimizationTaskBase,
+    TaskBase, TemporalTaskBase,
+    OptimizationTaskBase, SuffixGenerator,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
 
@@ -632,9 +632,11 @@ class HothouseRayTracer(RayTracerBase):
         kws = {}
         if self.args.periodic_canopy == 'scene':
             from hothouse.scene import PeriodicScene as Scene
-            kws.update(period=self.args.periodic_period.astype('f4'),
-                       direction=self.args.periodic_direction.astype('f4'),
-                       count=self.args.periodic_canopy_count_array)
+            kws.update(
+                period=self.args.periodic_period.astype('f4'),
+                direction=self.args.periodic_direction.astype('f4'),
+                count=self.args.periodic_canopy_count_array,
+            )
         else:
             from hothouse.scene import Scene
         out = Scene(
@@ -1026,6 +1028,27 @@ class RayTraceTask(TaskBase):
             'subparser_specific_dest': True,
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('traced_mesh', SuffixGenerator(
+            [
+                ('query', {'cond': True}),
+                ('show_rays', {'value': 'rays'}),
+                ('highlight', {'prefix': '_highlight', 'title': True}),
+            ],
+            outputs=['traced_mesh'],
+        )),
+        ('raytrace', SuffixGenerator(
+            [
+                ('time', {'composite': 'time'}),
+                ('nrays', {'cond': True}),
+                ('multibounce', {'value': 'multibounce'}),
+                ('any_direction', {'value': 'anydirection'}),
+                ('periodic',
+                 LayoutTask._output_suffix.arguments['periodic'])
+            ],
+            outputs=['raytrace'],
+        )),
+    ])
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -1096,75 +1119,11 @@ class RayTraceTask(TaskBase):
 
         """
         args.include_units = True
-        if ((isinstance(args.output_generate, str)
-             or (isinstance(args.output_generate, OutputArgument)
-                 and not args.output_generate.generated))):
+        if not GenerateTask.mesh_generated(args):
             args.periodic_canopy = False
         super(RayTraceTask, cls).adjust_args_internal(args)
-        assert args.output_generate.generated
-
-    def reset_outputs(self, **kwargs):
-        r"""Remove existing files that should be overwritten.
-
-        Args:
-            **kwargs: Keyword arguments are passed to base class method.
-
-        """
-        if not self.is_limits_base:
-            setattr(self.args, 'dont_write_raytrace_limits', True)
-        super(RayTraceTask, self).reset_outputs(**kwargs)
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        if name == 'traced_mesh':
-            suffix += cls._make_suffix(
-                args, 'query', cond=True,
-                wildcards=wildcards, skip=skip,
-            )
-            suffix += cls._make_suffix(
-                args, 'show_rays', value='rays',
-                wildcards=wildcards, skip=skip,
-            )
-            suffix += cls._make_suffix(
-                args, 'highlight', prefix='_highlight', title=True,
-                wildcards=wildcards, skip=skip,
-            )
-            return suffix
-        elif name != 'raytrace':
-            return suffix
-        suffix += cls._make_suffix(
-            args, 'time', wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'nrays', cond=True, wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'multibounce', value='multibounce',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'any_direction', value='anydirection',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += LayoutTask._output_suffix_periodic(
-            args, name, wildcards=wildcards, skip=skip,
-        )
-        return suffix
+        if not cls.is_limits_base_class(args):
+            args.dont_write_raytrace_limits = True
 
     @classmethod
     def _output_ext(cls, args, name, wildcards=None):
@@ -1451,15 +1410,6 @@ class RayTraceTask(TaskBase):
         return out
 
     @classmethod
-    def _get_all_ids(cls, args):
-        generator_class = get_class_registry().get('crop', args.crop)
-        return generator_class.ids_from_file(args.data)
-
-    @classmethod
-    def _get_base_id(cls, args):
-        return cls._get_all_ids(args)[0]
-
-    @classmethod
     def _adjust_color_limits(cls, self, name=None):
         r"""Set the minimum and maximum for color mapping.
 
@@ -1614,13 +1564,13 @@ class RayTraceTask(TaskBase):
         return out
 
     @classmethod
-    def _generate_limits_class(cls, args, base_limits_args=None,
+    def _generate_limits_class(cls, args, limits_args_base=None,
                                **kwargs):
         r"""Generate limits for the date in question.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            base_limits_args (dict): Arguments to use to generate base
+            limits_args_base (dict): Arguments to use to generate base
                 limits.
             **kwargs: Additional keyword arguments are passed to
                 run_iteration_class.
@@ -1629,10 +1579,10 @@ class RayTraceTask(TaskBase):
             dict: Limits.
 
         """
-        if base_limits_args is None:
-            base_limits_args = cls.base_limits_args_class(args)
+        if limits_args_base is None:
+            limits_args_base = cls.limits_args_class(args, base=True)
         args_overwrite = dict(
-            base_limits_args,
+            limits_args_base,
             **{
                 'query': None,
                 'planting_date': None,
@@ -1665,61 +1615,70 @@ class RayTraceTask(TaskBase):
             dict: Limits.
 
         """
-        if not self.is_limits_base:
+        limits_args = self.limits_args_class(self.args)
+        limits_args_base = self.limits_args_class(self.args, base=True)
+        if limits_args != limits_args_base:
             return self._generate_limits_class(
-                self.args, base_limits_args=self.base_limits_args,
-                root=self.root, cache_outputs=['raytrace_limits'],
+                self.args, limits_args_base=limits_args_base,
+                cached_outputs=self._cached_outputs,
+                cache_outputs=['raytrace_limits'],
             )
         return self.calc_query_limits(self.get_output('raytrace'))
 
-    @property
-    def is_limits_base(self):
-        r"""bool: True if the current arguments are what is required for
-        calculating limits."""
-        return (self.limits_args == self.base_limits_args)
+    @classmethod
+    def is_limits_base_class(cls, args):
+        r"""Check if the current arguments describe the set used to
+        generate the base limits.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            bool: True if the current arguments are what is required
+                for calculating limits.
+
+        """
+        limits_args = cls.limits_args_class(args)
+        limits_args_base = cls.limits_args_class(args, base=True)
+        return (limits_args == limits_args_base)
 
     @classmethod
-    def base_limits_args_class(cls, args, base_id=None):
-        r"""dict: Arguments that should be used to generate base limits.
-        """
-        out = {
-            'time': 'noon',
-            'date': args.time.summer_solstice,
-        }
-        if not args.output_generate.generated:
-            return out
-        if base_id is None:
-            base_id = RayTraceTask._get_base_id(args)
-        out.update(
-            id=base_id,
-            age='maturity',
-        )
-        return out
+    def limits_args_class(cls, args, base=False):
+        r"""Get the arguments controling limits.
 
-    @property
-    def base_limits_args(self):
-        r"""dict: Arguments that should be used to generate base limits.
-        """
-        base_id = (
-            None if (not self.args.output_generate.generated)
-            else self.external_tasks['generate'].all_ids[0]
-        )
-        return self.base_limits_args_class(self.args, base_id=base_id)
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            base (bool, optional): If True, return the arguments that
+                should be used to generate the limits rather than the
+                current arguments.
 
-    @property
-    def limits_args(self):
-        r"""dict: Current arguments that should be compared against
-        base_limits_args."""
-        out = {
-            'time': self.args.time.solar_time_string,
-            'date': self.args.time.date,
-        }
-        if not self.args.output_generate.generated:
+        Returns:
+            dict: Set of arguments controlling limits.
+
+        """
+        if base:
+            out = {
+                'time': 'noon',
+                'date': args.time.summer_solstice,
+            }
+        else:
+            out = {
+                'time': args.time.solar_time_string,
+                'date': args.time.date,
+            }
+        if not GenerateTask.mesh_generated(args):
             return out
-        out.update(
-            id=self.args.id,
-            age=self.args.time.crop_age_string,
-        )
+        if base:
+            base_id = GenerateTask.base_id_class(args)
+            out.update(
+                id=base_id,
+                age='maturity',
+            )
+        else:
+            out.update(
+                id=args.id,
+                age=args.time.crop_age_string,
+            )
         return out
 
     def _merge_output(self, name, output):
@@ -1901,6 +1860,32 @@ class RenderTask(TaskBase):
                      '--image-nx and --image-ny.'),
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('query', {'cond': True, 'outputs': ['render']}),
+        ('camera_direction', {}),
+        ('camera_location', {'prefix': '_from_'}),
+        ('scene_age', {}),
+        ('camera_type', {'noteq': 'projection'}),
+        (('camera_fov_width', 'camera_fov_height'), {
+            'kwargs_set': {
+                'cond': lambda x: (x.camera_type == 'projection'),
+                'sep': 'x', 'prefix': '',
+            },
+            'conv': int,
+        }),
+        ('camera_up', {'prefix': 'up', 'sep': 'x'}),
+        ('background_color', {'noteq': 'transparent'}),
+        (('image_nx', 'image_ny'), {
+            'kwargs_set': {'sep': 'x'},
+        }),
+        (('image_width', 'image_height'), {
+            'kwargs_set': {'sep': 'x', 'suffix': 'cm'},
+            'conv': int,
+        }),
+        ('resolution', {'conv': int, 'suffix': 'percm'}),
+        ('scene_mins', {'sep': 'x', 'prefix': '_SCMIN'}),
+        ('scene_maxs', {'sep': 'x', 'prefix': '_SCMAX'}),
+    ])
 
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
@@ -1916,6 +1901,8 @@ class RenderTask(TaskBase):
              and args.camera_location is None)):
             args.camera_direction = 'downnortheast'
         super(RenderTask, cls).adjust_args_internal(args, **kwargs)
+        if not cls.is_camera_base_class(args):
+            args.dont_write_render_camera = True
 
     @classmethod
     def adjust_args_step(cls, args, vary):
@@ -1931,91 +1918,6 @@ class RenderTask(TaskBase):
             if args.start_time.age == args.stop_time.age:
                 return
             args.scene_age = args.stop_age
-
-    def reset_outputs(self, **kwargs):
-        r"""Remove existing files that should be overwritten.
-
-        Args:
-            **kwargs: Keyword arguments are passed to base class method.
-
-        """
-        if not self.is_camera_base:
-            setattr(self.args, 'dont_write_render_camera', True)
-        super(RenderTask, self).reset_outputs(**kwargs)
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        if name != 'render_camera':
-            suffix += cls._make_suffix(
-                args, 'query', cond=True,
-                wildcards=wildcards, skip=skip,
-            )
-        suffix += cls._make_suffix(
-            args, 'camera_direction',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'camera_location', prefix='_from_',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'scene_age', wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'camera_type', noteq='projection',
-            wildcards=wildcards, skip=skip,
-        )
-        if args.camera_type == 'projection':
-            suffix += cls._make_suffix_set(
-                args, ['camera_fov_width', 'camera_fov_height'],
-                set_sep='x', set_prefix='', conv=int,
-                wildcards=wildcards, skip=skip,
-            )
-        suffix += cls._make_suffix(
-            args, 'camera_up', prefix='up', sep='x',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'background_color', noteq='transparent',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix_set(
-            args, ['image_nx', 'image_ny'], set_sep='x',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix_set(
-            args, ['image_width', 'image_height'],
-            conv=int, set_sep='x', set_suffix='cm',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'resolution', conv=int, suffix='percm',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'scene_mins', sep='x', prefix='_SCMIN',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'scene_maxs', sep='x', prefix='_SCMAX',
-            wildcards=wildcards, skip=skip,
-        )
-        return suffix
 
     @property
     def raytracer(self):
@@ -2052,54 +1954,61 @@ class RenderTask(TaskBase):
         )
         return image
 
-    @property
-    def is_camera_base(self):
-        r"""bool: True if the current arguments are what is required for
-        calculating camera properties."""
-        return (self.camera_args == self.base_camera_args)
+    @classmethod
+    def is_camera_base_class(cls, args):
+        r"""Check if the current arguments describe the set used to
+        generate the base camera.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            bool: True if the current arguments are what is required
+                for setting up the base camera.
+
+        """
+        camera_args = cls.camera_args_class(args)
+        camera_args_base = cls.camera_args_class(args, base=True)
+        return (camera_args == camera_args_base)
 
     @classmethod
-    def base_camera_args_class(cls, args):
-        r"""dict: Arguments that should be used to generate base camera
-        properties."""
-        out = {}
-        if not args.output_generate.generated:
-            return out
-        out.update(
-            age='maturity',
-            scene_age=None,
-        )
-        if args.scene_age.args['age']:
-            out['age'] = args.scene_age.args['age']
-        return out
+    def camera_args_class(cls, args, base=False):
+        r"""Get the arguments controling the camera.
 
-    @property
-    def base_camera_args(self):
-        r"""dict: Arguments that should be used to generate base camera
-        properties."""
-        return self.base_camera_args_class(self.args)
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            base (bool, optional): If True, return the arguments that
+                should be used to generate the camera rather than the
+                current arguments.
 
-    @property
-    def camera_args(self):
-        r"""dict: Current arguments that should be compared against
-        base_camera_args."""
-        out = {}
-        if not self.args.output_generate.generated:
-            return out
-        out.update(
-            age=self.args.time.args['age'],
-            scene_age=self.args.scene_age.args['age'],
-        )
+        Returns:
+            dict: Set of arguments controlling the camera.
+
+        """
+        if not GenerateTask.mesh_generated(args):
+            return {}
+        if base:
+            out = {
+                'age': 'maturity',
+                'scene_age': None,
+            }
+            if args.scene_age.args['age']:
+                out['age'] = args.scene_age.args['age']
+        else:
+            out = {
+                'age': args.time.args['age'],
+                'scene_age': args.scene_age.args['age'],
+            }
         return out
 
     @classmethod
-    def _generate_camera_class(cls, args, base_camera_args=None,
+    def _generate_camera_class(cls, args, camera_args_base=None,
                                **kwargs):
         r"""Generate camera properties for a specific scene age.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            base_camera_args (dict): Arguments to use to generate base
+            camera_args_base (dict): Arguments to use to generate base
                 camera properties.
             **kwargs: Additional keyword arguments are passed to
                 run_iteration_class.
@@ -2108,10 +2017,10 @@ class RenderTask(TaskBase):
             dict: Camera properties.
 
         """
-        if base_camera_args is None:
-            base_camera_args = cls.base_camera_args_class(args)
+        if camera_args_base is None:
+            camera_args_base = cls.camera_args_class(args, base=True)
         args_overwrite = dict(
-            base_camera_args,
+            camera_args_base,
             **{
                 'output_render': False,
                 'output_render_camera': True,
@@ -2146,10 +2055,13 @@ class RenderTask(TaskBase):
             dict: Camera properties.
 
         """
-        if not self.is_camera_base:
+        camera_args = self.camera_args_class(self.args)
+        camera_args_base = self.camera_args_class(self.args, base=True)
+        if camera_args != camera_args_base:
             return self._generate_camera_class(
-                self.args, base_camera_args=self.base_camera_args,
-                root=self.root, cache_outputs=['render_camera'],
+                self.args, camera_args_base=camera_args_base,
+                cached_outputs=self._cached_outputs,
+                cache_outputs=['render_camera'],
             )
         out = {}
         for k in ['camera_type', 'camera_fov_width',
@@ -2237,6 +2149,18 @@ class TotalsTask(TemporalTaskBase):
                      'totals_plot only'),
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('totals_plot', SuffixGenerator(
+            [
+                ('query', {'cond': True}),
+                ('per_plant', {'value': 'per_plant'}),
+            ],
+            outputs=['totals_plot'],
+        )),
+    ] + [
+        (k, v) for k, v in
+        TemporalTaskBase._output_suffix.arguments.items()
+    ])
 
     @classmethod
     def _read_output(cls, args, name, fname):
@@ -2275,38 +2199,6 @@ class TotalsTask(TemporalTaskBase):
         super(TotalsTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        suffix = ''
-        if name == 'totals_plot':
-            suffix += cls._make_suffix(
-                args, 'query', cond=True,
-                wildcards=wildcards, skip=skip,
-            )
-            suffix += cls._make_suffix(
-                args, 'per_plant', value='per_plant',
-                wildcards=wildcards, skip=skip,
-            )
-            return suffix
-        suffix += super(TotalsTask, cls)._output_suffix(
-            args, name, wildcards=wildcards, skip=skip,
-        )
-        return suffix
-
-    @classmethod
     def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
@@ -2315,9 +2207,11 @@ class TotalsTask(TemporalTaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
+        # TODO: Verify that this can be set before call base (i.e. that
+        #     none of the external tasks will modify 'canopy')
         if args.canopy == 'single':
             args.per_plant = False
+        super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
 
     @cached_property
     def time_marker(self):
@@ -2558,6 +2452,17 @@ class AnimateTask(TemporalTaskBase):
 
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        (k, v) for k, v in
+        TemporalTaskBase._output_suffix.arguments.items()
+    ] + [
+        ('inset_totals', {'value': 'totals'}),
+        # ('totals', SuffixGenerator(
+        #     TotalsTask._output_suffix.arguments,
+        #     cond=lambda x: bool(x.inset_totals),
+        # )),
+        ('frame_rate', {'suffix': 'fps', 'noteq': 1}),
+    ])
 
     def __init__(self, *args, **kwargs):
         self._inset_figure = None
@@ -2590,41 +2495,6 @@ class AnimateTask(TemporalTaskBase):
                   'colormap_scaling']:
             setattr(args, f'{k}_render', getattr(args, f'{k}_animate'))
         super(AnimateTask, cls).adjust_args_internal(args, **kwargs)
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        assert name == cls._name
-        suffix = ''
-        suffix += super(AnimateTask, cls)._output_suffix(
-            args, name, wildcards=wildcards, skip=skip,
-        )
-        suffix += cls._make_suffix(
-            args, 'inset_totals', value='totals',
-            wildcards=wildcards, skip=skip,
-        )
-        # if args.inset_totals:
-        #     suffix += TotalsTask._output_suffix(
-        #         args, name, wildcards=wildcards, skip=skip,
-        #     )
-        suffix += cls._make_suffix(
-            args, 'frame_rate', suffix='fps', noteq=1,
-            wildcards=wildcards, skip=skip,
-        )
-        return suffix
 
     @classmethod
     def _output_ext(cls, args, name, wildcards=None):
@@ -2708,6 +2578,18 @@ class MatchQuery(OptimizationTaskBase):
             'choices': _query_options,
         }),
     ]
+    _output_suffix = SuffixGenerator([
+        ('output', {'skip_outputs': ['match_query']}),
+        ('match_query', SuffixGenerator(
+            [
+                ('goal_id', {'prefix': '_matchTo_'}),
+            ] + [
+                (k, v) for k, v in
+                TemporalTaskBase._output_suffix.arguments.items()
+            ],
+            outputs=['match_query'],
+        )),
+    ])
 
     @classmethod
     def adjust_args_internal(cls, args):
@@ -2728,46 +2610,17 @@ class MatchQuery(OptimizationTaskBase):
             if not args.periodic_canopy:
                 args.periodic_canopy = 'scene'
         if args.goal_id is None:
-            ids = RayTraceTask._get_all_ids(args)
+            ids = GenerateTask.all_ids_class(args)
             for x in ids:
                 if x != args.id:
                     args.goal_id = x
                     break
-            else:
-                raise ValueError(f'No other ID to match {args.id} to')
         super(MatchQuery, cls).adjust_args_internal(args)
-        assert args.id != args.goal_id
-
-    @classmethod
-    def _output_suffix(cls, args, name, wildcards=None, skip=None):
-        r"""Generate the suffix containing information about parameters
-        that should be added to generated output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Suffix.
-
-        """
-        if name != cls._name:
-            return f'_{name}'
-        suffix = cls._make_suffix(
-            args, 'goal_id', prefix='_matchTo_',
-            wildcards=wildcards, skip=skip,
-        )
-        suffix += super(MatchQuery, cls)._output_suffix(
-            args, name, wildcards=wildcards, skip=skip,
-        )
-        return suffix
 
     @cached_property
     def goal(self):
         r"""units.Quantity: Value that should be achieved."""
+        assert self.args.id != self.args.goal_id
         args_overwrite = {
             'id': self.args.goal_id,
             self.args.vary: getattr(self.args, self.args.vary)
