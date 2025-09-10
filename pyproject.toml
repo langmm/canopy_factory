@@ -82,6 +82,7 @@ Changelog = "https://github.com/langmm/canopy_factory/blob/main/HISTORY.rst"
 dev = [
   'pytest>=8.4',
   'pytest-cov',
+  'sphinx',
 ]
 
 # [tool.scikit-build]

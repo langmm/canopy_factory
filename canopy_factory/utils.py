@@ -13,14 +13,9 @@ from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from datetime import timedelta
-import openalea.plantgl.all as pgl
-from openalea.plantgl.all import Tesselator
 from yggdrasil import rapidjson, units
 from yggdrasil.serialize.PlySerialize import PlyDict
 from yggdrasil.serialize.ObjSerialize import ObjDict
-from yggdrasil.communication.PlyFileComm import PlyFileComm
-from yggdrasil.communication.ObjFileComm import ObjFileComm
-from yggdrasil.communication.AsciiTableComm import AsciiTableComm
 
 
 functools_cached_property = getattr(functools, "cached_property", None)
@@ -44,11 +39,6 @@ _geom_classes = {
     _mesh_format: PlyDict,
 }
 _supported_3d_formats = sorted(_geom_classes.keys())
-_comm_classes = {
-    'ply': PlyFileComm,
-    'obj': ObjFileComm,
-    _mesh_format: AsciiTableComm,
-}
 _geom_ext = {
     '.ply': 'ply',
     '.obj': 'obj',
@@ -1223,6 +1213,7 @@ def create_organ_symbol(name, fname, scale=None):
         PlantGL.FaceSet: Geometry.
 
     """
+    import openalea.plantgl.all as pgl
     mesh = read_3D(fname)
     mins = np.array([1e6, 1e6, 1e6])
     maxs = np.array([-1e6, -1e6, -1e6])
@@ -1334,6 +1325,7 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
 
     """
     if d is None:
+        from openalea.plantgl.all import Tesselator
         d = Tesselator()
     cls_name = None
     if isinstance(cls, str):
@@ -1411,6 +1403,7 @@ def shape2dict(shape, d=None, conversion=1.0, as_obj=False,
 
     """
     if d is None:
+        from openalea.plantgl.all import Tesselator
         d = Tesselator()
     if verbose:
         print("Tesselating shape")

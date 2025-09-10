@@ -1,7 +1,6 @@
 import os
 import copy
 import numpy as np
-from openalea.lpy import Lsystem
 from yggdrasil import units, rapidjson
 from canopy_factory import utils
 from canopy_factory.utils import (
@@ -1324,6 +1323,7 @@ class GenerateTask(TaskBase):
             ObjDict: Generated mesh.
 
         """
+        from openalea.lpy import Lsystem
         x = self.args.x
         y = self.args.y
         plantid = self.args.plantid

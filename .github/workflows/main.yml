@@ -46,17 +46,16 @@ jobs:
       # - name: Install embree
       #   run: |
       #     cd ..
-      #     ./build_embree.sh
+      #     ./canopy_factory/build_embree.sh
       - name: Install pyembree
         run: |
           cd ..
-          ./build_pyembree.sh
+          ./canopy_factory/build_pyembree.sh
       - name: Install hothouse
         run: |
           cd ..
-          ./build_hothouse.sh
-
-      - name: Install dependencies
+          ./canopy_factory/build_hothouse.sh
+      - name: Install canopy_factory
         run: |
           pip install -v '.[dev]'
 
@@ -71,6 +70,30 @@ jobs:
       # - name: Doctests
       #   run: |
       #     make -C docs doctest -e PYTHON=$(which python3)
+
+  docs:
+    name: Build the Docs
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Get tags required by setuptools_scm to generate version
+      run: |
+        git fetch --prune --unshallow
+        git fetch --depth=1 origin +refs/tags/*:refs/tags/*
+    - name: Build the docs
+      run: |
+        cd docs
+        make autodoc
+        cd ../
+    - name: Publish docs to Github pages
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+      uses: JamesIves/github-pages-deploy-action@3.7.1
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        BRANCH: gh-pages
+        FOLDER: docs/build/html/
 
   # build_wheels:
   #   name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
