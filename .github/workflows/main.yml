@@ -36,8 +36,9 @@ jobs:
           channels: msys,conda-forge,fredboudon
           # use-only-tar-bz2: true
           channel-priority: strict
-          miniforge-variant: Miniforge3
-          miniforge-version: latest
+          # miniforge-variant: Miniforge3
+          # miniforge-version: latest
+          environment-file: environment.yml
 
       # Build embree & hothouse
       - name: Install embree & hothouse build dependencies
