@@ -42,7 +42,7 @@ jobs:
       # Build embree & hothouse
       - name: Install embree & hothouse build dependencies
         run: |
-          conda update -n canopy --file environment_raytrace.yml        
+          conda env update -n canopy --file environment_raytrace.yml
       # - name: Install embree
       #   run: |
       #     cd ..

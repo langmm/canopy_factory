@@ -110,7 +110,7 @@ If you would like to run a ray tracer on the generated 3D geometries,
 `maize3d.py` has some options for doing so using [pyembree](https://github.com/scopatz/pyembree) and [hothouse](https://github.com/cropsinsilico/hothouse). Both of these libraries will need to be installed from source as they are not under active development and had to be updated to use embree 4. Before running the command below, the conda environment should be updated with their dependencies that can be found in `environment_raytrace.yml`:
 
 ```
-conda update -n canopy --file environment_raytrace.yml
+conda env update -n canopy --file environment_raytrace.yml
 ```
 
 If you are using Python >= 3.12 and you get an error along the lines of `AttributeError: module 'pkgutil' has no attribute 'ImpImporter'. Did you mean: 'zipimporter'?` during the installation process, you will need to
