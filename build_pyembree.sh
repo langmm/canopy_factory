@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 if [ ! -d pyembree ]; then
-    git clone --branch callbacks git@github.com:langmm/pyembree.git
+    git clone --branch callbacks https://github.com/langmm/pyembree.git
 fi
 cd pyembree
 python -m ensurepip --upgrade
