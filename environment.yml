@@ -7,7 +7,7 @@ dependencies:
   - imageio
   - matplotlib
   - numpy < 2  # Compatibility with pandas
-  - openalea.lpy
+  # - openalea.lpy  # Current conda install fails as of 9/11/2025
   - pandas
   - pvlib
   - python

@@ -40,7 +40,7 @@ jobs:
           # miniforge-version: latest
           environment-file: environment.yml
 
-      # Build embree & hothouse
+      # Build & install dependencies
       - name: Install embree & hothouse build dependencies
         run: |
           conda env update -n canopy --file environment_raytrace.yml
@@ -48,6 +48,10 @@ jobs:
       #   run: |
       #     cd ..
       #     ./canopy_factory/build_embree.sh
+      - name: Install lpy
+        run: |
+          cd ..
+          ./canopy_factory/build_lpy.sh
       - name: Install pyembree
         run: |
           cd ..
