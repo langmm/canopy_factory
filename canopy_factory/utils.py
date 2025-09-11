@@ -9,6 +9,7 @@ import warnings
 import subprocess
 import traceback
 import contextlib
+from canopy_factory.config import PackageConfig
 from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import MutableMapping
@@ -20,16 +21,30 @@ from yggdrasil.serialize.ObjSerialize import ObjDict
 
 functools_cached_property = getattr(functools, "cached_property", None)
 _source_dir = os.path.abspath(os.path.dirname(__file__))
-_output_dir = os.path.join(os.getcwd(), 'output')
-_test_output_dir = os.path.join(
-    os.path.dirname(_source_dir), 'tests', 'data')
-_input_dir = os.path.join(os.getcwd(), 'input')
-_data_dir = os.path.join(_source_dir, 'data')
-_lpy_dir = os.path.join(_data_dir, 'lpy')
-_param_dir = os.path.join(_source_dir, 'param')
-_user_param_dir = os.path.join(_output_dir, 'param')
-_location_data = os.path.join(_data_dir, 'locations.csv')
-_lpy_rays = os.path.join(_lpy_dir, 'rays.lpy')
+cfg = PackageConfig(
+    'canopy_factory',
+    defaults={
+        'directories': {
+            'yamls': os.path.join(os.getcwd(), 'yamls'),
+            'input': os.path.join(os.getcwd(), 'input'),
+            'output': os.path.join(os.getcwd(), 'output'),
+            'user_param': os.path.join(os.getcwd(), 'output', 'param'),
+        },
+    },
+)
+cfg.setdefaults(
+    directories={
+        'source': _source_dir,
+        'test_output': os.path.join(
+            os.path.dirname(_source_dir), 'tests', 'data'),
+        'data': os.path.join(_source_dir, 'data'),
+        'lpy': os.path.join(_source_dir, 'data', 'lpy'),
+        'param': os.path.join(_source_dir, 'param'),
+    },
+    files={
+        'locations': os.path.join(_source_dir, 'data', 'locations.csv'),
+    },
+)
 _default_axis_up = np.array([0, 0, 1], dtype=np.float64)
 _default_axis_x = np.array([1, 0, 0], dtype=np.float64)
 _mesh_format = 'triangle_mesh'
@@ -1143,7 +1158,7 @@ def read_locations(fname=None, verbose=False):
 
     Args:
         fname (str, optional): Path to file containing location data. If
-            not provided _location_data will be used.
+            not provided cfg['files']['locations'] will be used.
         verbose (bool, optional): If True, log messages will be emitted.
 
     Returns:
@@ -1151,7 +1166,7 @@ def read_locations(fname=None, verbose=False):
 
     """
     if fname is None:
-        fname = _location_data
+        fname = cfg['files']['locations']
     if verbose:
         print(f'Reading location data from \"{fname}\"')
     df = pd.read_csv(fname)

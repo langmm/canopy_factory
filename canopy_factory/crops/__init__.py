@@ -32,7 +32,7 @@ class ParametrizeCropTask(TaskBase):
     _output_info = {
         'parametrize': {
             'base_string': '',
-            'directory': utils._param_dir,
+            'directory': utils.cfg['directories']['param'],
             'ext': '.json',
             'description': (
                 'parameters used to generate 3D '
@@ -41,7 +41,7 @@ class ParametrizeCropTask(TaskBase):
         },
         'lpy_model': {
             'base_string': '',
-            'directory': utils._lpy_dir,
+            'directory': utils.cfg['directories']['lpy'],
             'ext': '.lpy',
             'description': 'LPy L-system rules',
         },

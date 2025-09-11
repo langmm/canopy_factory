@@ -22,6 +22,7 @@ dynamic = [
 #   "ffmpeg",
 #   "openalea.lpy",
 #   "yggdrasil",
+#   "ePhotosynthesis_C", (or "sundials>=5.7.0" if building),
 # ]
 # pyembree_dependencies = [
 #   "cmake",
@@ -38,6 +39,7 @@ dependencies = [
   "pvlib>=0.7.2",
   # "pyembree",  # should be installed from source on callbacks branch
   "pyshp",
+  "pyyaml",
   "scipy",
 ]
 description = "Tool for generating & utilizing 3D meshes for simulated canopies"

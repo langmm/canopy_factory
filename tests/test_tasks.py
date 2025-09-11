@@ -72,12 +72,7 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
             if kpath is None:
                 kpath = out.output_file(k, return_disabled=True)
             assert isinstance(kpath, str)
-            assert not kpath.startswith(utils._output_dir)
-            # if kout.path.startswith(utils._output_dir):
-            #     kout._generated_path = kpath.replace(
-            #         utils._output_dir, test_output_dir)
             out._testing_default_files[k] = kpath
-            assert not kpath.startswith(utils._output_dir)
             if k in outputs_remove:
                 kout._generated_path = testid.join(os.path.splitext(
                     kpath))

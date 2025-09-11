@@ -48,6 +48,10 @@ jobs:
       #   run: |
       #     cd ..
       #     ./canopy_factory/build_embree.sh
+      - name: Install ePhotosynthesis_C
+        run: |
+          cd ..
+          ./canopy_factory/build_ePhotosynthesis_C.sh
       - name: Install lpy
         run: |
           cd ..

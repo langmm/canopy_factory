@@ -13,5 +13,8 @@ dependencies:
   - python
   - pyshp
   - pytest
+  - pyyaml
   - scipy
   - yggdrasil
+  # - ePhotosynthesis_C  # Once this is released
+  - sundials>=5.7.0  # For building ePhotosynthesis_C

@@ -15,7 +15,8 @@ class MaizeGenerator(MonocotGenerator):
 
     _plant_name = 'maize'
     _default_data = os.path.join(
-        utils._input_dir, 'B73_WT_vs_rdla_Paired_Rows.csv')
+        utils.cfg['directories']['input'],
+        'B73_WT_vs_rdla_Paired_Rows.csv')
     _defaults = dict(
         MonocotGenerator._defaults,
         id='WT',

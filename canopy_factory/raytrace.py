@@ -11,11 +11,11 @@ from yggdrasil.serialize.PlySerialize import PlyDict
 from yggdrasil.serialize.ObjSerialize import ObjDict
 from canopy_factory import utils
 from canopy_factory.utils import (
-    RegisteredClassBase, get_class_registry,
+    cfg, RegisteredClassBase, get_class_registry,
     parse_quantity, parse_axis,
     cached_property, cached_args_property, readonly_cached_args_property,
     # Geometry
-    scene2geom, _lpy_rays,
+    scene2geom,
 )
 from canopy_factory.cli import (
     TaskBase, TemporalTaskBase,
@@ -70,7 +70,7 @@ def generate_rays(ray_origins, ray_directions,
         'RAY_LENGTH': ray_length,
         'ARROW_WIDTH': arrow_width,
     }
-    lsys = Lsystem(_lpy_rays, param)
+    lsys = Lsystem(cfg['directories']['lpy'], param)
     tree = lsys.axiom
     for i in range(2):
         tree = lsys.iterate(tree, 1)

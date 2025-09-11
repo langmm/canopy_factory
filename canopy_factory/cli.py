@@ -14,7 +14,7 @@ from collections import OrderedDict
 from datetime import datetime
 from canopy_factory import utils
 from canopy_factory.utils import (
-    rapidjson, units, parse_quantity, format_list_for_help,
+    cfg, rapidjson, units, parse_quantity, format_list_for_help,
     get_class_registry, NoDefault, RegisteredClassBase,
     cached_property,
 )
@@ -1664,7 +1664,7 @@ class OutputArgument(CompositeArgument):
     def is_test(self):
         r"""bool: True if the output points to the test directory."""
         if isinstance(self.path, str):
-            return self.path.startswith(utils._test_output_dir)
+            return self.path.startswith(cfg['directories']['test_output'])
         return False
 
     @cached_property
@@ -1920,12 +1920,16 @@ class OutputArgument(CompositeArgument):
             return
         fnames = [fname]
         if not skip_test_output:
-            if fname.startswith(utils._output_dir):
-                fnames.append(fname.replace(utils._output_dir,
-                                            utils._test_output_dir))
-            elif fname.startswith(utils._test_output_dir):
-                fnames.append(fname.replace(utils._test_output_dir,
-                                            utils._output_dir))
+            if fname.startswith(cfg['directories']['output']):
+                fnames.append(fname.replace(
+                    cfg['directories']['output'],
+                    cfg['directories']['test_output']
+                ))
+            elif fname.startswith(cfg['directories']['test_output']):
+                fnames.append(fname.replace(
+                    cfg['directories']['test_output'],
+                    cfg['directories']['output']
+                ))
         files = []
         for x in fnames:
             files += glob.glob(x)
@@ -3605,7 +3609,7 @@ class TaskBase(SubparserBase):
                      'messages and errors')
         }),
         (('--output-dir', ), {
-            'type': str, 'default': utils._output_dir,
+            'type': str, 'default': cfg['directories']['output'],
             'help': 'Base directory where output should be stored.',
         }),
     ]

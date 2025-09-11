@@ -2,7 +2,7 @@
 set -e
 export PLANTGL_ROOT="${CONDA_PREFIX}"
 if [ ! -d lpy ]; then
-    git clone git@github.com:openalea/lpy.git
+    git clone https://github.com/openalea/lpy.git
 fi
 cd lpy
 if [ ! -d build ]; then
