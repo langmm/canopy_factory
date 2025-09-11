@@ -790,7 +790,11 @@ class InstrumentedParser(argparse.ArgumentParser):
                  or name.lstrip('-').replace('-', '_') == action.dest)):
                 return action
         if default is NoDefault:
-            raise KeyError(name)
+            available = set()
+            for action in self._actions:
+                available |= set(action.option_strings + [action.dest])
+            raise KeyError(f'No argumented \"{name}\". Available '
+                           f'options: {sorted(list(available))}')
         return default
 
     def has_argument(self, name):
@@ -956,8 +960,9 @@ class CompositeArgument(RegisteredClassBase):
                 args_overwrite=args_overwrite,
             )
         args_composite = []
-        for k in self.argument_names():
-            kbook = self.prefix + k + self.suffix
+        for k, kbook in self.argument_names(prefix=self.prefix,
+                                            suffix=self.suffix,
+                                            include_base=True):
             self.args[k] = (
                 None if k in self.ignore
                 else args_overwrite.get(kbook,
@@ -1149,7 +1154,7 @@ class CompositeArgument(RegisteredClassBase):
 
     @classmethod
     def argument_names(cls, name=None, prefix=None, suffix=None,
-                       no_universal=False):
+                       no_universal=False, include_base=False):
         r"""Get the argument names used to specify a variable.
 
         Args:
@@ -1161,6 +1166,9 @@ class CompositeArgument(RegisteredClassBase):
                 arguments.
             no_universal (bool, optional) If True, don't include
                 universal arguments.
+            include_base (bool, optional): If True, return a list
+                containing the argument names both without and with the
+                prefix/suffix.
 
         Returns:
             list: Argument names.
@@ -1176,12 +1184,18 @@ class CompositeArgument(RegisteredClassBase):
             prefix + SubparserBase.arg2dest(args, kwargs) + suffix
             for args, kwargs in cls._arguments
         ]
-        if no_universal:
-            return out
-        out += [
-            SubparserBase.arg2dest(args, kwargs)
-            for args, kwargs in cls._arguments_universal
-        ]
+        if not no_universal:
+            out += [
+                SubparserBase.arg2dest(args, kwargs)
+                for args, kwargs in cls._arguments_universal
+            ]
+        if include_base:
+            out = [
+                (k, v) for k, v in
+                zip(cls.argument_names(name, prefix='', suffix='',
+                                       no_universal=no_universal),
+                    out)
+            ]
         return out
 
     @classmethod
@@ -2547,15 +2561,29 @@ class TimeArgument(AgeArgument):
         return super(TimeArgument, self).extract_unused(out, name)
 
     @property
+    def is_northern_hemisphere(self):
+        r"""bool: True if the latitude is in the norther hemisphere."""
+        if not self.setdefaults(['latitude']):
+            return True
+        latitude = self.args['latitude']
+        if not isinstance(latitude, units.Quantity):
+            latitude = units.Quantity(latitude, "degrees")
+        return (latitude > units.Quantity(0, 'degrees'))
+
+    @property
     def is_summer_solstice(self):
         r"""bool: True if the date is the summer solstice."""
-        if self.args['latitude'] > units.Quantity(0, 'degrees'):
+        if not self.setdefaults(['date']):
+            return False
+        if self.is_northern_hemisphere:
             return (self.date.month == 6 and self.date.day == 21)
         return (self.date.month == 12 and self.date.day == 21)
 
     @property
     def is_summer_solstice_noon(self):
         r"""bool: True if the time is noon on the summer solstice."""
+        if not self.setdefaults(['date']):
+            return False
         return (self.is_summer_solstice
                 and self.solar_time_string in ['noon', 'transit'])
 
@@ -2563,7 +2591,9 @@ class TimeArgument(AgeArgument):
     def summer_solstice(self):
         r"""datetime: Get the date of the summer solstice for this
         latitude."""
-        if self.args['latitude'] > units.Quantity(0, 'degrees'):
+        if not self.setdefaults(['date']):
+            return False
+        if self.is_northern_hemisphere:
             return self.date.replace(month=6, day=21)
         return self.date.replace(month=12, day=21)
 
@@ -3677,7 +3707,9 @@ class TaskBase(SubparserBase):
              ParametrizeCropTask: Instance that parametrizes geometries.
 
         """
-        return self.output_task('parametrize', from_root=True)
+        out = self.output_task('parametrize', from_root=True)
+        out.ensure_initialized()
+        return out
 
     @classmethod
     def task_hierarchy(cls):
@@ -4975,6 +5007,15 @@ class TaskBase(SubparserBase):
         if task.output_enabled(name, for_write=True):
             task.write_output(name, output, overwrite=overwrite)
 
+    @property
+    def all_ids(self):
+        r"""list: All crop classes for current data."""
+        # assert self.args.output_generate.generated
+        # return self.output_task('generate').all_ids
+        if not self.args.data:
+            return []
+        return utils.DataProcessor.from_file(self.args.data).ids
+
     def generate_output(self, name):
         r"""Generate the specified output value.
 
@@ -4987,8 +5028,7 @@ class TaskBase(SubparserBase):
         """
         output = getattr(self.args, f'output_{name}')
         if output.is_merged or output.is_unmerged:
-            assert self.args.output_generate.generated
-            over = {'id': self.output_task('generate').all_ids}
+            over = {'id': self.all_ids}
             merge_all = output.is_merged
             merge_all_output = output.merge_all_output
             if merge_all_output is None:

@@ -9,14 +9,17 @@ import warnings
 import subprocess
 import traceback
 import contextlib
+import re
+import glob
 from canopy_factory.config import PackageConfig
 from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from datetime import timedelta
-from yggdrasil import rapidjson, units
-from yggdrasil.serialize.PlySerialize import PlyDict
-from yggdrasil.serialize.ObjSerialize import ObjDict
+import yggdrasil_rapidjson as rapidjson
+from yggdrasil_rapidjson import units
+from yggdrasil_rapidjson.geometry import Ply as PlyDict
+from yggdrasil_rapidjson.geometry import ObjWavefront as ObjDict
 
 
 functools_cached_property = getattr(functools, "cached_property", None)
@@ -1132,8 +1135,10 @@ def correct_obj_color(fname, verbose=False):
             continue
         colors = values[4:]
         if not all(is_int_color(xx) for xx in colors):
-            abort = True
-            break
+            revised.append(x)
+            # abort = True
+            # break
+            continue  # Allow for non-homogeneous colors
         colors = [str(float(xx) / 255.0) for xx in colors]
         assert len(colors) == 3
         values = values[:4] + colors
@@ -3227,3 +3232,577 @@ class DictSet(DictWrapper):
 
         """
         self.members.append(self.coerce_member(member, **kwargs))
+
+
+class DataProcessor:
+    r"""Class for processing crop data into parameters.
+
+    Args:
+        crop (str): Crop name.
+        metadata (dict, optional): Metadata for the crop.
+        units (dict, optional): Unit system that data will be stored in.
+
+    """
+
+    _schema = {
+        'type': 'object',
+        'required': ['metadata', 'units', 'data'],
+        'properties': {
+            'metadata': {
+                'type': 'object',
+                'required': ['crop', 'year', 'authors'],
+                'properties': {
+                    'crop': {'type': 'string'},
+                    'year': {'type': 'string'},
+                    'authors': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'minItems': 1,
+                    },
+                    'sources': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'minItems': 1,
+                    },
+                },
+            },
+            'units': {
+                'type': 'object',
+                'required': ['length', 'mass', 'time', 'angle'],
+                'additionalProperties': {
+                    # TODO: Change to units once added to rapidjson
+                    'type': 'string',
+                },
+            },
+            'data': {
+                'type': 'object',
+                'additionalProperties': {
+                    'type': 'object',
+                    'additionalProperties': {
+                        'type': 'object',
+                        'additionalProperties': {
+                            'type': '1darray',
+                            'subtype': 'float',
+                            'precision': 8,
+                        },
+                    },
+                },
+            },
+        },
+        'additionalProperties': False,
+    }
+
+    def __init__(self, crop=None, year=None, metadata=None, units=None):
+        if metadata is None:
+            metadata = {}
+        metadata.setdefault('crop', crop)
+        metadata.setdefault('year', year)
+        metadata.setdefault('sources', [])
+        if units is None:
+            units = {
+                'length': 'cm',
+                'mass': 'kg',
+                'time': 'days',
+                'angle': 'degrees',
+            }
+        self.metadata = metadata
+        self.units = units
+        self.data = {}
+        if crop is not None:
+            assert self.crop == crop
+        if year is not None:
+            assert self.year == year
+
+    @classmethod
+    def from_file(cls, fname, **kwargs):
+        r"""Create a DataProcessor instance from a file name.
+
+        Args:
+            fname (str): File containing parameter measurements in JSON.
+            **kwargs: Additional keyword arguments are passed to the
+                class constructor.
+
+        Returns:
+            DataProcessor: Processory instance with data loaded.
+
+        """
+        out = cls(**kwargs)
+        out.read(fname)
+        return out
+
+    @classmethod
+    def ids_from_file(cls, fname, **kwargs):
+        r"""Get available ids from a datafile.
+
+        Args:
+            fname (str): File containing parameter measurements in JSON.
+            **kwargs: Additional keyword arguments are passed to
+                from_file.
+
+        Returns:
+            list: ID strings.
+
+        """
+        try:
+            return cls.from_file(fname, **kwargs).ids
+        except BaseException as e:
+            print("HERE", e)
+            pdb.set_trace()
+            # if fname is None and kwargs.get('crop', None):
+            #     return cls.available_ids(kwargs.pop('crop'), **kwargs)
+            raise
+
+    @classmethod
+    def base_id_from_file(cls, *args, **kwargs):
+        r"""Get the base ID from a datafile.
+
+        Args:
+            *args, **kwargs: Additional arguments are passed to
+                ids_from_file.
+
+        Returns:
+            str: Base id.
+
+        """
+        ids = cls.ids_from_file(*args, **kwargs)
+        if not ids:
+            return None
+        return ids[0]
+
+    @classmethod
+    def output_name(cls, crop, year):
+        r"""Create an output file name for a given crop and year.
+
+        Args:
+            crop (str): Crop name.
+            year (str): Year that data was collected in.
+
+        Returns:
+            str: Data file name.
+
+        """
+        if not (crop and year):
+            raise ValueError("Both crop and year must be provided to "
+                             "generate a file name")
+        return os.path.join(cfg['directories']['input'],
+                            f'{crop}_{year}.json')
+
+    @classmethod
+    def available_files(cls, crop=None, year=None):
+        r"""Locate files containing data for a certain crop and/or year.
+
+        Args:
+            crop (str, optional): Crop name.
+            year (str, optional): Year that data was collected in.
+
+        Returns:
+            list: Matching files.
+
+        """
+        if crop is None:
+            crop = '*'
+        if year is None:
+            year = '*'
+        regex = cls.output_name(crop, year)
+        return sorted(glob.glob(regex))
+
+    @classmethod
+    def available_years(cls, crop, **kwargs):
+        r"""Determine the years in which there is data available for a
+        given crop.
+
+        Args:
+            crop (str): Crop name.
+            **kwargs: Additional keyword arguments are passed to
+                available_files.
+
+        Returns:
+            list: Available years.
+
+        """
+        files = cls.available_files(crop, **kwargs)
+        out = set()
+        for x in files:
+            out |= set([cls.from_file(x).year])
+        return sorted(list(out))
+
+    @classmethod
+    def available_ids(cls, crop, **kwargs):
+        r"""Determine the IDs for which there is data available for a
+        given crop.
+
+        Args:
+            crop (str): Crop name.
+            **kwargs: Additional keyword arguments are passed to
+                available_files.
+
+        Returns:
+            list: Available ids.
+
+        """
+        files = cls.available_files(crop, **kwargs)
+        out = set()
+        for x in files:
+            out |= set(cls.from_file(x).ids)
+        return sorted(list(out))
+
+    @cached_property
+    def param(self):
+        r"""dict: Parameters saved to file."""
+        return {
+            'metadata': self.metadata,
+            'units': self.units,
+            'data': self.data,
+        }
+
+    @property
+    def crop(self):
+        r"""str: Crop that data pertains to."""
+        return self.metadata['crop']
+
+    @property
+    def year(self):
+        r"""str: Year that the data was collected."""
+        return self.metadata['year']
+
+    @property
+    def ids(self):
+        r"""list: Set of IDs for genotypes that have data."""
+        return sorted(list(self.data))
+
+    def parameter_names(self, idstr=None):
+        r"""Get the set of parameters present in the data for the
+        provided ID string.
+
+        Args:
+            idstr (str, optional): ID string for the genotype. If not
+                provided all of the parameters present in any of the
+                genotype data will be used.
+
+        Returns:
+            list: Parameter names.
+
+        """
+        if idstr is None:
+            out = set()
+            for idstr in self.ids:
+                out |= set(self.parameter_names(idstr=idstr))
+            return list(out)
+        return list(self.data[idstr].keys())
+
+    def process_csv(self, fname, genotype=None, **kwargs):
+        r"""Process data from a file.
+
+        Args:
+            fname (str): Path to CSV file that data should be loaded
+                from.
+            genotype (str, optional): Name of the genotype that the data
+                in fname pertain to or that should be processed. Required
+                if genotype is not specified in the data.
+            **kwargs: Additional keyword arguments are passed to
+                extract_parameter_data.
+
+        """
+        if not (os.path.isfile(fname) or os.path.isabs(fname)):
+            fname = os.path.join(cfg['directories']['input'], fname)
+        print(f"Loading data from \"{fname}\"")
+        df0 = pd.read_csv(fname)
+        if kwargs.get('debug', False):
+            print(df0)
+        genotypic_classes = sorted(list(set(df0['Class'])))
+        if genotype is None:
+            if "Genotype" not in df0:
+                raise RuntimeError(f'Genotype not provided and not '
+                                   f'present in the file \"{fname}\"')
+            genotypes = sorted(list(set(df0['Genotype'])))
+        else:
+            genotypes = [genotype]
+        for genotype in genotypes:
+            if 'Genotype' in df0:
+                df_genotype = self.select_data(df0, genotype=genotype)
+            else:
+                df_genotype = df0
+            genotypic_classes = sorted(list(set(df_genotype['Class'])))
+            for genotypic_class in genotypic_classes:
+                df_class = self.select_data(
+                    df_genotype, genotypic_class=genotypic_class)
+                if df_class.empty:
+                    raise ValueError(f"No data found for name "
+                                     f"\"{genotypic_class}\"")
+                idstr = f'{genotype}_{genotypic_class}'
+                self.data.setdefault(idstr, {})
+                self.data[idstr].update(
+                    **self.extract_parameter_data(df_class, **kwargs))
+        self.metadata['sources'].append(os.path.basename(fname))
+
+    @classmethod
+    def extract_parameter_data(cls, df, regex=None, component=None,
+                               parameter=None, noffset=-1, debug=False):
+        r"""Extract data for crop class parameters.
+
+        Args:
+            df (pandas.DataFrame): Data frame to extract parameters from.
+            regex (str, optional): Regular expression that should be used
+                to identify columns and extract parameter names.
+            component (str, optional): Component that the data pertains
+                to.
+            parameter (str, optional): Parameter that the data pertains
+                to.
+            noffset (int, optional): Offset that should be applied to the
+                parsed n value.
+            debug (bool, optional): If True, turn on debugging.
+
+        Returns:
+            dict: Extracted parameters.
+
+        """
+        if regex is None:
+            regex = r'^(?P<stage>[VR])(?P<n>\d+) (?P<parameter>[a-zA-Z]+)'
+        out = {}
+        for col in df.filter(regex=regex):
+            match = re.search(regex, col)
+            if not match:
+                raise ValueError(f"Failed to parse column name \"{col}\" "
+                                 f"with regex \"{regex}\"")
+            if parameter is not None:
+                iparameter = parameter
+            else:
+                iparameter = match['parameter']
+            if component is not None:
+                icomponent = component
+            elif 'component' in match.groupdict():
+                icomponent = match['component']
+            else:
+                icomponent = ''
+            param = f'{icomponent.title()}{iparameter.title()}'
+            n = str(int(match['n'].replace(' ', '')) + noffset)
+            nvalue = df[col].to_numpy().flatten().astype(np.float64)
+            if np.isnan(nvalue).sum() == len(nvalue):
+                continue
+            # TODO: Add units?
+            out.setdefault(param, {})
+            if n in out[param]:
+                raise ValueError(f"Duplicate n={n}?")
+            assert n not in out[param]
+            out[param][n] = nvalue
+        if debug:
+            pprint.pprint(out)
+            pdb.set_trace()
+        return out
+
+    @classmethod
+    def select_data(cls, df, genotype=None, genotypic_class=None,
+                    parameter=None, n=None, regex=None):
+        r"""Select a subset of observed data.
+
+        Args:
+            df (pandas.DataFrame): Data frame that should be filtered.
+            genotype (str, optional): Genotype that should be selected.
+            genotypic_class (str, optional): Genotypic class that should
+                be selected
+            parameter (str, optional): Parameter that should be selected.
+            n (int, optional): Phytomer count that should be selected.
+            regex (str, optional): Regex to use for data selection.
+
+        Returns:
+            pandas.DataFrame: Selected data.
+
+        """
+        if genotype is not None:
+            df = df.loc[df['Genotype'] == genotype]
+        if genotypic_class is not None:
+            df = df.loc[df['Class'] == genotypic_class]
+        if parameter is not None:
+            df = df.filter(regex=f' {parameter.title()}$')
+        if n is not None:
+            assert not (n % 1)
+            n = int(n) + 1
+            df = df.filter(regex=f'^[VR]{n} ')
+        if regex is not None:
+            df = df.filter(regex=regex)
+        return df
+
+    def parametrize(self, idstr, args=None, generator=None,
+                    default_profile='normal'):
+        r"""Create crop parameters from the raw data collected for those
+        parameters.
+
+        Args:
+            idstr (str): ID string for the genotype that should be
+                parametrized.
+            args (ParsedArguments, optional): Parsed arguments that can
+                be used to specify profiles that should be parametrized
+                for different fields.
+            generator (PlantGenerator, optional): Crop generator that
+                should be parametrized. If not provided, the generator for
+                the crop specified by the data will be used.
+            default_profile (str, optional): Default profile that should
+                be used if one is not specified by args.
+
+        Returns:
+            dict: Parameters.
+
+        """
+        from canopy_factory.crops.base import DistributionPlantParameter
+        if generator is None:
+            generator = get_class_registry().get('crop', self.crop)
+        out = {}
+        component_nmax = {}
+        scale_by_nmax = {}
+        for k, v in self.data[idstr].items():
+            try:
+                kclass = generator.get_class(k)
+            except KeyError:
+                warnings.warn(f'No class for parameter \"{k}\"')
+                continue
+            is_upper = [x.isupper() for x in k]
+            component = k[:(is_upper[1:].index(True) + 1)]
+            kunits = (self.units[kclass._unit_dimension]
+                      if kclass._unit_dimension else None)
+            profile = getattr(args, f'{k}Dist', None)
+            if profile is None:
+                profile = default_profile
+            if profile != 'normal':
+                out[k] = 1.0
+                out[f'{k}Dist'] = profile
+            nvals = np.array([int(n) for n in v.keys()])
+            nmax = int(max(nvals))
+            component_nmax[component] = max(
+                nmax, component_nmax.get(component, 0))
+            data = np.vstack(list(v.values())).T
+            # if kunits:
+            #     data = units.QuantityArray(data, kunits)
+            param_values = DistributionPlantParameter.parametrize_dist(
+                data, profile=profile, axis=0,
+            )
+            if profile == 'normal':
+                param_values['RelStdDev'] = param_values.pop(
+                    'StdDev') / param_values['Mean']
+            for kdist, v in param_values.items():
+                if kunits is not None and kdist != 'RelStdDev':
+                    v = units.QuantityArray(v, kunits)
+                if profile != 'normal':
+                    kdst = f'{k}Dist{kdist}'
+                elif kdist == 'Mean':
+                    kdst = k
+                else:
+                    kdst = f'{k}{kdist}'
+                out[f'{kdst}'] = 1.0
+                out[f'{kdst}NFunc'] = 'interp'
+                out[f'{kdst}NFuncXVals'] = nvals  # / nmax
+                out[f'{kdst}NFuncYVals'] = v
+                scale_by_nmax.setdefault(component, [])
+                scale_by_nmax[component].append(f'{kdst}NFuncXVals')
+        for k, v in scale_by_nmax.items():
+            for x in v:
+                out[x] = out[x] / component_nmax[k]
+        for k, v in component_nmax.items():
+            out[f'{k}NMax'] = v
+        return out
+
+    def read(self, fname=None):
+        r"""Read processed data from a JSON file.
+
+        Args:
+            fname (str, optional): Name of the file to read. If not
+                provided, one will be generated using output_name.
+
+        """
+        # TODO: Use schema to validate the loaded data
+        if fname is None:
+            fname = self.output_name(self.crop, self.year)
+        if not (os.path.isfile(fname) or os.path.isabs(fname)):
+            fname = os.path.join(cfg['directories']['input'], fname)
+        with open(fname, 'r') as fd:
+            param = rapidjson.load(fd)
+        rapidjson.validate(param, self._schema)
+        for k, v in param.items():
+            dst = getattr(self, k)
+            dst.clear()
+            dst.update(**v)
+
+    def write(self, fname=None):
+        r"""Write the processed data to a file as a JSON.
+
+        Args:
+            fname (str, optional): Name of the file to output. If not
+                provided, one will be generated using output_name.
+
+        """
+        if not self.data:
+            raise RuntimeError(f'Data is empty. {fname} will not be '
+                               f'created.')
+        if fname is None:
+            fname = self.output_name(self.crop, self.year)
+        if not os.path.isabs(fname):
+            fname = os.path.join(cfg['directories']['input'], fname)
+        rapidjson.validate(self.param, self._schema)
+        with open(fname, 'w') as fd:
+            rapidjson.dump(self.param, fd,
+                           write_mode=rapidjson.WM_PRETTY)
+        print(f"Saved data to \"{fname}\"")
+
+    def plot_var(self, ax, idstr, var, nlimits=None):
+        r"""Add data for a single variable to an axes.
+
+        Args:
+            ax (matplotlib.axes.Axes): Axes.
+            idstr (str): ID string for the genotype that should be plot.
+            var (str): Name of variable to plot.
+            nlimits (list): Existing list that should be updated with
+                limits on n.
+
+        """
+        if var not in self.data[idstr]:
+            ax.errorbar([], [], [], label=f'{idstr} ({self.year})')
+            return
+        order = sorted(list(self.data[idstr][var].keys()), key=int)
+        x = [int(k) + 1 for k in order]
+        yavg = [np.nanmean(self.data[idstr][var][k]) for k in order]
+        ystd = [np.nanstd(self.data[idstr][var][k]) for k in order]
+        ax.errorbar(x, yavg, ystd, label=f'{idstr} ({self.year})')
+        if nlimits is not None:
+            nlimits[0] = min(nlimits[0], min(x))
+            nlimits[1] = max(nlimits[1], max(x))
+
+    def plot(self, fname=None, other=None, parameters=None):
+        r"""Plot the dependence of parameters on phytomer number.
+
+        Args:
+            fname (str, optional): File where the plot should be saved.
+            other (DataProcessor, optional): Other set of parameters to
+                include.
+            parameters (list, optional): Set of parameters to plot.
+
+        """
+        import matplotlib.pyplot as plt
+        if parameters is None:
+            parameters = sorted(self.parameter_names())
+            if other is not None:
+                parameters = sorted(list(
+                    set(parameters) | set(other.parameter_names())))
+        ncol = 1 if len(parameters) == 1 else 2
+        nrow = int(np.ceil(len(parameters) / ncol))
+        fig, axs = plt.subplots(nrow, ncol, figsize=(18, 3 * nrow),
+                                layout='constrained')
+        nlimits = [3, 1]
+        for ax, v in zip(axs.flat, parameters):
+            ax.set_xlabel('Phytomer Number')
+            ax.set_ylabel(v)  # TODO: Add units
+            for idstr in self.ids:
+                self.plot_var(ax, idstr, v, nlimits=nlimits)
+            if other:
+                for idstr in other.ids:
+                    other.plot_var(ax, idstr, v, nlimits=nlimits)
+        nlimits[0] -= 1
+        nlimits[1] += 1
+        for ax in axs.flat:
+            ax.set_xlim(*nlimits)
+        axs.flat[0].legend()
+        if fname:
+            if not (os.path.isfile(fname) or os.path.isabs(fname)):
+                fname = os.path.join(cfg['directories']['input'], fname)
+            print(f'Saving plot to \"{fname}\"')
+            fig.savefig(fname)
+        else:
+            plt.show()

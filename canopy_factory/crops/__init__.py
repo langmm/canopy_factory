@@ -1,7 +1,8 @@
 import os
 import copy
 import numpy as np
-from yggdrasil import units, rapidjson
+import yggdrasil_rapidjson as rapidjson
+from yggdrasil_rapidjson import units
 from canopy_factory import utils
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_axis, parse_color,
@@ -47,7 +48,14 @@ class ParametrizeCropTask(TaskBase):
         },
     }
     _subparser_arguments = {
-        'crop': True
+        'crop': ['id', 'data', 'data_year'],  # True to include params
+    }
+    _subparser_modifications = {
+        'crop': {
+            'id': {
+                'append_choices': ['all'],
+            },
+        }
     }
     _arguments = [
         (('--debug-param', ), {
@@ -66,6 +74,7 @@ class ParametrizeCropTask(TaskBase):
     _output_suffix = SuffixGenerator([
         ('crop', {'cond': True, 'prefix': ''}),
         ('id', {'cond': True, 'outputs': ['parametrize']}),
+        ('data_year', {'outputs': ['parametrize']}),
     ])
     _age_strings = [
         'planting', 'maturity', 'senesce', 'remove',
@@ -107,10 +116,42 @@ class ParametrizeCropTask(TaskBase):
         super(ParametrizeCropTask, self).__init__(*args, **kwargs)
         if ((isinstance(self.args.id, str)
              and self.args.id.startswith('all') and not self.is_root)):
+            self.ensure_initialized()
+
+    def ensure_initialized(self):
+        r"""Initialize the output for another task."""
+        if self.is_root:
+            return
+        if isinstance(getattr(self.args, f'output_{self._name}', None),
+                      OutputArgument):
+            return
+        if ((isinstance(self.args.id, str)
+             and self.args.id.startswith('all'))):
             self.args = copy.deepcopy(self.args)
-            self.args.id = self.generator_class.ids_from_file(
-                self.args.data)[0]
-            self.finalize()
+            self.args.id = utils.DataProcessor.base_id_from_file(
+                self.args.data, crop=self.args.crop,
+                year=self.args.data_year,
+            )
+        self.finalize()
+
+    @classmethod
+    def adjust_args_internal(cls, args):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        """
+        super(ParametrizeCropTask, cls).adjust_args_internal(args)
+        if args.data:
+            args.data_year = utils.DataProcessor.from_file(args.data).year
+        elif args.data_year:
+            args.data = utils.DataProcessor.output_name(args.crop,
+                                                        args.data_year)
+            if not os.path.isfile(args.data):
+                args.data = None
+                args.data_year = None
 
     @cached_property
     def generator_class(self):
@@ -947,7 +988,7 @@ class GenerateTask(TaskBase):
         },
         ParametrizeCropTask: {
             'include': [
-                'crop', 'id', 'data',
+                'crop', 'id', 'data', 'data_year',
                 'debug_param', 'debug_param_prefix',
             ],
             'modifications': {
@@ -1041,7 +1082,7 @@ class GenerateTask(TaskBase):
         """
         if isinstance(args.output_generate, OutputArgument):
             return args.output_generate.generated
-        return isinstance(args.output_generate, str)
+        return (not isinstance(args.output_generate, str))
 
     @classmethod
     def all_ids_class(cls, args):
@@ -1056,8 +1097,7 @@ class GenerateTask(TaskBase):
         """
         if not (cls.mesh_generated(args) and args.data):
             return []
-        generator_class = get_class_registry().get('crop', args.crop)
-        return generator_class.ids_from_file(args.data)
+        return utils.DataProcessor.from_file(args.data).ids
 
     @classmethod
     def base_id_class(cls, args):

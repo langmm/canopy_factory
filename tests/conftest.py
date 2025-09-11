@@ -1,7 +1,7 @@
 import pytest
 import os
 import copy
-from canopy_factory.utils import get_class_registry
+from canopy_factory.utils import get_class_registry, DataProcessor
 
 
 def pytest_addoption(parser):
@@ -69,10 +69,9 @@ def pytest_generate_tests(metafunc):
         argvalues = []
         argvalues = []
         for k in crops:
-            v = get_class_registry().get('crop', k)
-            if v._default_data:
-                for vv in params.get(
-                        'id', v.ids_from_file(v._default_data)):
+            ids = DataProcessor.available_ids(k)
+            if ids:
+                for vv in params.get('id', ids):
                     argvalues.append((k, vv))
             else:
                 argvalues.append((k, None))

@@ -1,5 +1,5 @@
 import os
-from yggdrasil import rapidjson
+import yggdrasil_rapidjson as rapidjson
 from collections import OrderedDict
 from configparser import ConfigParser
 

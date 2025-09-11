@@ -10,12 +10,23 @@ class DicotGenerator(PlantGenerator):
         PlantGenerator._components,
         Leaf={
             'defaults': {
+                'NFirst': 1,
+                'NPeriod': 2,
                 'WMax': 2,
             },
         },
         Petiole={},
         Cotyledon={
             'defaults': {
+                'NFirst': 0,
+                'NLast': 0,
+                'WMax': 2,
+            },
+        },
+        Branch={
+            'defaults': {
+                'NFirst': 2,
+                'NPeriod': 2,
                 'WMax': 2,
             },
         },
@@ -34,10 +45,10 @@ class DicotGenerator(PlantGenerator):
     )
     _defaults = dict(
         PlantGenerator._defaults,
-        NMax=5,
+        NMax=10,
         # Petiole parameters
-        PetioleLength=1.0,
-        PetioleWidth=0.3,
+        PetioleLength=0.5,
+        PetioleWidth=0.125,
         # Leaf parameters
         LeafWMax=5,
         LeafMethod='sweep',
@@ -48,20 +59,22 @@ class DicotGenerator(PlantGenerator):
         LeafWidthXFunc='interp',
         LeafWidthXFuncXVals=(0, 1),
         LeafWidthXFuncYVals=np.array([
-            0.27, 0.30, 0.42, 0.73, 0.88, 1.0, 0.91, 0.76, 0.55, 0,
+            0.1, 0.30, 0.42, 0.73, 0.88, 1.0, 0.91, 0.76, 0.55, 0,
         ]),
         LeafThickness=0.01,  # relative to leaf width
-        LeafAngle=80,
+        LeafAngle=70,
         LeafRotationAngle=360,
         LeafRotationAngleWFunc='linear',
         LeafRotationAngleWFuncSlope=1,
         LeafRotationAngleWFuncIntercept=0.0,
+        LeafBend=1.0,
+        LeafBendRelStdDev=0.1,
+        LeafBendXFuncMethod='LeafBendX',
         # Cotyledon parameters
-        CotyledonWMax=2,
         CotyledonMethod='sweep',
-        CotyledonLength=5.0,
+        CotyledonLength=1.75,
         CotyledonLengthRelStdDev=0.01,
-        CotyledonWidth=2.0,
+        CotyledonWidth=1.25,
         CotyledonWidthRelStdDev=0.01,
         CotyledonWidthXFunc='interp',
         CotyledonWidthXFuncXVals=(0, 1),
@@ -80,6 +93,30 @@ class DicotGenerator(PlantGenerator):
         InternodeWidthNFunc='linear',
         InternodeWidthNFuncSlope=-0.9,
         InternodeWidthNFuncIntercept=1.0,
-        InternodeRotationAngle=90,
+        InternodeRotationAngle=45,
         InternodeRotationAngleRelStdDev=0.1,
+        # Branch parameters
+        BranchAngle=70,
+        BranchRotationAngle=360,
+        BranchRotationAngleWFunc='linear',
+        BranchRotationAngleWFuncSlope=1,
+        BranchRotationAngleWFuncIntercept=0.0,
     )
+
+    def LeafBendX(self, x):
+        r"""Explicit method to compute the dependence of LeafBend on
+        position along the leaf.
+
+        Args:
+            x (float, optional): Position along the leaf that will be
+                generated.
+
+        Returns:
+            object: Parameter value.
+
+        """
+        amp = 0.05
+        period = 0.9
+        slope = 0.8
+        out = amp * (np.cos(2.0 * np.pi * x / period) - 1.0) + (slope * x)
+        return 20.0 * np.pi * out

@@ -158,24 +158,57 @@ python -m canopy_factory -h
 
 ## Examples
 
-### Single plant with single id
+### Single maize plant using data collected in 2024 for B73 rdla
 
 ```
-python -m canopy_factory --id=rdla
+python -m canopy_factory --id=B73_rdla
 ```
 
 
-### Single plant with WT & rdla side-by-side
+### Single maize plant using data collected in 2024 for B73 WT & rdla side-by-side
 
 ```
 python -m canopy_factory --id=all
 ```
 
 
-### 500cm x 500cm plot of uniquely generated WT plants with 100 cm plant spacing between rows & 20 cm plant spacing between plants within rows
+### 500cm x 500cm plot of uniquely generated B73 WT maize plants with 100 cm plant spacing between rows & 20 cm plant spacing between plants within rows
 
 ```
-python -m canopy_factory --id=WT --canopy=unique --plot-length=500 --plot-width=500 --row-spacing=100 --plant-spacing=20
+python -m canopy_factory --id=B73_WT --canopy=unique --plot-length=500 --plot-width=500 --row-spacing=100 --plant-spacing=20
+```
+
+### Plot light totals for all IDs in the maize data file for 2025 using periodic boundary conditions
+
+```
+python -m canopy_factory totals maize --canopy=unique --periodic-canopy --output-totals-plot --id=all --data-year=2025
+```
+
+
+### Plot the layout for a field with periodic boundary conditions
+
+```
+python -m canopy_factory layout --periodic-canopy
+```
+
+### Movie over one day for plot of raytraced unique B73 WT maize plants generated using data from 2025
+
+```
+python -m canopy_factory animate maize --canopy=unique --id=B73_WT --data-year=2025
+```
+
+### Movie over growing season for plot of raytraced unique B73 WT maize plants generated using data from 2025
+
+```
+python -m canopy_factory animate maize --canopy=unique --id=B73_WT --data-year=2025 --start-date=planting --stop-date=maturity
+```
+
+### Find the row spacing the makes the light intercepted by a plot match another
+
+# TODO
+
+```
+python -m canopy_factory match_query maize 
 ```
 
 
@@ -245,3 +278,4 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 - publish to PyPI
 - publish to conda_forge
 - build docs
+- canopy closer measurement

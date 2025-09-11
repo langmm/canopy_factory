@@ -41,6 +41,7 @@ dependencies = [
   "pyshp",
   "pyyaml",
   "scipy",
+  "yggdrasil-python-rapidjson",
 ]
 description = "Tool for generating & utilizing 3D meshes for simulated canopies"
 license = {file = "LICENSE"}

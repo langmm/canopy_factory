@@ -16,5 +16,7 @@ dependencies:
   - pyyaml
   - scipy
   - yggdrasil
+  # yggdrasil dependencies
+  - czmq
   # - ePhotosynthesis_C  # Once this is released
   - sundials>=5.7.0  # For building ePhotosynthesis_C

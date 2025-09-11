@@ -13,6 +13,7 @@ class MonocotGenerator(PlantGenerator):
         Leaf={
             'defaults': {
                 'WMax': 1,
+                'NFirst': 0,  # No separate profile for cotyledons
             },
         },
     )

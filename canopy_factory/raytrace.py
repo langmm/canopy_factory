@@ -6,9 +6,9 @@ import pprint
 import copy
 from datetime import datetime
 from collections import OrderedDict
-from yggdrasil import units
-from yggdrasil.serialize.PlySerialize import PlyDict
-from yggdrasil.serialize.ObjSerialize import ObjDict
+from yggdrasil_rapidjson import units
+from yggdrasil_rapidjson.geometry import Ply as PlyDict
+from yggdrasil_rapidjson.geometry import ObjWavefront as ObjDict
 from canopy_factory import utils
 from canopy_factory.utils import (
     cfg, RegisteredClassBase, get_class_registry,
@@ -769,7 +769,7 @@ class HothouseRayTracer(RayTracerBase):
             return values
         self.log(f'Running ray tracer to get {self.args.query} for '
                  f't = {self.args.time.time}, age = {self.args.time.age} '
-                 f'({self.args.age.value}) with sun '
+                 f'({self.args.age.value}) with '
                  f'light direction: {self.solar_blaster.forward}',
                  border=True, force=True)
         component_values = None
@@ -892,7 +892,7 @@ class RayTraceTask(TaskBase):
     _composite_arguments = {
         'time': {
             'time': {
-                'description': ' that the sun should be modeled for',
+                'description': ' that the light should be modeled for',
                 'defaults': {
                     'hour': 'noon',
                     'date': '2024-06-21',
@@ -1177,6 +1177,8 @@ class RayTraceTask(TaskBase):
 
         """
         def mean(x):
+            if len(x) == 0:
+                return 0.0
             if isinstance(x[0], units.Quantity):
                 return units.Quantity(np.mean([xx.value for xx in x]),
                                       x[0].units)
@@ -1246,7 +1248,16 @@ class RayTraceTask(TaskBase):
         plantids = values['plantids']
         plantids_unique = np.unique(plantids)
         if not isinstance(per_plant, bool):
-            assert len(plantids_unique) == per_plant
+            if ((len(plantids_unique) != per_plant
+                 and len(plantids_unique) == 0)):
+                if isinstance(query, list):
+                    for k in query:
+                        values[k] = np.zeros((per_plant, ))
+                else:
+                    values[query] = np.zeros((per_plant, ))
+                plantids_unique = range(per_plant)
+            else:
+                assert len(plantids_unique) == per_plant
         for i in plantids_unique:
             idx = (plantids == i)
             if isinstance(query, list):
@@ -2251,8 +2262,8 @@ class TotalsTask(TemporalTaskBase):
             id = self.args.id
         iclass = len(self._lines)
         self._lines.setdefault(id, {'interior': 0, 'exterior': 0})
-        linestyles = ['-', ':']
-        colors = ['blue', 'orange']
+        linestyles = ['-', ':', '--', '-.']
+        colors = ['blue', 'orange', 'purple', 'teal']
         if first:
             ylabel = query.title()
             if isinstance(values, units.QuantityArray):
@@ -2570,7 +2581,9 @@ class MatchQuery(OptimizationTaskBase):
             'default': 'row_spacing',
         }),
         (('--goal-id', ), {
-            'help': 'ID that the Goal of the optimization.',
+            'help': (
+                'ID that the goal of the optimization should be matched '
+                'to.'),
         }),
         (('--goal', ), {
             'help': 'Goal of the optimization.',

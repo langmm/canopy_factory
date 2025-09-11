@@ -46,6 +46,7 @@ requirements:
     - scipy
     - sundials>=5.7.0  # For building ePhotosynthesis_C
     - yggdrasil
+    # - yggdrasil-python-rapidjson
 
 test:
   imports:

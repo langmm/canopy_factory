@@ -17,7 +17,7 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
     _registry_name = None
     _params = {
         'crop': ['maize'],
-        'id': ['WT'],
+        'id': ['B73_WT'],
     }
     _disable_compare = False
 
@@ -55,8 +55,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         for k in task_class._outputs_local:
             out[f'output_{k}'] = True
         out.update(**arguments)
-        if crop_class._default_data and 'data' not in out:
-            out['data'] = crop_class._default_data
+        # if crop_class._default_data and 'data' not in out:
+        #     out['data'] = crop_class._default_data
         return out
 
     @pytest.fixture(scope="class")
@@ -131,7 +131,7 @@ class TestLayoutTask(TestTask):
     _registry_name = 'layout'
     _params = {
         # 'crop': ['maize'],
-        # 'id': ['WT'],
+        # 'id': ['B73_WT'],
         'arguments': {
             'values': [
                 {'canopy': 'single'},
@@ -177,8 +177,8 @@ class TestGenerateTask(TestTask):
         'arguments': {
             'values': [
                 {'canopy': 'single'},
-                {'crop': 'maize', 'id': 'WT', 'canopy': 'unique'},
-                {'crop': 'maize', 'id': 'WT', 'canopy': 'tile'},
+                {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'unique'},
+                {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'tile'},
             ],
         },
     }
@@ -198,7 +198,8 @@ class TestRayTraceTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'WT', 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT',
+                 'periodic_canopy': True},
             ],
         },
     }
@@ -245,7 +246,8 @@ class TestTotals(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'WT', 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT',
+                 'periodic_canopy': True},
             ],
         },
     }
@@ -258,7 +260,8 @@ class TestAnimateTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'WT', 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT',
+                 'periodic_canopy': True},
             ],
         },
     }
@@ -272,3 +275,9 @@ class TestMatchQueryTask(TestTask):
         'crop': ['maize'],
         'id': ['rdla'],
     }
+
+
+class TestPhotosynthesisTask(TestTask):
+    r"""Class for testing photosynthesis calc."""
+
+    _registry_name = 'photosynthesis'

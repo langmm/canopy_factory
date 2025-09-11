@@ -12,12 +12,12 @@ import openalea.plantgl.math as pglmath
 from openalea.plantgl.math import Vector2, Vector3, Vector4
 from openalea.plantgl.scenegraph import (
     NurbsCurve2D, NurbsCurve, NurbsPatch)
-from yggdrasil import rapidjson
+import yggdrasil_rapidjson as rapidjson
 from canopy_factory.cli import SubparserBase
 from canopy_factory.utils import (
     RegisteredMetaClass, get_class_registry,
     NoDefault, jsonschema2argument, format_list_for_help, UnitSet,
-    cached_property,
+    cached_property, DataProcessor,
     DictWrapper, DictSet, PrefixedDict, SimpleWrapper, temporary_prefix,
 )
 
@@ -83,6 +83,7 @@ class PlantParameterBase(SubparserBase):
                            dependencies=None, parents=None, **kws):
         kname = name if name.endswith(k) else name + k
         kwargs = jsonschema2argument(json, no_defaults=True)
+        kname_arg = kname.replace('_', '-')
         # if kname in dst._defaults:
         #     kwargs['default'] = dst._defaults[kname]
         # else:
@@ -120,9 +121,11 @@ class PlantParameterBase(SubparserBase):
                     conditions.append(f'{not_provided} {verb} not provided')
                 conditions = format_list_for_help(conditions)
                 kwargs['help'] += f' [Only valid if {conditions}]'
+        if kname_arg != kname and 'dest' not in kwargs:
+            kwargs['dest'] = kname
         if any(dependencies):
             kwargs['dependencies'] = dependencies
-        return ((f'--{kname}', ), kwargs)
+        return ((f'--{kname_arg}', ), kwargs)
 
     @staticmethod
     def _format_help(cls, dst, msg, name, k, parents=None):
@@ -637,6 +640,7 @@ class ParameterIndex(SimpleWrapper):
         time (float, units.Quantity): Time since planting.
         age (float, units.Quantity): Age.
         n (int): Phytomer number.
+        b (int): Branch level.
         x (float): Distance along current component.
         w (int): Index within component whorl.
         unit_system (, optional): Unit system that should be used.
@@ -646,8 +650,8 @@ class ParameterIndex(SimpleWrapper):
 
     """
 
-    universal_param = ['Time', 'Age', 'N']
-    parameter_names = ['Time', 'Age', 'N', 'X', 'W']
+    universal_param = ['Time', 'Age', 'N', 'B']
+    parameter_names = ['Time', 'Age', 'N', 'B', 'X', 'W']
     parameter_names_units = {
         'Time': 'time',
         'Age': 'time',
@@ -1236,14 +1240,15 @@ class SimplePlantParameter(PlantParameterBase):
             return
         pdb.set_trace()
 
-    def lsystem_args(self, ageinc=False, for_rule=False):
+    def lsystem_args(self, for_rule=False, **kwargs):
         r"""Get the arguments that should be used for Lsystem rules.
 
         Args:
-            ageinc (bool, optional): If True, increment age in the
-                arguments.
             for_rule (bool, optional): If True, all parameters are
                 positional.
+            **kwargs: Additional keyword arguments are checked for
+                increments that should be applied to arguments with keys
+                of the form '{name}inc'.
 
         Returns:
             str: Arguments.
@@ -1253,13 +1258,20 @@ class SimplePlantParameter(PlantParameterBase):
             args = [k.lower() for k in ParameterIndex.universal_param]
             args_opt = [k.lower() for k in self.dependencies_index
                         if k.lower() not in args + ['x']]
-            if ageinc:
-                args[args.index('age')] += '+ageinc'
+            values = {k: k for k in args + args_opt}
+            for kinc, v in kwargs.items():
+                assert kinc.endswith('inc')
+                k = kinc.rsplit('inc', maxsplit=1)[0]
+                if v is True:
+                    values[k] += ('+ageinc' if k == 'age' else '+1')
+                elif isinstance(v, (str, int)):
+                    values[k] += f'+{v}'
+            out = [values[k] for k in args]
             if for_rule:
-                args += args_opt
+                out += [values[k] for k in args_opt]
             else:
-                args += [f'{k}={k}' for k in args_opt]
-            return ','.join(args)
+                out += [f'{k}={values[k]}' for k in args_opt]
+            return ','.join(out)
         except AttributeError:
             import traceback
             print("LSYSTEM_ARGS")
@@ -2031,6 +2043,8 @@ class OptionPlantParameter(SimplePlantParameter):
         """
         opt = cls._name_option
         out = super(OptionPlantParameter, cls).schema()
+        if opt is None:
+            return out
         out['oneOf'] = []
         for k, v in cls._option_dependencies.items():
             kprop = {}
@@ -2103,7 +2117,7 @@ class OptionPlantParameter(SimplePlantParameter):
         """
         # Remove defaults added for unused options
         opt = cls._name_option
-        vopt = param.get(opt, NoDefault)
+        vopt = None if opt is None else param.get(opt, NoDefault)
         unique_keys = {
             k: cls.option_parameters(k, unique=True)
             for k in cls._option_dependencies.keys()
@@ -2756,15 +2770,22 @@ class ScalarPlantParameter(SimplePlantParameter):
             _help=('Dependence of {parents[0]} on the {component} '
                    'internal iterator count'),
         ),
+        'BFunc': FunctionPlantParameter.specialize_var(
+            'B', normvar='BMax',
+            component_properties=['BMax'],
+            _help=('Dependence of {parents[0]} on the {component} '
+                   'branch level'),
+        ),
     }
     _required = ['']
     _modifiers = [
-        'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
+        'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc', 'BFunc',
     ]
     _property_dependencies = dict(
         SimplePlantParameter._property_dependencies,
         **{k: {'': True} for k in [
             'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
+            'BFunc',
         ]}
     )
     _property_dependencies_defaults = dict(
@@ -2774,6 +2795,7 @@ class ScalarPlantParameter(SimplePlantParameter):
             'conditions': {
                 k: True for k in [
                     'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
+                    'BFunc',
                 ]
             },
         }}
@@ -2814,10 +2836,6 @@ class ScalarPlantParameter(SimplePlantParameter):
             if v is not None:
                 self.log(f'{k} = {v}')
                 out *= v
-        if vmin is not None:
-            assert out >= vmin
-        if vmax is not None:
-            assert out <= vmax
         if stddev is None:
             relstddev = self.get('RelStdDev', None)
             if relstddev is not None:
@@ -3412,12 +3430,13 @@ class ParameterCollection(SimplePlantParameter):
 # COMPONENTS
 ###############################################
 
-class ComponentBase(OptionPlantParameter):
+
+class ComponentBase(SimplePlantParameter):
     r"""Base class for generating plant components."""
 
     _registry_key = 'plant_component'
     _name = None
-    _name_option = 'Method'
+    _name_plural = None
     _help = None
     _subcomponents = []
     _properties = dict(
@@ -3426,6 +3445,123 @@ class ComponentBase(OptionPlantParameter):
             'type': 'integer',
             'description': 'Number of components in a whorl',
         },
+        NFirst={
+            'type': 'integer',
+            'description': 'First node where component is produced',
+        },
+        NLast={
+            'type': 'integer',
+            'description': 'Last node where component is produced',
+        },
+        NPeriod={
+            'type': 'integer',
+            'description': 'Number of nodes between each component',
+        },
+        BFirst={
+            'type': 'integer',
+            'description': 'First branch level where component is produced',
+        },
+        BLast={
+            'type': 'integer',
+            'description': 'Last branch level where component is produced',
+        },
+        BPeriod={
+            'type': 'integer',
+            'description': 'Number of branch levels between each component',
+        },
+    )
+    _defaults = dict(
+        SimplePlantParameter._defaults,
+        WMax=1,
+        NFirst=0,
+        NLast=-1,
+        NPeriod=1,
+        BFirst=0,
+        BLast=-1,
+        BPeriod=1,
+    )
+
+    @staticmethod
+    def _on_registration(cls):
+        if cls._name:
+            cls._help = cls._name.lower()
+            if not cls._name_plural:
+                cls._name_plural = cls._name + 's'
+        SimplePlantParameter._on_registration(cls)
+
+    @property
+    def component(self):
+        r"""str: Component that this property belongs to."""
+        return self
+
+    def production_check_remove(self, production=False):
+        r"""list: Lsystem production rule lines to remove component if
+        n or b are outside the limits for the component."""
+        out = []
+        for k in ['n', 'b']:
+            out += [
+                f'{k}min = generator.{self.name}{k.upper()}First()',
+                f'{k}max = generator.{self.name}{k.upper()}Last()',
+                f'{k}period = generator.{self.name}{k.upper()}Period()',
+                f'if (({k} < {k}min',
+                f'     or ({k}max != -1 and {k} > {k}max)',
+                f'     or ((({k} - {k}min) % {k}period) != 0))):',
+            ]
+            if production:
+                out += [
+                    f'    print(f"Removing {self.name}[{k}={{{k}}}] P")',
+                    '    produce *',
+                ]
+            else:
+                out += [
+                    f'    print(f"Removing {self.name}[{k}={{{k}}}]")',
+                    '    produce [/(0)]',
+                ]
+        return out
+
+    @property
+    def additional_production_conditions(self):
+        r"""list: Lsystem production rule lines for before 'else'."""
+        return []
+
+    @property
+    def production(self):
+        r"""list: Lsystem production rule lines."""
+        args = self.lsystem_args(for_rule=True)
+        args_inc = self.lsystem_args(ageinc=True, for_rule=True)
+        prefix = f'generator.{self.name}'
+        out = self.production_check_remove(production=True)
+        out += [
+            f'if age >= {prefix}AgeRemove():',
+            '    if generator.verbose_lpy:',
+            f'        print(f"Removing {self.name}[{{age}},{{n}}]")',
+            '    produce *',
+            'elif (time + age) >= OUTPUT_TIME:',
+            f'    produce {self.name}({args})',
+        ]
+        out += self.additional_production_conditions
+        out += [
+            'else:',
+            '    if generator.verbose_lpy:',
+            f'        print(f"Ageing {self.name}[{{age}},{{n}}]")',
+            '    ageinc = min(generator.AgeInc(),',
+            '                 OUTPUT_TIME - (time + age))',
+            f'    produce {self.name}({args_inc})',
+        ]
+        return out
+
+    @property
+    def homomorphism(self):
+        r"""list: Lsystem homomorphism rule lines."""
+        return ['produce &(90)@o^(90)']
+
+
+class GeometricComponentBase(ComponentBase, OptionPlantParameter):
+    r"""Base class for generating plant component geometries."""
+
+    _name_option = 'Method'
+    _properties = dict(
+        ComponentBase._properties,
         Method={
             'type': 'string',
             'description': ('Method that should be used to generate '
@@ -3514,36 +3650,41 @@ class ComponentBase(OptionPlantParameter):
                             'should be used to calculate the component '
                             'mass based on its volume.'),
         },
+        # AvailableCarbon={
+        #     'type': 'scalar', 'subtype': 'float', 'units': 'g',
+        #     'description': (
+        # },
+    )
+    _defaults = dict(
+        OptionPlantParameter._defaults,
+        **ComponentBase._defaults
     )
     _option_dependencies = {
         'cylinder': [
-            # 'Bend', 'Twist',
             'NDivide',
         ],
         'sweep': [
-            'Profile', 'Thickness',  # 'Bend', 'Twist',
-            'NDivide',
+            'Profile', 'Thickness', 'NDivide',
         ],
+        'sphere': [],
         'template2d': ['Template2D', 'Thickness'],
         'template3d': ['Template3D'],
         # 'compound': [],
+        'nongeometric': [],
     }
 
     @staticmethod
     def _on_registration(cls):
         if cls._name:
             cls._help = cls._name.lower()
+            if not cls._name_plural:
+                cls._name_plural = cls._name + 's'
         OptionPlantParameter._on_registration(cls)
-
-    @property
-    def component(self):
-        r"""str: Component that this property belongs to."""
-        return self
 
     @cached_property
     def index_parameters(self):
         r"""list: Set of index parameters that this parameter uses."""
-        out = copy.deepcopy(super(ComponentBase, self).index_parameters)
+        out = copy.deepcopy(super(GeometricComponentBase, self).index_parameters)
         if 'NDivide' in self.parameters and 'X' not in out:
             out.append('X')
         return out
@@ -3593,37 +3734,19 @@ class ComponentBase(OptionPlantParameter):
         else:
             raise NotImplementedError(method)
 
-    @property
-    def production(self):
-        r"""list: Lsystem production rule lines."""
-        args = self.lsystem_args(for_rule=True)
-        args_inc = self.lsystem_args(ageinc=True, for_rule=True)
-        prefix = f'generator.{self.name}'
-        out = [
-            f'if age >= {prefix}AgeRemove():',
-            '    if generator.verbose_lpy:',
-            f'        print(f"Removing {self.name}[{{age}},{{n}}]")',
-            '    produce *',
-            'elif (time + age) >= OUTPUT_TIME:',
-            f'    produce {self.name}({args})',
-            'else:',
-            '    if generator.verbose_lpy:',
-            f'        print(f"Ageing {self.name}[{{age}},{{n}}]")',
-            '    ageinc = min(generator.AgeInc(),',
-            '                 OUTPUT_TIME - (time + age))',
-            f'    produce {self.name}({args_inc})',
-        ]
-        return out
+    def produce_geometry(self, for_rule=False):
+        r"""Get the LSystem lines for producing the geometry.
 
-    @property
-    def homomorphism(self):
-        r"""list: Lsystem homomorphism rule lines."""
-        args = self.lsystem_args()
+        Args:
+            for_rule (bool, optional): If True, format for a rule.
+
+        Returns:
+            list: Lsystem lines to produce the component geometry.
+
+        """
+        args = self.lsystem_args(for_rule=for_rule)
         prefix = f'generator.{self.name}'
-        out = [
-            'if generator.verbose_lpy:',
-            f'    print(f"Homomorphism {self.name}[{{age}},{{n}}]")',
-        ]
+        out = []
         if 'Color' in self.parameters:
             out += [
                 f'nproduce SetColor({prefix}Color({args}))',
@@ -3647,7 +3770,16 @@ class ComponentBase(OptionPlantParameter):
                 kout[0] += ' @Ge @Gc'
             out += kout
         method = self.get('Method')
-        if method in ['cylinder', 'sweep']:
+        if method == 'nongeometric':
+            pass
+        elif method in ['sphere']:
+            out += [
+                # TODO: Width unused
+                # f'nproduce _({prefix}Width({args}))',
+                f'length = {prefix}Length({args})',
+                'produce @O(length)',
+            ]
+        elif method in ['cylinder', 'sweep']:
             if 'Profile' in self.parameters:
                 out.append(
                     f'nproduce SetContour({prefix}Profile({args},x=0))'
@@ -3697,6 +3829,17 @@ class ComponentBase(OptionPlantParameter):
                 ]
         else:
             raise NotImplementedError(method)
+        return out
+
+    @property
+    def homomorphism(self):
+        r"""list: Lsystem homomorphism rule lines."""
+        args = self.lsystem_args()
+        out = self.production_check_remove()
+        out += [
+            'if generator.verbose_lpy:',
+            f'    print(f"Homomorphism {self.name}[{{age}},{{n}}]")',
+        ] + self.produce_geometry()
         out = [
             f'component = generator.parameters[\"{self.name}\"]',
             f'with component.temporary_index({args}):'
@@ -3704,16 +3847,16 @@ class ComponentBase(OptionPlantParameter):
         return out
 
 
-class PetioleComponent(ComponentBase):
+class PetioleComponent(GeometricComponentBase):
     r"""Petiole component."""
 
     _name = 'Petiole'
     _properties = {
-        k: v for k, v in ComponentBase._properties.items()
+        k: v for k, v in GeometricComponentBase._properties.items()
         if k not in ['Angle', 'RotationAngle']
     }
     _defaults = dict(
-        ComponentBase._defaults,
+        GeometricComponentBase._defaults,
         Method='cylinder',
     )
 
@@ -3723,16 +3866,15 @@ class WhorlComponent(SimplePlantParameter):
     _registry_key = 'plant_component'
     _name = 'Whorl'
     _properties = {
-        'Element': {
-            'type': 'string',
-            'description': 'Component that is repeated.'
+        'Elements': {
+            'type': 'array',
+            'items': {
+                'type': 'string',
+            },
+            'description': 'Component(s) that is repeated.'
         },
-        # 'ElementCount': {
-        #     'type': 'integer',
-        #     'description': 'Number of times that element is repeated',
-        # },
     }
-    _required = ['Element']
+    _required = ['Elements']
 
     @property
     def component(self):
@@ -3742,18 +3884,16 @@ class WhorlComponent(SimplePlantParameter):
     @property
     def production(self):
         r"""list: Lsystem production rule lines."""
-        element = self.get('Element')
-        args = self.root.parameters[element].lsystem_args(for_rule=True)
-        # if 'w' not in args:
-        #     self.log(f'element = {element}, args = {args}', force=True)
-        #     pdb.set_trace()
-        # assert 'w' in args
-        out = [
-            f'for w in range(generator.{element}WMax() - 1):',
-            f'    nproduce [{element}({args})]',
-            f'w = generator.{element}WMax() - 1',
-            f'produce [{element}({args})]',
-        ]
+        elements = [x for x in self.get('Elements')
+                    if x in self.root._components]
+        out = []
+        for element in elements:
+            args = self.root.parameters[element].lsystem_args(for_rule=True)
+            out += [
+                f'for w in range(generator.{element}WMax()):',
+                f'    nproduce [{element}({args})]',
+            ]
+        out += ['produce [/(0)]']
         return out
 
     @property
@@ -3768,29 +3908,16 @@ class NodeComponent(WhorlComponent):
     _name = 'Node'
     _properties = {}
     _required = []
-    _constants = {'Element': 'Leaf'}
-
-    @property
-    def production(self):
-        r"""list: Lsystem production rule lines."""
-        out = super(NodeComponent, self).production
-        if 'Cotyledon' in self.root.parameters:
-            out_leaf = out
-            out_cot = [x.replace('Leaf', 'Cotyledon') for x in out_leaf]
-            out = [
-                'if n == 0:',
-            ] + ['    ' + x for x in out_cot] + [
-                'else:',
-            ] + ['    ' + x for x in out_leaf]
-        return out
+    _constants = {'Elements': ['Cotyledon', 'Leaf', 'Branch']}
 
 
-class LeafComponent(ComponentBase):
+class LeafComponent(GeometricComponentBase):
     r"""Leaf component."""
 
     _name = 'Leaf'
+    _name_plural = 'Leaves'
     _properties = dict(
-        ComponentBase._properties,
+        GeometricComponentBase._properties,
         Unfurled={
             'type': 'boolean', 'default': False,
             'description': ('The leaf should be unfurled, starting as a '
@@ -3805,17 +3932,18 @@ class LeafComponent(ComponentBase):
     )
     _subcomponents = ['Petiole']
     _option_dependencies = dict(
-        ComponentBase._option_dependencies,
-        sweep=ComponentBase._option_dependencies['sweep'] + [
+        GeometricComponentBase._option_dependencies,
+        sweep=GeometricComponentBase._option_dependencies['sweep'] + [
             'Unfurled', 'UnfurledLength',
         ],
     )
     _property_dependencies = dict(
-        ComponentBase._property_dependencies,
+        GeometricComponentBase._property_dependencies,
         UnfurledLength={'Unfurled': [True]},
     )
     _defaults = dict(
-        ComponentBase._defaults,
+        GeometricComponentBase._defaults,
+        NFirst=1,  # After cotyledons
         ProfileClosed=False,
         ProfileSymmetry=[0],
         ProfileReverse=True,
@@ -3833,14 +3961,21 @@ class CotyledonComponent(LeafComponent):
     r"""Cotyledon component."""
 
     _name = 'Cotyledon'
+    _name_plural = None
+    _defaults = dict(
+        LeafComponent._defaults,
+        NFirst=0,
+        NLast=0,
+        WMax=2,
+    )
 
 
-class InternodeComponent(ComponentBase):
+class InternodeComponent(GeometricComponentBase):
     r"""Internode component."""
 
     _name = 'Internode'
     _defaults = dict(
-        ComponentBase._defaults,
+        GeometricComponentBase._defaults,
         Method='cylinder',
         NDivide=10,
         WidthXFunc='linear',
@@ -3852,25 +3987,76 @@ class InternodeComponent(ComponentBase):
     )
 
 
+class BranchComponent(ComponentBase):
+    r"""Branch component."""
+
+    _name = 'Branch'
+    _name_plural = 'Branches'
+    _properties = dict(
+        ComponentBase._properties,
+        Angle=ScalarPlantParameter.specialize(
+            'polar_angle',
+            _help='{Component} angle from parent forward axis',
+            _defaults={'': 0},
+            _unit_dimension='angle',
+        ),
+        RotationAngle=ScalarPlantParameter.specialize(
+            'polar_angle',
+            _help='{Component} rotation angle around parent forward axis',
+            _defaults={'': 0},
+            _unit_dimension='angle',
+        ),
+    )
+
+    @property
+    def additional_production_conditions(self):
+        r"""list: Lsystem production rule lines for before 'else'."""
+        out = super(BranchComponent, self).additional_production_conditions
+        prefix = f'generator.{self.name}'
+        args = self.lsystem_args()
+        args_intn = self.root.parameters['Internode'].lsystem_args(
+            for_rule=True, ninc=1, binc=1)
+        args_node = self.root.parameters['Node'].lsystem_args(
+            for_rule=True, ninc=1, binc=1)
+        out += [
+            'elif age >= PLASTOCHRON and n < NMax:',
+            '    time = time + age',
+            '    if age >= PLASTOCHRON:'
+            '        age = age - PLASTOCHRON',
+            '    if generator.verbose_lpy:',
+            '        print(f"Auxillary node: {n+1} (t = {time})")',
+        ]
+        if 'RotationAngle' in self.parameters:
+            out += [
+                f'    nproduce /({prefix}RotationAngle({args}))',
+            ]
+        if 'Angle' in self.parameters:
+            out += [
+                f'    nproduce &({prefix}Angle({args}))',
+            ]
+        out += [
+            f'    nproduce @Ge @Gc Internode({args_intn})',
+            f'    nproduce [Node({args_node})]',
+        ]
+        return out
+
+
 class ApexComponent(ComponentBase):
     r"""Apex component."""
 
     _name = 'Apex'
-    _properties = {}
-    _defaults = {}
-    _required = []
-    _option_dependencies = {}
+    _name_plural = 'Apexes'
 
     @property
-    def production(self):
-        r"""list: Lsystem production rule lines."""
-        out = super(ApexComponent, self).production
-        for idx, x in enumerate(out):
-            if x.startswith('else'):
-                break
-        else:
-            raise Exception("Couldn't locate the else")
-        out = out[:idx] + [
+    def additional_production_conditions(self):
+        r"""list: Lsystem production rule lines for before 'else'."""
+        out = super(ApexComponent, self).additional_production_conditions
+        args_next = self.lsystem_args(for_rule=True, ninc=1)
+        args_intn = self.root.parameters['Internode'].lsystem_args(
+            for_rule=True)
+        args_node = self.root.parameters['Node'].lsystem_args(
+            for_rule=True)
+        out += [
             'elif ((age >= PLASTOCHRON and n < NMax)',
             '      or ((time + age) == 0 and n == 0)):',
             '    time = time + age',
@@ -3878,44 +4064,49 @@ class ApexComponent(ComponentBase):
             '        age = age - PLASTOCHRON',
             '    if generator.verbose_lpy:',
             '        print(f"Node: {n} (t = {time})")',
-            '    nproduce @Ge @Gc Internode(time,age,n)',
-            '    nproduce [Node(time,age,n)]',
+            f'    nproduce @Ge @Gc Internode({args_intn})',
+            f'    nproduce [Node({args_node})]',
             '    if generator.verbose_lpy:',
             '        print(f"Next apex: {n + 1}")',
-            '    produce Apex(time,age,n+1)',
-        ] + out[idx:]
+            f'    produce Apex({args_next})',
+        ]
         return out
 
-    @property
-    def homomorphism(self):
-        r"""list: Lsystem homomorphism rule lines."""
-        return ['produce &(90)@o^(90)']
 
-
-class BudComponent(ComponentBase):
+class BudComponent(GeometricComponentBase):
     r"""Bud component."""
 
     _name = 'Bud'
 
 
-class PedicelComponent(ComponentBase):
+class PedicelComponent(GeometricComponentBase):
     r"""Pedicel component."""
 
     _name = 'Pedicel'
     _properties = {
-        k: v for k, v in ComponentBase._properties.items()
+        k: v for k, v in GeometricComponentBase._properties.items()
         if k not in ['Angle', 'RotationAngle']
     }
     _defaults = dict(
-        ComponentBase._defaults,
+        GeometricComponentBase._defaults,
         Method='cylinder',
     )
 
 
-class FlowerComponent(ComponentBase):
+class FlowerComponent(GeometricComponentBase):
     r"""Flower component."""
 
     _name = 'Flower'
+
+
+class FruitComponent(GeometricComponentBase):
+    r"""Fruit component."""
+
+    _name = 'Fruit'
+    _defaults = dict(
+        GeometricComponentBase._defaults,
+        Method='sphere',
+    )
 
 
 ###############################################
@@ -3935,21 +4126,27 @@ class PlantGenerator(ParameterCollection):
     _name = None
     _help = None
     _default = 'maize'
-    _default_data = None
     _arguments = []
     _properties = dict(
         ParameterCollection._properties,
         data={
             'type': 'string',
             'description': (
-                'File containing raw data that should be used '
+                'File containing data that should be used '
                 'to set parameters'
+            ),
+        },
+        data_year={
+            'type': 'string',
+            'description': (
+                'Year from which data should be used to set parameters'
             ),
         },
         id={
             'type': 'string',
             'description': ('ID string to be associated with this set of '
-                            'property values (e.g. genotype or line)'),
+                            'property values (e.g. genotype and/or '
+                            'genotypic class).'),
         },
         Plastocron={
             'type': 'scalar', 'subtype': 'float', 'units': 'days',
@@ -4075,7 +4272,9 @@ class PlantGenerator(ParameterCollection):
             list: Crop IDs.
 
         """
-        raise NotImplementedError
+        if fname is None:
+            return []
+        return DataProcessor.from_file(fname).ids
 
     @classmethod
     def parameters_from_file(cls, args, parameters):
@@ -4089,7 +4288,13 @@ class PlantGenerator(ParameterCollection):
             dict: Set of parameters calculated from args.
 
         """
-        raise NotImplementedError
+        x = DataProcessor.from_file(args.data)
+        for k in x.parameter_names(args.id):
+            DictWrapper.remove_prefixed_keys(parameters, f'{k}Func')
+            DictWrapper.remove_prefixed_keys(parameters, f'{k}NFunc')
+        out = x.parametrize(args.id, args=args, generator=cls)
+        parameters.update(out)
+        return out
 
     @property
     def log_prefix_instance(self):
@@ -4118,21 +4323,37 @@ class PlantGenerator(ParameterCollection):
 
     @classmethod
     def _add_ids_from_file(cls, parser):
-        if not (cls._name and cls._default_data):
-            return
-        try:
-            ids = cls.ids_from_file(cls._default_data)
-        except NotImplementedError:
+        if not cls._name:
             return
         vparser = parser.get_subparser('crop', cls._name)
-        ids_action = vparser.find_argument('id')
-        ids_action.choices = (
-            ids + ids_action.choices if ids_action.choices
-            else ids
-        )
-        ids_action.default = ids[0]
-        data_action = vparser.find_argument('data')
-        data_action.default = cls._default_data
+        ids = DataProcessor.available_ids(cls._name)
+        if ids:
+            ids_action = vparser.find_argument('id')
+            ids_action.choices = (
+                ids + ids_action.choices if ids_action.choices
+                else ids
+            )
+            if 'id' in cls._defaults:
+                assert cls._defaults['id'] in ids
+                ids_action.default = cls._defaults['id']
+            else:
+                ids_action.default = ids[0]
+        years = DataProcessor.available_years(cls._name)
+        if years:
+            years_action = vparser.find_argument('data_year')
+            years_action.choices = (
+                years + years_action.choices if years_action.choices
+                else years
+            )
+            if 'data_year' in cls._defaults:
+                assert cls._defaults['data_year'] in years
+                years_action.default = cls._defaults['data_year']
+            else:
+                years_action.default = years[0]
+
+        available = set()
+        for action in vparser._actions:
+            available |= set(action.option_strings + [action.dest])
 
     @property
     def lsystem(self):
@@ -4149,6 +4370,9 @@ class PlantGenerator(ParameterCollection):
                     '',
                 ])
 
+            args_apex = self.parameters['Apex'].lsystem_args()
+            nargs_apex = len(args_apex.split(','))
+            args_apex_init = ','.join(nargs_apex * ['0'])
             out = [
                 header("External parameters"),
                 'extern(RUNTIME_PARAM = {})',
@@ -4175,7 +4399,7 @@ class PlantGenerator(ParameterCollection):
             out += [f'module {k}' for k in self._components.keys()]
             out += [
                 '',
-                'Axiom: @Gc/(StartingAngle)Apex(0,0,0)@Ge',
+                f'Axiom: @Gc/(StartingAngle)Apex({args_apex_init})@Ge',
                 'derivation length: DERIVATION_LENGTH',
                 '',
                 'production:',
