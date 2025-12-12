@@ -38,6 +38,7 @@ class PlantParameterBase(SubparserBase):
     _property_dependencies = {}
     _property_dependencies_defaults = {}
     _unit_dimension = None
+    _argument_properties = []
 
     @staticmethod
     def _add_parameter_arguments(cls, dst, name=None,
@@ -46,7 +47,9 @@ class PlantParameterBase(SubparserBase):
             existing = [x[0][0] for x in dst._arguments]
         if name is None:
             name = ''
-        for k, v in cls._properties.items():
+        # for k, v in cls._properties.items():  # Add all properties
+        for k in cls._argument_properties:
+            v = cls._properties[k]
             cls._add_parameter_argument(cls, dst, name, existing,
                                         k, v, **kws)
 
@@ -3509,12 +3512,10 @@ class ComponentBase(SimplePlantParameter):
             ]
             if production:
                 out += [
-                    f'    print(f"Removing {self.name}[{k}={{{k}}}] P")',
                     '    produce *',
                 ]
             else:
                 out += [
-                    f'    print(f"Removing {self.name}[{k}={{{k}}}]")',
                     '    produce [/(0)]',
                 ]
         return out
@@ -3747,10 +3748,6 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         args = self.lsystem_args(for_rule=for_rule)
         prefix = f'generator.{self.name}'
         out = []
-        if 'Color' in self.parameters:
-            out += [
-                f'nproduce SetColor({prefix}Color({args}))',
-            ]
         if 'RotationAngle' in self.parameters:
             out += [
                 f'nproduce /({prefix}RotationAngle({args}))',
@@ -3769,6 +3766,10 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
             if 'Profile' in self.parameters:
                 kout[0] += ' @Ge @Gc'
             out += kout
+        if 'Color' in self.parameters:
+            out += [
+                f'nproduce SetColor({prefix}Color({args}))',
+            ]
         method = self.get('Method')
         if method == 'nongeometric':
             pass
@@ -3908,7 +3909,7 @@ class NodeComponent(WhorlComponent):
     _name = 'Node'
     _properties = {}
     _required = []
-    _constants = {'Elements': ['Cotyledon', 'Leaf', 'Branch']}
+    _constants = {'Elements': ['Cotyledon', 'Leaf', 'Branch', 'Fruit']}
 
 
 class LeafComponent(GeometricComponentBase):
@@ -4073,30 +4074,28 @@ class ApexComponent(ComponentBase):
         return out
 
 
+class PedicelComponent(PetioleComponent):
+    r"""Pedicel component."""
+
+    _name = 'Pedicel'
+
+
 class BudComponent(GeometricComponentBase):
     r"""Bud component."""
 
     _name = 'Bud'
-
-
-class PedicelComponent(GeometricComponentBase):
-    r"""Pedicel component."""
-
-    _name = 'Pedicel'
-    _properties = {
-        k: v for k, v in GeometricComponentBase._properties.items()
-        if k not in ['Angle', 'RotationAngle']
-    }
     _defaults = dict(
         GeometricComponentBase._defaults,
-        Method='cylinder',
+        Method='sphere',
     )
+    _subcomponents = ['Pedicel']
 
 
 class FlowerComponent(GeometricComponentBase):
     r"""Flower component."""
 
     _name = 'Flower'
+    _subcomponents = ['Pedicel']
 
 
 class FruitComponent(GeometricComponentBase):
@@ -4106,7 +4105,9 @@ class FruitComponent(GeometricComponentBase):
     _defaults = dict(
         GeometricComponentBase._defaults,
         Method='sphere',
+        Color=[255, 0, 0],
     )
+    _subcomponents = ['Pedicel']
 
 
 ###############################################
@@ -4127,6 +4128,7 @@ class PlantGenerator(ParameterCollection):
     _help = None
     _default = 'maize'
     _arguments = []
+    _argument_properties = ['id', 'data', 'data_year']
     _properties = dict(
         ParameterCollection._properties,
         data={

@@ -55,7 +55,8 @@
     "NodeElements": [
         "Cotyledon",
         "Leaf",
-        "Branch"
+        "Branch",
+        "Fruit"
     ],
     "LeafMethod": "sweep",
     "LeafNDivide": 10,

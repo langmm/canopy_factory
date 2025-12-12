@@ -46,6 +46,7 @@ cfg.setdefaults(
     },
     files={
         'locations': os.path.join(_source_dir, 'data', 'locations.csv'),
+        'testdata': [],
     },
 )
 _default_axis_up = np.array([0, 0, 1], dtype=np.float64)
@@ -406,7 +407,8 @@ def readonly_cached_property(method, args=None, **kwargs):
     @property
     def _method_wrapper(self):
         if methodname not in self._cached_properties:
-            self._cached_properties[methodname] = method(self)
+            with self.calculating(methodname):
+                self._cached_properties[methodname] = method(self)
         return self._cached_properties[methodname]
 
     return _method_wrapper
@@ -498,6 +500,34 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
 
     def __init__(self):
         self._cached_properties = {}
+        self._in_calculation = []
+
+    @contextlib.contextmanager
+    def calculating(self, name):
+        r"""Context for handling circular calculation dependencies.
+
+        Args:
+            name (str): Name of the property being calculated.
+
+        """
+        assert name not in self._in_calculation
+        self._in_calculation.append(name)
+        try:
+            yield
+        finally:
+            self._in_calculation.pop(-1)
+
+    def check_calculating(self, name):
+        r"""Check if a variable is being calculated.
+
+        Args:
+            name (str): Name of the property to check.
+
+        Returns:
+            bool: True if the variable is being calculated.
+
+        """
+        return (name in self._in_calculation)
 
     @staticmethod
     def _on_registration(cls):
@@ -1825,6 +1855,20 @@ def jsonschema2argument(json, no_defaults=False):
     if 'description' in json:
         out['help'] = json['description']
     return out
+
+
+def parse_existing_file(x):
+    r"""Parse an existing file.
+
+    Args:
+        x (str): String containing the path to an existing file.
+
+    Returns:
+        str: File name.
+
+    """
+    assert isinstance(x, str) and os.path.isfile(x)
+    return os.path.abspath(x)
 
 
 def parse_units(x):
@@ -3345,11 +3389,9 @@ class DataProcessor:
         """
         try:
             return cls.from_file(fname, **kwargs).ids
-        except BaseException as e:
-            print("HERE", e)
-            pdb.set_trace()
-            # if fname is None and kwargs.get('crop', None):
-            #     return cls.available_ids(kwargs.pop('crop'), **kwargs)
+        except ValueError:
+            if fname is None and kwargs.get('crop', None):
+                return cls.available_ids(kwargs.pop('crop'), **kwargs)
             raise
 
     @classmethod

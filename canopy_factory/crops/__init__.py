@@ -14,7 +14,7 @@ from canopy_factory.cli import (
 )
 from canopy_factory.crops import (
     monocot, maize,
-    dicot,
+    dicot, tomato,
 )
 
 
@@ -39,6 +39,7 @@ class ParametrizeCropTask(TaskBase):
                 'parameters used to generate 3D '
                 'representations of a canopy'
             ),
+            'composite_param': ['id', 'data_year'],
         },
         'lpy_model': {
             'base_string': '',
@@ -53,6 +54,9 @@ class ParametrizeCropTask(TaskBase):
     _subparser_modifications = {
         'crop': {
             'id': {
+                'append_choices': ['all'],
+            },
+            'data_year': {
                 'append_choices': ['all'],
             },
         }
@@ -994,7 +998,10 @@ class GenerateTask(TaskBase):
             'modifications': {
                 'id': {
                     'append_choices': ['all', 'all_combined'],
-                }
+                },
+                'data_year': {
+                    'append_choices': ['all', 'all_combined'],
+                },
             },
         },
     }
@@ -1285,19 +1292,24 @@ class GenerateTask(TaskBase):
             )
         return mesh
 
-    def _merge_output(self, name, output):
-        r"""Merge the output for multiple IDs.
+    def _merge_output(self, name, output, merged_param):
+        r"""Merge the output for multiple sets of parameters values.
 
         Args:
             name (str): Name of the output to generate.
-            output (dict): Mapping from ID to the output for each ID.
+            output (dict): Mapping from tuples of parameter values to
+               the output for the parameter values.
+            merged_param (tuple): Names of the parameters that are being
+                merged (the parameters specified by the tuple keys in
+                output).
 
         Returns:
             object: Generated output.
 
         """
         if name not in ['generate', 'geometryids']:
-            return super(GenerateTask, self)._merge_output(name, output)
+            return super(GenerateTask, self)._merge_output(
+                name, output, merged_param)
         assert self.args.id == 'all_combined'
         if name == 'generate':
             return self.merge_mesh(self.args, list(output.values()))
@@ -1567,4 +1579,4 @@ class GenerateTask(TaskBase):
         return (mesh, geometryids)
 
 
-__all__ = ["monocot", "maize", "dicot"]
+__all__ = ["monocot", "maize", "dicot", "tomato"]

@@ -60,7 +60,8 @@
     "NodeElements": [
         "Cotyledon",
         "Leaf",
-        "Branch"
+        "Branch",
+        "Fruit"
     ],
     "LeafMethod": "sweep",
     "LeafUnfurledLength": 0.3,

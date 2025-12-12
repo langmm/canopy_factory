@@ -890,6 +890,14 @@ class RayTraceTask(TaskBase):
         },
     }
     _composite_arguments = {
+        'location': {
+            'location': {
+                'description': ' that the light should be modeled for',
+                'defaults': {
+                    'location': 'Champaign',
+                },
+            },
+        },
         'time': {
             'time': {
                 'description': ' that the light should be modeled for',
@@ -920,6 +928,10 @@ class RayTraceTask(TaskBase):
             },
         },
     }
+    _subparser_arguments = dict(
+        GenerateTask._subparser_arguments,
+        light_source=True,
+    )
     _argument_conversions = {
         'mesh_units': [
             'ground_height',
@@ -1039,7 +1051,9 @@ class RayTraceTask(TaskBase):
         )),
         ('raytrace', SuffixGenerator(
             [
+                ('location', {'composite': 'location'}),
                 ('time', {'composite': 'time'}),
+                ('light_source', {'noteq': 'sun'}),
                 ('nrays', {'cond': True}),
                 ('multibounce', {'value': 'multibounce'}),
                 ('any_direction', {'value': 'anydirection'}),
@@ -1692,19 +1706,24 @@ class RayTraceTask(TaskBase):
             )
         return out
 
-    def _merge_output(self, name, output):
-        r"""Merge the output for multiple IDs.
+    def _merge_output(self, name, output, merged_param):
+        r"""Merge the output for multiple sets of parameters values.
 
         Args:
             name (str): Name of the output to generate.
-            output (dict): Mapping from ID to the output for each ID.
+            output (dict): Mapping from tuples of parameter values to
+               the output for the parameter values.
+            merged_param (tuple): Names of the parameters that are being
+                merged (the parameters specified by the tuple keys in
+                output).
 
         Returns:
             object: Generated output.
 
         """
         if name != 'traced_mesh':
-            return super(RayTraceTask, self)._merge_output(name, output)
+            return super(RayTraceTask, self)._merge_output(
+                name, output, merged_param)
         return GenerateTask.merge_mesh(self.args, list(output.values()))
 
     def _generate_output(self, name):
@@ -2085,12 +2104,16 @@ class RenderTask(TaskBase):
             out[k] = getattr(self.raytracer, k)
         return out
 
-    def _merge_output(self, name, output):
-        r"""Merge the output for multiple IDs.
+    def _merge_output(self, name, output, merged_param):
+        r"""Merge the output for multiple sets of parameters values.
 
         Args:
             name (str): Name of the output to generate.
-            output (dict): Mapping from ID to the output for each ID.
+            output (dict): Mapping from tuples of parameter values to
+               the output for the parameter values.
+            merged_param (tuple): Names of the parameters that are being
+                merged (the parameters specified by the tuple keys in
+                output).
 
         Returns:
             object: Generated output.
@@ -2098,7 +2121,8 @@ class RenderTask(TaskBase):
         """
         if name == 'render':
             return np.concatenate(list(output.values()), axis=1)
-        return super(RenderTask, self)._merge_output(name, output)
+        return super(RenderTask, self)._merge_output(
+            name, output, merged_param)
 
     def _generate_output(self, name):
         r"""Generate the specified output value.
@@ -2133,6 +2157,7 @@ class TotalsTask(TemporalTaskBase):
         'totals': {
             'ext': '.json',
             'description': 'raytraced query totals',
+            'composite_param': ['id', 'data_year'],
         },
         'totals_plot': {
             'ext': '.png',
@@ -2385,23 +2410,30 @@ class TotalsTask(TemporalTaskBase):
         out['times'] = times
         return out
 
-    def _merge_output(self, name, output):
-        r"""Merge the output for multiple IDs.
+    def _merge_output(self, name, output, merged_param):
+        r"""Merge the output for multiple sets of parameters values.
 
         Args:
             name (str): Name of the output to generate.
-            output (dict): Mapping from ID to the output for each ID.
+            output (dict): Mapping from tuples of parameter values to
+               the output for the parameter values.
+            merged_param (tuple): Names of the parameters that are being
+                merged (the parameters specified by the tuple keys in
+                output).
 
         Returns:
             object: Generated output.
 
         """
         if name == 'totals_plot':
-            for id, values in output.items():
-                self.plot_data(values, id=id)
+            for param, values in output.items():
+                idstr = ', '.join([str(x) for x in param])
+                # kws = {k: v for k, v in zip(merged_param, param)}
+                self.plot_data(values, id=idstr)
             self.axes.legend()
             return self.figure
-        return super(TotalsTask, self)._merge_output(name, output)
+        return super(TotalsTask, self)._merge_output(
+            name, output, merged_param)
 
     def _generate_output(self, name):
         r"""Generate the specified output value.

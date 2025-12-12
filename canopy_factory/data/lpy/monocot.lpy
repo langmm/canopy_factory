@@ -45,7 +45,6 @@ Apex(time,age,n,b):
     if ((n < nmin
          or (nmax != -1 and n > nmax)
          or (((n - nmin) % nperiod) != 0))):
-        print(f"Removing Apex[n={n}] P")
         produce *
     bmin = generator.ApexBFirst()
     bmax = generator.ApexBLast()
@@ -53,7 +52,6 @@ Apex(time,age,n,b):
     if ((b < bmin
          or (bmax != -1 and b > bmax)
          or (((b - bmin) % bperiod) != 0))):
-        print(f"Removing Apex[b={b}] P")
         produce *
     if age >= generator.ApexAgeRemove():
         if generator.verbose_lpy:
@@ -86,7 +84,6 @@ Internode(time,age,n,b):
     if ((n < nmin
          or (nmax != -1 and n > nmax)
          or (((n - nmin) % nperiod) != 0))):
-        print(f"Removing Internode[n={n}] P")
         produce *
     bmin = generator.InternodeBFirst()
     bmax = generator.InternodeBLast()
@@ -94,7 +91,6 @@ Internode(time,age,n,b):
     if ((b < bmin
          or (bmax != -1 and b > bmax)
          or (((b - bmin) % bperiod) != 0))):
-        print(f"Removing Internode[b={b}] P")
         produce *
     if age >= generator.InternodeAgeRemove():
         if generator.verbose_lpy:
@@ -121,7 +117,6 @@ Leaf(time,age,n,b):
     if ((n < nmin
          or (nmax != -1 and n > nmax)
          or (((n - nmin) % nperiod) != 0))):
-        print(f"Removing Leaf[n={n}] P")
         produce *
     bmin = generator.LeafBFirst()
     bmax = generator.LeafBLast()
@@ -129,7 +124,6 @@ Leaf(time,age,n,b):
     if ((b < bmin
          or (bmax != -1 and b > bmax)
          or (((b - bmin) % bperiod) != 0))):
-        print(f"Removing Leaf[b={b}] P")
         produce *
     if age >= generator.LeafAgeRemove():
         if generator.verbose_lpy:
@@ -159,7 +153,6 @@ Internode(time,age,n,b):
         if ((n < nmin
              or (nmax != -1 and n > nmax)
              or (((n - nmin) % nperiod) != 0))):
-            print(f"Removing Internode[n={n}]")
             produce [/(0)]
         bmin = generator.InternodeBFirst()
         bmax = generator.InternodeBLast()
@@ -167,13 +160,12 @@ Internode(time,age,n,b):
         if ((b < bmin
              or (bmax != -1 and b > bmax)
              or (((b - bmin) % bperiod) != 0))):
-            print(f"Removing Internode[b={b}]")
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Internode[{age},{n}]")
-        nproduce SetColor(generator.InternodeColor(time,age,n,b))
         nproduce /(generator.InternodeRotationAngle(time,age,n,b))
         nproduce &(generator.InternodeAngle(time,age,n,b))
+        nproduce SetColor(generator.InternodeColor(time,age,n,b))
         length = generator.InternodeLength(time,age,n,b)
         nproduce F(0.001 * length)
         xprev = 0.0
@@ -197,7 +189,6 @@ Leaf(time,age,n,b):
         if ((n < nmin
              or (nmax != -1 and n > nmax)
              or (((n - nmin) % nperiod) != 0))):
-            print(f"Removing Leaf[n={n}]")
             produce [/(0)]
         bmin = generator.LeafBFirst()
         bmax = generator.LeafBLast()
@@ -205,13 +196,12 @@ Leaf(time,age,n,b):
         if ((b < bmin
              or (bmax != -1 and b > bmax)
              or (((b - bmin) % bperiod) != 0))):
-            print(f"Removing Leaf[b={b}]")
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Leaf[{age},{n}]")
-        nproduce SetColor(generator.LeafColor(time,age,n,b))
         nproduce /(generator.LeafRotationAngle(time,age,n,b))
         nproduce &(generator.LeafAngle(time,age,n,b))
+        nproduce SetColor(generator.LeafColor(time,age,n,b))
         nproduce SetContour(generator.LeafProfile(time,age,n,b,x=0))
         length = generator.LeafLength(time,age,n,b)
         nproduce F(0.001 * length)
