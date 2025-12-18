@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import yggdrasil_rapidjson as rapidjson
 from yggdrasil_rapidjson import units
-from canopy_factory import utils
+from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_axis, parse_color,
     get_class_registry, UnitSet, NoDefault,
@@ -48,20 +48,19 @@ class ParametrizeCropTask(TaskBase):
             'description': 'LPy L-system rules',
         },
     }
-    _subparser_arguments = {
-        'crop': ['id', 'data', 'data_year'],  # True to include params
-    }
-    _subparser_modifications = {
-        'crop': {
-            'id': {
-                'append_choices': ['all'],
-            },
-            'data_year': {
-                'append_choices': ['all'],
-            },
-        }
-    }
     _arguments = [
+        arguments.ClassSubparserArgumentDescription(
+            'crop', dont_create=True,
+            include=['id', 'data', 'data_year'],
+            modifications={
+                'id': {
+                    'append_choices': ['all'],
+                },
+                'data_year': {
+                    'append_choices': ['all'],
+                },
+            },
+        ),
         (('--debug-param', ), {
             'action': 'append',
             'help': ('Parameter(s) that debug mode should be enabled '
@@ -80,9 +79,6 @@ class ParametrizeCropTask(TaskBase):
         ('id', {'cond': True, 'outputs': ['parametrize']}),
         ('data_year', {'outputs': ['parametrize']}),
     ])
-    _age_strings = [
-        'planting', 'maturity', 'senesce', 'remove',
-    ]
 
     @staticmethod
     def _on_registration(cls):
@@ -236,11 +232,7 @@ class ParametrizeCropTask(TaskBase):
             dict: Architecture parameters.
 
         """
-        kwargs = {}
-        for k, v in self.generator_class._arguments:
-            kattr = self.arg2dest(k, v)
-            if getattr(self.args, kattr, None) is not None:
-                kwargs[kattr] = getattr(self.args, kattr)
+        kwargs = self.generator_class._arguments.extract_args(self.args)
         for k in self._runtime_param:
             kwargs[k] = getattr(self.args, k)
         inst = self.generator_class(**kwargs)
@@ -341,34 +333,25 @@ class LayoutTask(TaskBase):
             'description': 'a plot of the layout',
         },
     }
-    _composite_arguments = {
-        'time': {
-            'time': {
-                'description': ' that the sun should be modeled for',
-                'ignore': ['age', 'planting_date'],
-                'optional': True,
-            },
-        }
-    }
-    _argument_conversions = {
-        'mesh_units': [
-            'plot_length', 'plot_width', 'row_spacing', 'plant_spacing',
-            'x', 'y',
-            'ground_height',
-        ],
-    }
     _arguments = [
+        arguments.CompositeArgumentDescription(
+            'time', description=' that the sun should be modeled for',
+            ignore=['age', 'planting_date'],
+            optional=True,
+        ),
         (('--canopy', ), {
             'choices': ['single', 'tile', 'unique'],
             'default': 'unique',
             'help': 'Type of canopy to layout',
         }),
         (('--plot-length', '--row-length'), {
-            'type': parse_quantity, 'default': 200, 'units': 'cm',
+            'default': 200, 'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': 'Length of plot rows forming canopy (in cm)',
         }),
         (('--plot-width', ), {
-            'type': parse_quantity, 'units': 'cm',
+            'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': ('Width of plot forming canopy (in cm). If provided '
                      '\'nrows\' will be determined based on the provided '
                      '\'row_spacing\'. If not provided, \'plot_width\' '
@@ -402,20 +385,24 @@ class LayoutTask(TaskBase):
         #              '\"--match-id\".'),
         # }),
         (('--row-spacing', ), {
-            'type': parse_quantity, 'default': 76.2, 'units': 'cm',
+            'units': 'cm', 'default': 76.2,
+            'units_arg': 'mesh_units',
             'help': 'Space between adjacent rows in plot (in cm)',
         }),
         (('--plant-spacing', '--col-spacing'), {
-            'type': parse_quantity, 'default': 18.3, 'units': 'cm',
+            'units': 'cm', 'default': 18.3,
+            'units_arg': 'mesh_units',
             'help': 'Space between adjacent plants in rows (in cm)',
         }),
         (('-x', '--x', '--row-offset'), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
+            'units': 'cm', 'default': 0.0,
+            'units_arg': 'mesh_units',
             'help': ('Starting position in the x direction '
                      '(perpendicular to rows)'),
         }),
         (('-y', '--y', '--plant-offset'), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'cm',
+            'units': 'cm', 'default': 0.0,
+            'units_arg': 'mesh_units',
             'help': ('Starting position in the y direction (along '
                      'rows)'),
         }),
@@ -448,7 +435,8 @@ class LayoutTask(TaskBase):
                      'incident solar radiation'),
         }),
         (('--ground-height', ), {
-            'type': parse_quantity, 'default': 0.0, 'units': 'meters',
+            'default': 0.0, 'units': 'meters',
+            'units_arg': 'mesh_units',
             'help': ('Distance that the ground is above 0 along the '
                      '\"axis_up\" direction'),
         }),
@@ -521,12 +509,6 @@ class LayoutTask(TaskBase):
         )),
         ('time', {'composite': 'time'}),
     ])
-
-    @classmethod
-    def _convert_mesh_units(cls, args, k, v):
-        if isinstance(args.mesh_units, str):
-            args.mesh_units = units.Units(args.mesh_units)
-        setattr(args, k, parse_quantity(v, args.mesh_units))
 
     @classmethod
     def adjust_args_internal(cls, args):
@@ -1005,32 +987,20 @@ class GenerateTask(TaskBase):
             },
         },
     }
-    _composite_arguments = {
-        'age': {
-            'age': {
-                'description': ' to generate model for',
-                'ignore': ['planting_date'],
-            },
-        },
-        'color': {
-            'color': {
-                'description': (
-                    'that should be used for the generated plant. If '
-                    'a value of \'plantid\' is provided, colors will '
-                    'be used to identify individual plants by setting '
-                    'the blue channel to the plant ID.'
-                ),
-                'optional': True,
-            },
-        },
-    }
     _arguments = [
-        # (('--age', ), {
-        #     'type': parse_quantity, 'units': 'days',
-        #     'help': ('Plant age to generate model for (in days '
-        #              'since planting). Defaults to one day before the '
-        #              'age of senescence.'),
-        # }),
+        arguments.CompositeArgumentDescription(
+            'age', description=' to generate model for',
+            ignore=['planting_date'],
+        ),
+        arguments.CompositeArgumentDescription(
+            'color', description=(
+                'that should be used for the generated plant. If '
+                'a value of \'plantid\' is provided, colors will '
+                'be used to identify individual plants by setting '
+                'the blue channel to the plant ID.'
+            ),
+            optional=True,
+        ),
         # (('--derivation-length', ), {
         #     'type': int,
         #     'help': ('Number of iterations that should be produced '

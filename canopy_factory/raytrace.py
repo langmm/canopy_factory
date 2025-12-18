@@ -9,7 +9,7 @@ from collections import OrderedDict
 from yggdrasil_rapidjson import units
 from yggdrasil_rapidjson.geometry import Ply as PlyDict
 from yggdrasil_rapidjson.geometry import ObjWavefront as ObjDict
-from canopy_factory import utils
+from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     cfg, RegisteredClassBase, get_class_registry,
     parse_quantity, parse_axis,
@@ -22,6 +22,7 @@ from canopy_factory.cli import (
     OptimizationTaskBase, SuffixGenerator,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
+from canopy_factory import light_sources
 
 
 _query_options_adm = [
@@ -692,6 +693,35 @@ class HothouseRayTracer(RayTracerBase):
         return self.args.time.solar_model
 
     @cached_args_property
+    def point_source_blaster(self):
+        r"""hothouse.blaster.SolarBlaster: Blaster for a point source."""
+        from hothouse.blaster import SphericalRayBlaster
+        assert self.args.periodic_canopy != 'rays'
+        direct_ppfd = self.args.light_intensity_direct
+        diffuse_ppfd = self.args.light_intensity_diffuse
+        self.log(f"Total PPFD"
+                 f"\n   direct = {direct_ppfd}"
+                 f"\n   diffuse = {diffuse_ppfd}",
+                 force=True)
+        kws = {}
+        if self.args.light_source == 'point_grid':
+            kws.update(
+                period=self.args.light_grid_period,
+                periodic_direction=self.args.light_grid_periodic_direction,
+                periodic_count=self.args.light_grid_periodic_count_array,
+            )
+        return SphericalRayBlaster(
+            center=self.args.light_source_location,
+            forward=self.args.light_source_direction,  # Default to down
+            fov_width=self.args.light_source_fov,  # Default to 180
+            fov_height=self.args.light_source_fov,
+            direct_ppfd=direct_ppfd,
+            diffuse_ppfd=diffuse_ppfd,
+            nx=self.args.nrays, ny=self.args.nrays,
+            multibounce=self.args.multibounce, **kws
+        )
+
+    @cached_args_property
     def solar_blaster(self):
         r"""hothouse.blaster.SolarBlaster: Blaster for sun."""
         # TODO: Add units to parser
@@ -889,56 +919,31 @@ class RayTraceTask(TaskBase):
             }
         },
     }
-    _composite_arguments = {
-        'location': {
-            'location': {
-                'description': ' that the light should be modeled for',
-                'defaults': {
-                    'location': 'Champaign',
-                },
-            },
-        },
-        'time': {
-            'time': {
-                'description': ' that the light should be modeled for',
-                'defaults': {
-                    'hour': 'noon',
-                    'date': '2024-06-21',
-                },
-            },
-        },
-        'color': {
-            'ray_color': {
-                'description': (
-                    ' that should be used for rays when "--show-rays" '
-                    'is passed'
-                ),
-                'defaults': {
-                    'color': 'red',
-                },
-            },
-            'highlight_color': {
-                'description': (
-                    'that should be used for highlighted faces if '
-                    '"--highlight" is passed'
-                ),
-                'defaults': {
-                    'color': 'magenta',
-                },
-            },
-        },
-    }
-    _subparser_arguments = dict(
-        GenerateTask._subparser_arguments,
-        light_source=True,
-    )
-    _argument_conversions = {
-        'mesh_units': [
-            'ground_height',
-            'ray_width', 'ray_length', 'arrow_width',
-        ],
-    }
     _arguments = [
+        GenerateTask._arguments['crop'].copy(remove_class='task'),
+        arguments.ClassSubparserArgumentDescription(
+            'light_source',
+        ),
+        arguments.CompositeArgumentDescription(
+            'ray_color', 'color',
+            description=(
+                ' that should be used for rays when "--show-rays" '
+                'is passed'
+            ),
+            defaults={
+                'color': 'red',
+            },
+        ),
+        arguments.CompositeArgumentDescription(
+            'highlight_color', 'color',
+            description=(
+                'that should be used for highlighted faces if '
+                '"--highlight" is passed'
+            ),
+            defaults={
+                'color': 'magenta',
+            },
+        ),
         (('--raytracer', ), {
             'type': str, 'default': 'hothouse',
             'choices': list(get_class_registry().keys('raytracer')),
@@ -996,17 +1001,20 @@ class RayTraceTask(TaskBase):
                      '"--output-traced-mesh" is passed).'),
         }),
         (('--ray-width', ), {
-            'type': parse_quantity, 'default': 1.0, 'units': 'cm',
+            'default': 1.0, 'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': 'Width of rays drawn when "--show-rays" is passed.',
         }),
         (('--ray-length', ), {
-            'type': parse_quantity, 'default': 10.0, 'units': 'cm',
+            'default': 10.0, 'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': ('Length of rays drawn when "--show-rays" is '
                      'passed. A negative value will cause the distance '
                      'to the scene to be used for the ray length.'),
         }),
         (('--arrow-width', ), {
-            'type': parse_quantity, 'default': 2.0, 'units': 'cm',
+            'default': 2.0, 'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': ('Width of arrows of rays drawn when "--show-rays" '
                      'is passed.'),
         }),
@@ -1776,30 +1784,21 @@ class RenderTask(TaskBase):
             }
         },
     }
-    _composite_arguments = {
-        'age': {
-            'scene_age': {
-                'description': (
-                    'that the camera position should be calculated for '
-                    '(only valid for generated meshes)'
-                ),
-                'ignore': ['planting_date'],
-                'optional': True,
-            },
-        },
-        'color': {
-            'background_color': {
-                'description': 'that should be used for the scene',
-                'defaults': {'color': 'transparent'},
-            }
-        },
-    }
-    _argument_conversions = {
-        'mesh_units': [
-            'image_width', 'image_height',
-        ],
-    }
     _arguments = [
+        arguments.CompositeArgumentDescription(
+            'scene_age', 'age',
+            description=(
+                'that the camera position should be calculated for '
+                '(only valid for generated meshes)'
+            ),
+            ignore=['planting_date'],
+            optional=True,
+        ),
+        arguments.CompositeArgumentDescription(
+            'background_color', 'color',
+            description='that should be used for the scene',
+            defaults={'color': 'transparent'},
+        ),
         (('--camera-type', ), {
             'type': str,
             'choices': ['projection', 'orthographic'],  # 'spherical'],
@@ -1820,12 +1819,12 @@ class RenderTask(TaskBase):
                      'the scene from its location.'),
         }),
         (('--camera-fov-width', ), {
-            'type': parse_quantity, 'units': 'degrees', 'default': 45.0,
+            'units': 'degrees', 'default': 45.0,
             'help': ('Angular width of the camera\'s field of view (in '
                      'degrees) for a projection camera.'),
         }),
         (('--camera-fov-height', ), {
-            'type': parse_quantity, 'units': 'degrees', 'default': 45.0,
+            'units': 'degrees', 'default': 45.0,
             'help': ('Angular height of the camera\'s field of view (in '
                      'degrees) for a projection camera.'),
         }),
@@ -1867,21 +1866,23 @@ class RenderTask(TaskBase):
                      '1024.'),
         }),
         (('--image-width', ), {
-            'type': parse_quantity, 'units': 'cm',
+            'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': ('Width of the image (in cm). If not provided, '
                      'the width will be set based on the camera '
                      'position and type such that the entire scene '
                      'is captured.'),
         }),
         (('--image-height', ), {
-            'type': parse_quantity, 'units': 'cm',
+            'units': 'cm',
+            'units_arg': 'mesh_units',
             'help': ('Height of the image (in cm). If not provided, '
                      'the height will be set based on the camera '
                      'position and type such that the entire scene '
                      'is captured.'),
         }),
         (('--resolution', ), {
-            'type': parse_quantity, 'units': 'cm**-1',  # 'default': 5,
+            'units': 'cm**-1',  # 'default': 5,
             'help': ('Resolution that the scene should be rendered with '
                      'in pixels per centimeter. If provided, any '
                      'values provided for --image-nx and --image-ny '
@@ -2630,7 +2631,7 @@ class MatchQuery(OptimizationTaskBase):
                 ('goal_id', {'prefix': '_matchTo_'}),
             ] + [
                 (k, v) for k, v in
-                TemporalTaskBase._output_suffix.arguments.items()
+                OptimizationTaskBase._output_suffix.arguments.items()
             ],
             outputs=['match_query'],
         )),

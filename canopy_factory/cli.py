@@ -11,13 +11,13 @@ import pytz
 import glob
 import shutil
 import itertools
+import uuid
 from collections import OrderedDict
 from datetime import datetime
-from canopy_factory import utils
+from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     cfg, rapidjson, units, parse_quantity, format_list_for_help,
-    get_class_registry, NoDefault, RegisteredClassBase,
-    cached_property,
+    get_class_registry, NoDefault, cached_property,
 )
 
 
@@ -349,7 +349,6 @@ class InstrumentedParser(argparse.ArgumentParser):
         self._subparser_group = None
         self._child_subparsers = {}
         self._positional_index = positional_index
-        self._quantity_units = {}
         super(InstrumentedParser, self).__init__(*args, **kwargs)
         self.register('action', 'parsers', SubParsersAction)
         self.add_argument(
@@ -591,25 +590,7 @@ class InstrumentedParser(argparse.ArgumentParser):
                 args.append(for_help)
         out, argv = super(InstrumentedParser, self).parse_known_args(
             args=args, namespace=namespace, **kwargs)
-        out = self.add_units(out)
         return out, argv
-
-    def add_units(self, args):
-        r"""Add units to arguments that units were recorded for.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        Returns:
-            argparse.Namespace: Parsed arguments.
-
-        """
-        for k, v in self._quantity_units.items():
-            if hasattr(args, k):
-                setattr(args, k, parse_quantity(getattr(args, k), v))
-        for x in self.local_subparsers():
-            x.add_units(args)
-        return args
 
     def has_subparser(self, group, name):
         r"""Check if there is a named subparser within a subparsers group.
@@ -918,8 +899,6 @@ class InstrumentedParser(argparse.ArgumentParser):
             ikwargs['dest'] += f'_{x._subparser_name}'
             iargs = tuple(
                 list(iargs) + [args[0] + f'-{x._subparser_name}'])
-        if 'units' in ikwargs:
-            self._quantity_units[ikwargs['dest']] = ikwargs.pop('units')
         if is_subparser:
             group = iargs[0].replace('-', '_').lstrip('_')
             action = x.add_subparsers(group, **ikwargs)
@@ -935,20 +914,17 @@ class InstrumentedParser(argparse.ArgumentParser):
         return action
 
 
-class CompositeArgument(RegisteredClassBase):
+class CompositeArgument(arguments.RegisteredArgumentClassDict):
     r"""Container for parsing related arguments.
 
     Args:
-        name (str): Base argument name.
         args (argparse.Namespace): Parsed arguments.
         name_base (str): Name of the base variable that should be used
             to set defaults.
         defaults (dict, optional): Defaults that should be used for
             time arguments before the class _defauls.
-        ignore (list, optional): Arguments that should be ignored.
         optional (bool, optional): If True, defaults from the class will
             not be set when the argument is not defined.
-        description (str, optional): Argument description.
         args_overwrite (dict, optional): Arguments to overwrite.
 
     Class Attributes:
@@ -956,7 +932,7 @@ class CompositeArgument(RegisteredClassBase):
             used to determine the prefix/suffix and where the instance
             should be stored on the parsed arguments.
         _defaults (dict): Argument defaults.
-        _arguments (list): Arguments that should be prefixed.
+        _arguments_prefixed (list): Arguments that should be prefixed.
         _arguments_universal (list): Arguments that should not be
             prefixed/suffixed.
 
@@ -967,37 +943,102 @@ class CompositeArgument(RegisteredClassBase):
     _name_as_suffix = False
     _name_as_prefix = False
     _defaults = {}
-    _arguments = []
+    _arguments_prefixed = []
     _arguments_universal = []
     _attributes_kwargs = [
-        'optional', 'description',
+        'optional',
     ]
     _attributes_copy = []
+    name = None
+    prefix = ''
+    suffix = ''
+    description = ''
 
-    def __init__(self, name, args, name_base=None, defaults=None,
-                 ignore=None, optional=False, description=None,
-                 args_overwrite=None):
-        self.name = name
-        if name_base == name:
+    @staticmethod
+    def _on_registration(cls):
+        if cls.name is None:
+            cls.name = cls._name
+        if isinstance(cls._arguments_prefixed, list):
+            cls._arguments_prefixed = arguments.ArgumentDescriptionSet(
+                cls._arguments_prefixed)
+        if isinstance(cls._arguments_universal, list):
+            cls._arguments_universal = arguments.ArgumentDescriptionSet(
+                cls._arguments_universal)
+        cls._arguments_universal.modify(universal=True)
+        cls._arguments = (
+            cls._arguments_prefixed + cls._arguments_universal)
+        arguments.RegisteredArgumentClassDict._on_registration(cls)
+
+    def __init__(self, args, name_base=None, defaults=None,
+                 optional=False, args_overwrite=None):
+        if name_base == self.name:
             name_base = None
         if defaults is None:
             defaults = {}
-        if ignore is None:
-            ignore = []
         self._defaults_set = []
         self.name_base = name_base
-        self.prefix = self.get_prefix(self.name)
-        self.suffix = self.get_suffix(self.name)
         self.base = None
-        self.ignore = ignore
         self.optional = optional
-        self.description = description
         self.defaults = {
-            k: defaults[k] for k in self.argument_names()
+            k: defaults[k] for k in self._arguments.keys()
             if k in defaults
         }
-        self.args = {}
-        self.reset(args, args_overwrite=args_overwrite)
+        super(CompositeArgument, self).__init__(
+            args, args_overwrite=args_overwrite)
+
+    @classmethod
+    def class_factory(cls, name, registry_name=None, **kwargs):
+        r"""Create a new class for a modified version of the arguments.
+
+        Args:
+            name (str): Composite argument name.
+            registry_name (str, optional): Name that should be used to
+                register the generated class. If not provided, one will be
+                generated.
+            **kwargs: Additional keyword arguments are used to modify
+                the set of arguments for the new class.
+
+        Returns:
+            type: Composite argument class.
+
+        """
+        if name == cls.name and not (kwargs or registry_name):
+            return cls
+        if registry_name is None:
+            registry_name = name
+        prefix = cls.get_prefix(name)
+        suffix = cls.get_suffix(name)
+        if kwargs:
+            while get_class_registry().get(cls._registry_key,
+                                           registry_name, None):
+                registry_name += str(uuid.uuid4())
+        else:
+            existing = get_class_registry().get(
+                cls._registry_key, registry_name, None)
+            if existing is not None:
+                return existing
+        if cls.description:
+            kwargs.setdefault('description', cls.description)
+        arguments_prefixed = cls._arguments_prefixed.copy(
+            prefix=prefix, suffix=suffix, **kwargs)
+        arguments_universal = cls._arguments_universal.copy(**kwargs)
+        # arguments = arguments_prefixed + arguments_universal
+        argument_name = name
+        argument_prefix = prefix
+        argument_suffix = suffix
+
+        class FactoryCompositeClass(cls):
+
+            _registry_name = registry_name
+            # _arguments = arguments
+            _arguments_prefixed = arguments_prefixed
+            _arguments_universal = arguments_universal
+            name = argument_name
+            prefix = argument_prefix
+            suffix = argument_suffix
+            description = kwargs.get('description', '')
+
+        return FactoryCompositeClass
 
     def reset(self, args, args_overwrite=None):
         r"""Reinitialize the arguments used by this instance.
@@ -1007,38 +1048,14 @@ class CompositeArgument(RegisteredClassBase):
             args_overwrite (dict, optional): Arguments to overwrite.
 
         """
-        if args_overwrite is None:
-            args_overwrite = {}
-        # in_init = bool(self.args)
-        self.args.clear()
-        self.clear_cached_properties()
         self._defaults_set.clear()
         if self.name_base is not None:
             self.base = self.from_args(
-                self.name_base, args, name_base=self.name_base,
+                args, name=self.name_base, name_base=self.name_base,
                 args_overwrite=args_overwrite,
             )
-        args_composite = []
-        for k, kbook in self.argument_names(prefix=self.prefix,
-                                            suffix=self.suffix,
-                                            include_base=True):
-            self.args[k] = (
-                None if k in self.ignore
-                else args_overwrite.get(kbook,
-                                        getattr(args, kbook, None))
-            )
-        for k in args_composite:
-            while isinstance(self.args[k], CompositeArgument):
-                v = self.args[k]
-                assert k == v._name
-                for kk in v.argument_names():
-                    if ((kk == k or kk in (self.ignore + v.ignore)
-                         or v.args.get(kk, None) is None)):
-                        continue
-                    assert v.args[kk] == self.args[kk]
-                self.args[k] = v.args[k]
-        for k in self.ignore:
-            self.args[k] = None
+        super(CompositeArgument, self).reset(
+            args, args_overwrite=args_overwrite)
 
     @classmethod
     def from_other(cls, other, **kwargs):
@@ -1054,7 +1071,7 @@ class CompositeArgument(RegisteredClassBase):
             CompositeArgument: Copy as this class.
 
         """
-        argument_names = cls.argument_names()
+        argument_names = cls.argument_names(include='name')
         name = other.prefix + cls._name + other.suffix
         if other.name_base and 'name_base' not in kwargs:
             kwargs['name_base'] = (
@@ -1066,60 +1083,32 @@ class CompositeArgument(RegisteredClassBase):
                 k: v for k, v in other.defaults.items()
                 if k in argument_names
             }
-        if other.ignore and 'ignore' not in kwargs:
-            kwargs['ignore'] = [
-                k for k in other.ignore
-                if k in argument_names
-            ]
         for k in cls._attributes_kwargs:
             if ((k not in other._attributes_kwargs
                  or k in kwargs)):
                 continue
             kwargs[k] = getattr(other, k)
-        kws = {}
+        args = argparse.Namespace()
         for k, v in other.args.items():
             if k not in argument_names:
                 continue
-            kws[other.prefix + k + other.suffix] = v
-        out = cls.from_kwargs(name, kws, **kwargs)
+            setattr(args, other.prefix + k + other.suffix, v)
+        out = cls.from_args(args, name=name, **kwargs)
         for k in cls._attributes_copy:
             if hasattr(other, k):
                 setattr(out, k, getattr(other, k))
         return out
 
     @classmethod
-    def from_kwargs(cls, name, kws, **kwargs):
-        r"""Create an argument instance by pulling arguments from the
-        provided keyword arguments.
-
-        Args:
-            name (str): Base argument name.
-            kws (dict): Keywords to add to a new argument namespace.
-            **kwargs: Additional keyword arguments are passed to from_args
-
-        Returns:
-            CompositeArgument: New instance.
-
-        """
-        if name is None:
-            name = cls._name
-        args = argparse.Namespace()
-        arguments = cls.argument_names(name)
-        for k, v in kws.items():
-            if k not in arguments:
-                continue
-            setattr(args, k, v)
-        return cls.from_args(name, args, **kwargs)
-
-    @classmethod
-    def from_args(cls, name, args, overwrite=False, dont_update=False,
-                  **kwargs):
+    def from_args(cls, args, name=None, overwrite=False,
+                  dont_update=False, **kwargs):
         r"""Create an instance on the provided arguments, first checking
         if one already exists.
 
         Args:
-            name (str): Base argument name.
             args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name that should be used for the
+                composite argument.
             overwrite (bool, optional): If True, overwrite the existing
                 instance.
             dont_update (bool, optional): If True, don't set the argument
@@ -1131,47 +1120,32 @@ class CompositeArgument(RegisteredClassBase):
             CompositeArgument: New or existing instance.
 
         """
+        if name is not None:
+            return cls.class_factory(name).from_args(
+                args, overwrite=overwrite, dont_update=dont_update,
+                **kwargs)
+        name = cls.name
         if overwrite:
             if dont_update:
                 args = copy.deepcopy(args)
-            cls.reset_args(name, args)
+            cls._arguments.reset_args(args)
         inst = getattr(args, name, None)
         if not isinstance(inst, cls):
-            inst = cls(name, args, **kwargs)
+            inst = cls(args, **kwargs)
+            # inst = super(CompositeArgument, cls).from_args(
+            #     args, **kwargs)
         if not dont_update:
             inst.update_args(args)
         return inst
 
-    @classmethod
-    def reset_args(cls, name, args, value=NoDefault):
-        r"""Reset the arguments for a variable.
-
-        Args:
-            name (str): Variable name.
-            args (argparse.Namespace): Parsed arguments.
-            value (object, optional): Value that the parsed variable
-                should be reset to.
-
-        """
-        if value is NoDefault:
-            if isinstance(getattr(args, name, None), CompositeArgument):
-                value = getattr(args, name).args.get(name, None)
-            else:
-                value = getattr(args, name)
-        setattr(args, name, value)
-
-    def update_args(self, args, name=None):
+    def update_args(self, args):
         r"""Update a namespace with the parsed arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Name that should be used for the set
-                variables.
 
         """
-        if name is None:
-            name = self.name
-        setattr(args, name, self)
+        setattr(args, self.name, self)
 
     @classmethod
     def get_prefix(cls, name):
@@ -1212,178 +1186,6 @@ class CompositeArgument(RegisteredClassBase):
         return out
 
     @classmethod
-    def argument_names(cls, name=None, prefix=None, suffix=None,
-                       no_universal=False, include_base=False):
-        r"""Get the argument names used to specify a variable.
-
-        Args:
-            name (str, optional): Base name for argument to determine
-                prefix & suffix from.
-            prefix (str, optional): Prefix that should be added to
-                arguments.
-            suffix (str, optional): Suffix that should be added to
-                arguments.
-            no_universal (bool, optional) If True, don't include
-                universal arguments.
-            include_base (bool, optional): If True, return a list
-                containing the argument names both without and with the
-                prefix/suffix.
-
-        Returns:
-            list: Argument names.
-
-        """
-        if prefix is None or suffix is None:
-            assert prefix is None and suffix is None
-            if name is None:
-                name = cls._name
-            prefix = cls.get_prefix(name)
-            suffix = cls.get_suffix(name)
-        out = [
-            prefix + SubparserBase.arg2dest(args, kwargs) + suffix
-            for args, kwargs in cls._arguments
-        ]
-        if not no_universal:
-            out += [
-                SubparserBase.arg2dest(args, kwargs)
-                for args, kwargs in cls._arguments_universal
-            ]
-        if include_base:
-            out = [
-                (k, v) for k, v in
-                zip(cls.argument_names(name, prefix='', suffix='',
-                                       no_universal=no_universal),
-                    out)
-            ]
-        return out
-
-    @classmethod
-    def argument_dict(cls, prefix='', suffix='', no_universal=False,
-                      description='', ignore=None,
-                      use_flags=False, **kwargs):
-        r"""Get a dictionary of argument data.
-
-        Args:
-            prefix (str, optional): Prefix that should be added to
-                arguments.
-            suffix (str, optional): Suffix that should be added to
-                arguments.
-            no_universal (bool, optional) If True, don't include
-                universal arguments.
-            description (str, optional): Description string that should
-                be used to complete the argument help strings.
-            ignore (list, optional): Arguments to ignore.
-            use_flags (bool, optional): If False, use the argument
-                destinations. If True, use the argument flags.
-            **kwargs: Additional keyword arguments are ignored.
-
-        Returns:
-            dict: Positional and keyword arguments for creating the
-                arguments.
-
-        """
-        if ignore is None:
-            ignore = []
-        out = OrderedDict()
-        prefix_arg = prefix.replace('_', '-')
-        prefix_dst = prefix.replace('-', '_')
-        suffix_arg = suffix.replace('_', '-')
-        suffix_dst = suffix.replace('-', '_')
-        for iargs, ikwargs in cls._arguments:
-            dest0 = SubparserBase.arg2dest(iargs, ikwargs)
-            if dest0 in ignore:
-                continue
-            if prefix_arg or suffix_arg:
-                iargs = tuple([
-                    f'--{prefix_arg}' + k.split('--', 1)[-1] + suffix_arg
-                    for k in iargs if k.startswith('--')
-                ])
-            ikwargs = copy.deepcopy(ikwargs)
-            if 'help' in ikwargs:
-                ikwargs['help'] = ikwargs['help'].format(
-                    description=description,
-                    prefix_arg=prefix_arg, prefix_dst=prefix_dst,
-                    suffix_arg=suffix_arg, suffix_dst=suffix_dst,
-                )
-            if 'dest' in ikwargs:
-                ikwargs['dest'] = ikwargs['dest'].format(
-                    prefix_dst=prefix_dst,
-                    suffix_dst=suffix_dst,
-                )
-            if use_flags:
-                ikey = iargs[0]
-            else:
-                ikey = SubparserBase.arg2dest(iargs, ikwargs)
-            out[ikey] = (iargs, ikwargs)
-        if no_universal:
-            return out
-        for iargs, ikwargs in cls._arguments_universal:
-            dest0 = SubparserBase.arg2dest(iargs, ikwargs)
-            if dest0 in ignore:
-                continue
-            if use_flags:
-                ikey = iargs[0]
-            else:
-                ikey = SubparserBase.arg2dest(iargs, ikwargs)
-            out[ikey] = (iargs, ikwargs)
-        return out
-
-    @classmethod
-    def any_arguments_set(cls, args, name=None, ignore=None,
-                          no_universal=True):
-        r"""Check if any arguments are set.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Name for the base variable.
-            ignore (list, optional): Arguments to ignore.
-            no_universal (bool, optional) If True, don't include
-                universal arguments.
-
-        Returns:
-            bool: True if arguments are set.
-
-        """
-        for k in cls.argument_names(name, no_universal=no_universal):
-            if ignore and k in ignore:
-                continue
-            if getattr(args, k, None) is not None:
-                return True
-        return False
-
-    @classmethod
-    def add_arguments(cls, dst, name=None):
-        r"""Add composite arguments to a class.
-
-        Args:
-            dst (type): Class that arguments should be added to.
-            name (str, optional): Name for the base variable. If not
-                provided, all composite arguments will be added.
-
-        """
-        if name is None:
-            if cls._name is None:
-                for k in dst._composite_arguments.keys():
-                    arg_class = get_class_registry().get('argument', k)
-                    arg_class.add_arguments(dst)
-                return
-            for k in dst._composite_arguments[cls._name].keys():
-                cls.add_arguments(dst, name=k)
-            return
-        assert cls._name is not None
-        kwargs = dst._composite_arguments[cls._name][name]
-        existing = dst.argument_dict()
-        prefix = cls.get_prefix(name)
-        suffix = cls.get_suffix(name)
-        for k, v in cls.argument_dict(prefix=prefix, suffix=suffix,
-                                      **kwargs).items():
-            if k not in existing:
-                dst._arguments.append(v)
-        dst._argument_conversions.setdefault(cls._name, [])
-        if name not in dst._argument_conversions[cls._name]:
-            dst._argument_conversions[cls._name].append(name)
-
-    @classmethod
     def is_date(cls, x):
         r"""Check if datetime instance is purely a date without time
         information.
@@ -1416,28 +1218,6 @@ class CompositeArgument(RegisteredClassBase):
         out = datetime(**kws)
         assert cls.is_date(out)
         return out
-
-    @classmethod
-    def parse(cls, x, args, name=None, **kwargs):
-        r"""Parse an argument.
-
-        Args:
-            x (object): Instance to parse.
-            args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Name that should be used to store the
-                results.
-            **kwargs: Additional keyword arguments are passed to the
-                from_args method.
-
-        Returns:
-            object: The parsed instance.
-
-        """
-        args = copy.deepcopy(args)
-        if name is None:
-            name = cls._name
-        cls.reset_args(name, args, value=x)
-        return cls.from_args(name, args, **kwargs)
 
     def any_set(self, names):
         r"""Check if any of the specified arguments were set.
@@ -1513,7 +1293,7 @@ class CompositeArgument(RegisteredClassBase):
         out = True
         for k in names:
             value = None
-            if k in self.ignore:
+            if self.ignored(k):
                 assert self.args[k] is None
                 out = False
                 continue
@@ -1610,7 +1390,7 @@ class OutputArgument(CompositeArgument):
         'overwrite': False,
         'dont_write': False,
     }
-    _arguments = [
+    _arguments_prefixed = [
         (('--output', ), {
             'nargs': '?', 'const': True,
             'help': (
@@ -1661,7 +1441,7 @@ class OutputArgument(CompositeArgument):
         'composite_param', 'merge_all', 'merge_all_output',
     ]
 
-    def __init__(self, name, args, ext=None, base=None,
+    def __init__(self, args, ext=None, base=None,
                  base_string=None, directory=None,
                  upstream=None, downstream=None, composite_param=None,
                  merge_all=None, merge_all_output=None, **kwargs):
@@ -1682,17 +1462,16 @@ class OutputArgument(CompositeArgument):
         self.merge_all = merge_all
         self.merge_all_output = merge_all_output
         self._uncached_args = {}
-        self.output_name = self.get_suffix(name).strip('_')
+        self.output_name = self.suffix.strip('_')
         if self.base_string is None and self.base_output is None:
             self.base_string = self.output_name
-        kwargs.setdefault('description', 'output')
         if 'output' not in kwargs.get('defaults', {}):
             kwargs.setdefault('defaults', {})
             if kwargs.get('optional', False):
                 kwargs['defaults']['output'] = False
             else:
                 kwargs['defaults']['output'] = True
-        super(OutputArgument, self).__init__(name, args, **kwargs)
+        super(OutputArgument, self).__init__(args, **kwargs)
 
     def reset(self, args, **kwargs):
         r"""Reinitialize the arguments used by this instance.
@@ -2201,6 +1980,7 @@ class OutputArgument(CompositeArgument):
             str: Generated file name.
 
         """
+        from canopy_factory.cli import FilenameGenerationError
         task = self.task_class
         assert self.generated
         assert self.output_name in task._outputs_local
@@ -2218,6 +1998,7 @@ class OutputArgument(CompositeArgument):
         return fname
 
     def _generate(self, args, wildcards=None):
+        from canopy_factory.cli import FilenameGenerationError
         iparts = {}
         for k, v in self.parts_generators.items():
             if k in iparts:
@@ -2262,7 +2043,7 @@ class ColorArgument(CompositeArgument):
     _defaults = {
         'color': 'transparent',
     }
-    _arguments = [
+    _arguments_prefixed = [
         (('--color', ), {
             'type': utils.parse_color,
             'help': (
@@ -2284,7 +2065,7 @@ class AxisArgument(CompositeArgument):
     r"""Container for parsing an axis argument."""
 
     _name = 'axis'
-    _arguments = [
+    _arguments_prefixed = [
         (('--axis', ), {
             'type': 'str',
             'help': 'Name or vector{description}',
@@ -2317,7 +2098,7 @@ class AxisArgument(CompositeArgument):
 #         'north': 'x',
 #         'east': 'z',
 #     }
-#     _arguments = [
+#     _arguments_prefixed = [
 #         (('--axis-up', ), {
 #             'type': AxisArgument,
 #             'help': (
@@ -2338,8 +2119,8 @@ class AxisArgument(CompositeArgument):
 #         }),
 #     ]
 
-#     # def __init__(self, name, args, **kwargs):
-#     #     super(AxesArgument, self).__init__(name, args, **kwargs)
+#     # def __init__(self, args, **kwargs):
+#     #     super(AxesArgument, self).__init__(args, **kwargs)
 #     #     if self.args['axis_up']
 
 
@@ -2351,10 +2132,10 @@ class AxisArgument(CompositeArgument):
 #     _defaults = {
 #         'lens': 'projection',
 #         'direction': 'downsoutheast',
-#         'fov_width': parse_quantity(45.0, 'degrees'),
-#         'fov_height': parse_quantity(45.0, 'degrees'),
+#         'fov_width': utils.parse_quantity(45.0, 'degrees'),
+#         'fov_height': utils.parse_quantity(45.0, 'degrees'),
 #     }
-#     _arguments = [
+#     _arguments_prefixed = [
 #         (('--lens', ), {
 #             'type': str,
 #             'choices': ['projection', 'orthographic'],  # 'spherical'],
@@ -2369,14 +2150,14 @@ class AxisArgument(CompositeArgument):
 #             ),
 #         }),
 #         (('--fov-width', ), {
-#             'type': parse_quantity, 'units': 'degrees',
+#             'units': 'degrees',
 #             'help': (
 #                 'Angular width of the camera\'s field of view (in '
 #                 'degrees) for a projection camera.'
 #             ),
 #         }),
 #         (('--fov-height', ), {
-#             'type': parse_quantity, 'units': 'degrees',
+#             'units': 'degrees',
 #             'help': (
 #                 'Angular height of the camera\'s field of view (in '
 #                 'degrees) for a projection camera.'
@@ -2405,8 +2186,8 @@ class AxisArgument(CompositeArgument):
 #         }),
 #     ]
 
-#     def __init__(self, name, args, **kwargs):
-#         super(CameraArgument, self).__init__(name, args, **kwargs)
+#     def __init__(self, args, **kwargs):
+#         super(CameraArgument, self).__init__(args, **kwargs)
 #         if ((self.args['direction'] is None
 #              and self.args['location'] is None)):
 #             self.setdefaults(['direction'])
@@ -2426,9 +2207,13 @@ class AgeArgument(CompositeArgument):
     _defaults = {
         'age': 'maturity',
     }
-    _arguments = [
+    _age_strings = [
+        'planting', 'maturity', 'senesce', 'remove',
+    ]
+    _arguments_prefixed = [
         (('--age', ), {
-            'type': parse_quantity, 'units': 'days',
+            'units': 'days',
+            'choices': _age_strings,
             'help': 'Plant age (in days since planting){description}.',
         }),
     ]
@@ -2436,11 +2221,11 @@ class AgeArgument(CompositeArgument):
         '_parameter_inst', '_parameter_inst_function',
     ]
 
-    def __init__(self, name, args, **kwargs):
+    def __init__(self, args, **kwargs):
         self._time_argument = None
         self._parameter_inst = None
         self._parameter_inst_function = None
-        super(AgeArgument, self).__init__(name, args, **kwargs)
+        super(AgeArgument, self).__init__(args, **kwargs)
 
     def reset(self, args, **kwargs):
         r"""Reinitialize the arguments used by this instance.
@@ -2467,8 +2252,7 @@ class AgeArgument(CompositeArgument):
             bool: True if x is a named crop age.
 
         """
-        from canopy_factory.crops import ParametrizeCropTask
-        return (x in ParametrizeCropTask._age_strings)
+        return (x in cls._age_strings)
 
     @property
     def parameter_inst(self):
@@ -2545,7 +2329,7 @@ class TimeArgument(AgeArgument):
             'year': 2024,
         }
     )
-    _arguments = AgeArgument._arguments + [
+    _arguments_prefixed = AgeArgument._arguments_prefixed + [
         (('--time', '-t'), {
             'type': str,
             'help': (
@@ -2622,10 +2406,10 @@ class TimeArgument(AgeArgument):
         'ignore_date',
     ]
 
-    def __init__(self, name, args, **kwargs):
+    def __init__(self, args, **kwargs):
         self.ignore_date = False
         self.location = None
-        super(TimeArgument, self).__init__(name, args, **kwargs)
+        super(TimeArgument, self).__init__(args, **kwargs)
 
     def reset(self, args, **kwargs):
         r"""Reinitialize the arguments used by this instance.
@@ -2638,8 +2422,7 @@ class TimeArgument(AgeArgument):
         """
         super(TimeArgument, self).reset(args, **kwargs)
         self.location = None
-        if (('location' not in self.ignore
-             and getattr(args, 'location', None))):
+        if getattr(args, 'location', None):
             assert isinstance(args.location, LocationArgument)
             self.location = args.location
             self.args['timezone'] = args.location.timezone
@@ -2659,7 +2442,7 @@ class TimeArgument(AgeArgument):
         if self.args['date'] == 'now':
             self.args['date'] = self.to_date(datetime.now())
         elif self.is_crop_age(self.args['date']):
-            assert 'age' not in self.ignore
+            assert not self.ignored('age')
             assert self.args['age'] is None or 'age' in self._defaults_set
             self.args['age'] = self.args['date']
             if self.args['age'] == 'planting':
@@ -2671,7 +2454,7 @@ class TimeArgument(AgeArgument):
         if ((self.args['age'] is None
              and self.args['planting_date'] is None)):
             self.setdefaults(['age'])
-        if (('planting_date' not in self.ignore
+        if (((not self.ignored('planting_date'))
              and isinstance(self.args['planting_date'], str)
              and not self.is_wildcard('planting_date'))):
             self.args['planting_date'] = datetime.fromisoformat(
@@ -2699,24 +2482,17 @@ class TimeArgument(AgeArgument):
         AgeArgument.reset_args(prefix + 'age' + suffix, args,
                                value=age_value)
 
-    def update_args(self, args, name=None):
+    def update_args(self, args):
         r"""Update a namespace with the parsed time arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
-            name (str, optional): Name that should be used for the set
-                variables.
 
         """
-        if name is None:
-            name = self.name
-            prefix = self.prefix
-            suffix = self.suffix
-        else:
-            prefix = self.get_prefix(name)
-            suffix = self.get_suffix(name)
-        super(TimeArgument, self).update_args(args, name=name)
-        if 'age' not in self.ignore:
+        prefix = self.prefix
+        suffix = self.suffix
+        super(TimeArgument, self).update_args(args)
+        if not self.ignored('age'):
             age_inst = AgeArgument.from_other(self)
             age_inst._time_argument = self
             setattr(args, f'{prefix}age{suffix}', age_inst)
@@ -2796,7 +2572,7 @@ class TimeArgument(AgeArgument):
             'age': None,
             'planting_date': None,
         }
-        for k in self.argument_names(no_universal=True):
+        for k in self._arguments_prefixed.keys():
             out.setdefault(k, None)
         if self.solar_time_string and (dt_null or dt_days):
             out.update(
@@ -2964,12 +2740,12 @@ class LocationArgument(CompositeArgument):
     _name = 'location'
     _defaults = {
         'location': 'Champaign',
-        'latitude': parse_quantity(40.1164, 'degrees'),
-        'longitude': parse_quantity(-88.2434, 'degrees'),
-        'temperature': parse_quantity(12.0, 'degC'),  # Move this?
-        'altitude': parse_quantity(224.0, 'meters'),
+        'latitude': utils.parse_quantity(40.1164, 'degrees'),
+        'longitude': utils.parse_quantity(-88.2434, 'degrees'),
+        'temperature': utils.parse_quantity(12.0, 'degC'),  # Move this?
+        'altitude': utils.parse_quantity(224.0, 'meters'),
     }
-    _arguments = [
+    _arguments_prefixed = [
         (('--location', ), {
             'type': str,
             'choices': sorted(list(utils.read_locations().keys())),
@@ -2978,19 +2754,19 @@ class LocationArgument(CompositeArgument):
                      'timezone, altitude, longitude, latitude'),
         }),
         (('--latitude', '--lat', ), {
-            'type': parse_quantity, 'units': 'degrees',
+            'units': 'degrees',
             'help': ('Latitude (in degrees) at which the sun should be '
                      'modeled. Defaults to the latitude of Champaign '
                      'IL.'),
         }),
         (('--longitude', '--long', ), {
-            'type': parse_quantity, 'units': 'degrees',
+            'units': 'degrees',
             'help': ('Longitude (in degrees) at which the sun should be '
                      'modeled. Defaults to the longitude of Champaign '
                      'IL.'),
         }),
         (('--altitude', '--elevation', ), {
-            'type': parse_quantity, 'units': 'meters',
+            'units': 'meters',
             'help': ('Altitude (in meters) that should be used for '
                      'solar light calculations. If not provided, it '
                      'will be calculated from \"pressure\", if it is '
@@ -2998,22 +2774,22 @@ class LocationArgument(CompositeArgument):
                      'otherwise.'),
         }),
         (('--pressure', ), {
-            'type': parse_quantity, 'units': 'Pa',
+            'units': 'Pa',
             'help': ('Air pressure (in Pa) that should be used for '
                      'solar light calculations. If not provided, it '
                      'will be calculated from \"altitude\".'),
         }),
         # TODO: This should depend on time
         (('--temperature', ), {
-            'type': parse_quantity, 'units': 'degC',
+            'units': 'degC',
             'help': ('Air temperature (in degrees C) that should be '
                      'used for solar light calculations.'),
         }),
     ]
 
-    def __init__(self, name, args, **kwargs):
+    def __init__(self, args, **kwargs):
         self.timezone = None
-        super(LocationArgument, self).__init__(name, args, **kwargs)
+        super(LocationArgument, self).__init__(args, **kwargs)
 
     def reset(self, args, **kwargs):
         r"""Reinitialize the arguments used by this instance.
@@ -3025,13 +2801,12 @@ class LocationArgument(CompositeArgument):
 
         """
         super(LocationArgument, self).reset(args, **kwargs)
-        if 'location' in self.ignore:
+        if self.ignored('location'):
             return
         self.setdefaults(['location'])
         self.timezone = None
         if ((isinstance(self.args['location'], str)
              and not self.is_wildcard('location'))):
-            arguments = self.argument_dict()
             location_data = utils.read_locations()[
                 self.args['location']]
             for k, v in location_data.items():
@@ -3040,12 +2815,7 @@ class LocationArgument(CompositeArgument):
                 elif k == 'timezone':
                     self.timezone = pytz.timezone(v)
                     continue
-                assert k in arguments
-                if 'units' in arguments[k][1]:
-                    self.args[k] = parse_quantity(
-                        v, arguments[k][1]['units'])
-                else:
-                    self.args[k] = v
+                self.args[k] = self._arguments[k].parse(v)
 
     @property
     def is_northern_hemisphere(self):
@@ -3096,20 +2866,20 @@ class LightArgument(CompositeArgument):
 
     _name = 'light'
     _defaults = {}
-    _arguments = [
+    _arguments_prefixed = [
         (('--radiant-flux', '--power', ), {
-            'type': utils.parse_quantity, 'units': 'W',
+            'units': 'W',
             'help': 'Amount power{description} emitted as radiation.',
         }),
         (('--luminous-flux', ), {
-            'type': utils.parse_quantity, 'units': 'lm',
+            'units': 'lm',
             'help': (
                 'Perceived amount of visible light{description} '
-                'emitted (in lumens)',
+                'emitted (in lumens)'
             )
         }),
         (('--luminous-efficacy', ), {
-            'type': utils.parse_quantity, 'units': 'lm/W',
+            'units': 'lm/W',
             'help': 'Ratio of luminous flux to radiant flux{description}',
         }),
         (('--eta-par', ), {
@@ -3128,7 +2898,7 @@ class LightArgument(CompositeArgument):
             ),
         }),
         (('--par-flux', '--par'), {
-            'type': parse_quantity, 'units': 'W',
+            'units': 'W',
             'help': (
                 'Amount of radiant flux{description} emitted as '
                 'photosynthetically active radiation (wavelengths '
@@ -3136,13 +2906,13 @@ class LightArgument(CompositeArgument):
             ),
         }),
         (('--irradiance', ), {
-            'type': parse_quantity, 'units': 'W m-2',
+            'units': 'W m-2',
             'help': (
                 'Flux density{description} (in W m-2)'
             )
         }),
         (('--par-irradiance', ), {
-            'type': parse_quantity, 'units': 'W m-2',
+            'units': 'W m-2',
             'help': (
                 'Flux density{description} emitted as '
                 'photosynthetically active radiation (wavelengths '
@@ -3150,14 +2920,14 @@ class LightArgument(CompositeArgument):
             )
         }),
         (('--ppf', ), {
-            'type': parse_quantity, 'units': 'µmol s−1',
+            'units': 'µmol s−1',
             'help': (
                 'Flux of photosynthetically reactive photons'
                 '{description} (wavelengths 400–700 nm, in µmol s−1).'
             )
         }),
         (('--ppfd', ), {
-            'type': parse_quantity, 'units': 'µmol s−1 m-2',
+            'units': 'µmol s−1 m-2',
             'help': (
                 'Flux density of photosynthetically reactive photons'
                 '{description} (wavelengths 400–700 nm, in '
@@ -3165,7 +2935,7 @@ class LightArgument(CompositeArgument):
             )
         }),
         (('--incident-area', ), {
-            'type': parse_quantity, 'units': 'm-2',
+            'units': 'm-2',
             'help': (
                 'Area that the flux is spread over (in m-2)'
             ),
@@ -3188,18 +2958,12 @@ class LightArgument(CompositeArgument):
 
         """
         super(LightArgument, self).reset(args, **kwargs)
-        if 'spectrum' not in self.ignore:
+        if not self.ignored('spectrum'):
             self.setdefaults(['spectrum'])
             if ((isinstance(self.args['spectrum'], str)
                  and os.path.isfile(self.args['spectrum']))):
-                arguments = self.argument_dict()
                 for k, v in self.parse_spectrum(self.args['spectrum']).items():
-                    assert k in arguments
-                    if 'units' in arguments[k][1]:
-                        self.args[k] = parse_quantity(
-                            v, arguments[k][1]['units'])
-                    else:
-                        self.args[k] = v
+                    self.args[k] = self._arguments[k].parse(v)
 
     # TODO: Add check_unused for various other paths
 
@@ -3357,7 +3121,7 @@ class RepeatIterationError(BaseException):
         super(RepeatIterationError, self).__init__()
 
 
-class SubparserBase(RegisteredClassBase):
+class SubparserBase(arguments.RegisteredArgumentClassBase):
     r"""Base class for tasks associated with subparsers.
 
     Args:
@@ -3373,453 +3137,6 @@ class SubparserBase(RegisteredClassBase):
     _name = None
     _help = None
     _default = None
-    _arguments = []
-    _argument_conversions = {}
-    _argument_defaults = {}
-    _external_arg_attributes = []
-    _subparser_arguments = {}
-    _subparser_modifications = {}
-    _composite_arguments = {}
-
-    def __init__(self, **kwargs):
-        super(SubparserBase, self).__init__()
-        names = self.argument_names()
-        for k, v in kwargs.items():
-            assert k in names
-            if k in self._subparser_arguments:
-                assert isinstance(v, str)
-                setattr(self, k, get_class_registry().get(
-                    k, v).from_kwargs(kwargs))
-            setattr(self, k, v)
-
-    @staticmethod
-    def _modify_argument(arg, keys=None, append_choices=None, **kwargs):
-        flags, attr = arg[:]
-        attr = dict(attr, **kwargs)
-        if keys:
-            if isinstance(keys, str):
-                keys = (keys, )
-            flags = tuple(list(flags) + list(keys))
-        if append_choices:
-            if isinstance(append_choices, str):
-                append_choices = [append_choices]
-            attr.setdefault('choices', [])
-            attr['choices'] += append_choices
-        return (flags, attr)
-
-    @classmethod
-    def add_arguments(cls, parser, only_subparser=False,
-                      exclude=None, include=None,
-                      modifications=None):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            only_subparser (bool, optional): If True, only add the
-                subparser if it is missing.
-            exclude (list, optional): Set of arguments to exclude.
-            include (list, optional): Set of arguments to include.
-            modifications (dict, optional): Modifications that should be
-                made to arguments.
-
-        """
-        add_missing = {'help': cls._help}
-        add_missing_group = {}
-        if cls._default is not None:
-            add_missing_group['default'] = cls._default
-        subparser = parser.get_subparser(
-            cls._registry_key, cls._name,
-            add_missing_group=add_missing_group,
-            add_missing=add_missing,
-        )
-        if modifications is None:
-            modifications = {}
-
-        def check(k):
-            if exclude is not None and k in exclude:
-                return False
-            if include is not None and k not in include:
-                return False
-            return True
-
-        for k in cls._subparser_arguments.keys():
-            if not check(k):
-                continue
-            for v in get_class_registry().values(k):
-                v.add_arguments(subparser, only_subparser=True,
-                                exclude=exclude, include=include,
-                                modifications=modifications)
-        if only_subparser:
-            return
-        for iargs, ikwargs in cls._arguments:
-            idest = ikwargs.get(
-                'dest', iargs[0].lstrip('-').replace('-', '_'))
-            if not check(idest):
-                continue
-            if idest in modifications:
-                iargs, ikwargs = SubparserBase._modify_argument(
-                    (iargs, ikwargs), **modifications[idest])
-            try:
-                subparser.add_argument(*iargs, **ikwargs)
-            except argparse.ArgumentError:
-                print(cls, subparser)
-                pprint.pprint(cls._arguments)
-                pdb.set_trace()
-                raise
-        for k in cls._subparser_arguments.keys():
-            if not check(k):
-                continue
-            kinclude = include
-            kmodifications = modifications
-            if isinstance(cls._subparser_arguments[k], list):
-                kinclude = [
-                    x for x in cls._subparser_arguments[k] if check(x)
-                ]
-            if k in cls._subparser_modifications:
-                kmodifications = dict(cls._subparser_modifications[k],
-                                      **modifications)
-            for v in get_class_registry().values(k):
-                v.add_arguments(subparser, only_subparser=False,
-                                exclude=exclude, include=kinclude,
-                                modifications=kmodifications)
-
-    @classmethod
-    def _convert_composite(cls, args, k, v=NoDefault, base=None,
-                           overwrite=False, **kwargs):
-        if base is None:
-            for kk, vv in cls._composite_arguments.items():
-                if k in vv:
-                    base = kk
-                    break
-            else:
-                raise ValueError(f'Could not determine composite '
-                                 f'argument type for \"{k}\"')
-        arg_class = get_class_registry().get('argument', base)
-        if overwrite:
-            arg_class.reset_args(k, args, value=v)
-        kws = dict(
-            cls._composite_arguments.get(base, {}).get(k, {}), **kwargs
-        )
-        # if base == 'output':
-        #     kws['dont_reset'] = True
-        # if base == 'output' and 'base' in kws:
-        #     # Ensure that the base output is initialized first
-        #     assert not overwrite  # TODO: Should this overwrite base?
-        #     base_cls = cls._get_output_task(cls, kws['base'])
-        #     base_cls._convert_composite(args, f"output_{kws['base']}",
-        #                                 base=base, overwrite=overwrite)
-        return arg_class.from_args(k, args, **kws)
-
-    @classmethod
-    def arg2dest(cls, iargs, ikwargs):
-        r"""Determine the name that will be used to store an argument.
-
-        Args:
-            iargs (tuple): Argument args for add_argument.
-            ikwargs (dict): Argument kwargs for add_argument.
-
-        Returns:
-            str: Name that argument will be stored under.
-
-        """
-        ikey = ikwargs.get(
-            'dest', iargs[0].lstrip('--').replace('-', '_'))
-        if ikwargs.get('subparser_specific_dest', False):
-            ikey += f'_{cls._name}'
-        return ikey
-
-    @classmethod
-    def arg2default(cls, name, info=None):
-        r"""Determine the default value for an argument.
-
-        Args:
-            name (str): Argument name.
-            info (dict, optional): Argument info.
-
-        Returns:
-            object: Default value for the argument.
-
-        """
-        ival = None
-        if info is None:
-            info = cls.argument_dict(include=name,
-                                     include_subparser='explicit')[1]
-        if info.get('action', None) == 'store_true':
-            ival = False
-        elif info.get('action', None) == 'store_false':
-            ival = True
-        elif 'default' in info:
-            ival = info['default']
-            if 'type' in info and ival is not None:
-                ival = info['type'](ival)
-        return ival
-
-    @classmethod
-    def add_missing_args(cls, args):
-        r"""Add missing arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments to modify.
-
-        """
-        for k, v in cls.argument_dict(
-                include_subparser='explicit').items():
-            if not hasattr(args, k):
-                setattr(args, k, cls.arg2default(k, info=v[1]))
-
-    @classmethod
-    def argument_dict(cls, exclude=None, include=None,
-                      modifications=None, only_subparser=False,
-                      include_subparser=False, use_flags=False):
-        r"""Get a dictionary of argument data.
-
-        Args:
-            exclude (list, optional): Set of arguments to exclude.
-            include (list, optional): Set of arguments to include.
-            modifications (dict, optional): Modifications that should be
-                made to arguments.
-            only_subparser (bool, optional): If True, include only
-                subparser arguments.
-            include_subparser (bool, optional): If True, include
-                subparser arguments. If 'explicit' is passed, the
-                subparser itself will also be added as an argument.
-            use_flags (bool, optional): If False, use the argument
-                destinations. If True, use the argument flags.
-
-        Returns:
-            dict: Positional and keyword arguments for creating the
-                arguments.
-
-        """
-        out = OrderedDict()
-        return_first = False
-        if isinstance(include, str):
-            return_first = True
-            include = [include]
-        if modifications is None:
-            modifications = {}
-        if only_subparser and not include_subparser:
-            include_subparser = True
-
-        def check(k):
-            if exclude is not None and k in exclude:
-                return False
-            if include is not None and k not in include:
-                return False
-            return True
-
-        def check_and_add(iargs, ikwargs):
-            if return_first and out:
-                return True
-            idst = cls.arg2dest(iargs, ikwargs)
-            if not check(idst):
-                return False
-            if include is not None and idst not in include:
-                return False
-            if idst in modifications:
-                iargs, ikwargs = SubparserBase._modify_argument(
-                    (iargs, ikwargs), **modifications[idst])
-            if use_flags:
-                ikey = iargs[0]
-            else:
-                ikey = idst
-            if ikey not in out:
-                if return_first and include[0] != idst:
-                    return False
-                out[ikey] = (iargs, ikwargs)
-                if return_first:
-                    return True
-            return False
-
-        if include_subparser == 'explicit':
-            k = cls._registry_key
-            iargs = (k, )
-            ikwargs = {'choices': get_class_registry().keys(k)}
-            vbase = get_class_registry().getbase(k)
-            if vbase._default:
-                ikwargs['default'] = vbase._default
-            if vbase._help:
-                ikwargs['help'] = vbase._help
-            if check_and_add(iargs, ikwargs):
-                pass
-            for k in cls._subparser_arguments.keys():
-                if return_first and out:
-                    break
-                if cls._subparser_arguments[k] is False or not check(k):
-                    continue
-                for v in get_class_registry().values(k):
-                    if return_first and out:
-                        break
-                    for iargs, ikwargs in v.argument_dict(
-                            only_subparser=True,
-                            include_subparser=include_subparser,
-                            exclude=exclude, include=include,
-                            modifications=modifications,
-                            use_flags=use_flags).values():
-                        if check_and_add(iargs, ikwargs):
-                            break
-        if not only_subparser:
-            for iargs, ikwargs in cls._arguments:
-                if check_and_add(iargs, ikwargs):
-                    break
-        if include_subparser:
-            for k, kargs in cls._subparser_arguments.items():
-                if return_first and out:
-                    break
-                if kargs is False or not check(k):
-                    continue
-                kinclude = include
-                kmodifications = modifications
-                if isinstance(kargs, list):
-                    kinclude = [x for x in kargs if check(x)]
-                if k in cls._subparser_modifications:
-                    kmodifications = dict(cls._subparser_modifications[k],
-                                          **modifications)
-                for v in get_class_registry().values(k):
-                    if return_first and out:
-                        break
-                    for iargs, ikwargs in v.argument_dict(
-                            only_subparser=False,
-                            include_subparser=True,
-                            exclude=exclude, include=kinclude,
-                            modifications=kmodifications,
-                            use_flags=use_flags).values():
-                        if check_and_add(iargs, ikwargs):
-                            break
-        if return_first:
-            if not out:
-                raise ValueError(
-                    f'{cls} Could not find argument matching '
-                    f'\"{include[0]}\":\n{pprint.pformat(out)}')
-            assert len(out) == 1
-            return list(out.values())[0]
-        return out
-
-    @staticmethod
-    def argument_names_static(cls, use_flags=False):
-        r"""Set of arguments allowed by the subparser.
-
-        Args:
-            use_flags (bool, optional): If False, use the argument
-                destinations. If True, use the argument flags.
-
-        Returns:
-            list: Arguments.
-
-        """
-        # TODO: Prepend with subparser registry key?
-        out = list(cls._subparser_arguments.keys())
-        for k in cls._subparser_arguments.keys():
-            out += [
-                x for x in cls._get_subparser_arguments(
-                    k, use_flags=use_flags)
-                if x not in out
-            ]
-        for iargs, ikwargs in cls._arguments:
-            if use_flags:
-                out.append(iargs[0])
-            elif issubclass(cls, SubparserBase):
-                out.append(cls.arg2dest(iargs, ikwargs))
-            else:
-                out.append(SubparserBase.arg2dest(iargs, ikwargs))
-        return out
-
-    @classmethod
-    def argument_names(cls, use_flags=False):
-        r"""Set of arguments allowed by the subparser.
-
-        Args:
-            use_flags (bool, optional): If False, use the argument
-                destinations. If True, use the argument flags.
-
-        Returns:
-            list: Arguments.
-
-        """
-        return cls.argument_names_static(cls, use_flags=use_flags)
-
-    @classmethod
-    def select_valid_arguments(cls, args, use_flags=False):
-        r"""Select arguments from a list that are valid for this class.
-
-        Args:
-            args (list, dict): Set of argument names.
-            use_flags (bool, optional): If False, use the argument
-                destinations. If True, use the argument flags.
-
-        """
-        names = cls.argument_names(use_flags=use_flags)
-        return [k for k in args if k in names]
-
-    @classmethod
-    def adjust_args(cls, args, skip=None):
-        r"""Adjust the parsed arguments including setting defaults that
-        depend on other provided arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            skip (list, optional): Arguments to skip.
-
-        """
-        if skip is None:
-            skip = []
-        valid_arguments = cls.argument_dict()
-        for k, v in valid_arguments.items():
-            if not hasattr(args, k):
-                setattr(args, k, cls.arg2default(k, info=v[1]))
-        order = list(cls._argument_conversions.keys())
-        for k in order:
-            if k in skip:
-                continue
-            if k in cls._composite_arguments:
-                for kk in cls._argument_conversions[k]:
-                    if kk not in valid_arguments:
-                        continue
-                    cls._convert_composite(args, kk, base=k)
-            else:
-                method = getattr(cls, f'_convert_{k}')
-                for kk in cls._argument_conversions[k]:
-                    if kk not in valid_arguments:
-                        continue
-                    method(args, kk, getattr(args, kk, None))
-
-    @classmethod
-    def from_args(cls, args):
-        r"""Construct the class from a argument namespace.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        """
-        name = getattr(args, cls._registry_key, cls._name)
-        if name != cls._name:
-            return get_class_registry().get(
-                cls._registry_key, name).from_args(args)
-        cls.adjust_args(args)
-        names = cls.argument_names()
-        kwargs = {k: getattr(args, k) for k in names}
-        return cls(**kwargs)
-
-    @classmethod
-    def from_kwargs(cls, kwargs):
-        r"""Construct the class from a dictionary of keyword arguments.
-
-        Args:
-            kwargs (dict): Keyword arguments.
-
-        """
-        name = kwargs.get(cls._registry_key, cls._name)
-        if name != cls._name:
-            return get_class_registry().get(
-                cls._registry_key, name).from_kwargs(kwargs)
-        names = cls.argument_names()
-        kwargs = {k: v for k, v in kwargs.items() if k in names}
-        return cls(**kwargs)
-
-    # def run(self):
-    #     r"""Run the process associated with this subparser."""
-    #     raise NotImplementedError
 
 
 class FilenameGenerationError(BaseException):
@@ -3865,7 +3182,7 @@ class ArgumentSuffix(object):
     def __init__(self, name, value=NoDefault, prefix=NoDefault,
                  suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
                  default=NoDefault, title=NoDefault, conv=NoDefault,
-                 sep=NoDefault, composite=NoDefault,
+                 sep=NoDefault, composite=NoDefault, arg=None,
                  outputs=NoDefault, skip_outputs=NoDefault):
         if prefix is NoDefault:
             prefix = '_'
@@ -3893,6 +3210,28 @@ class ArgumentSuffix(object):
         self.composite = composite
         self.composite_cls = NoDefault
         self.composite_args = NoDefault
+        self.arg = arg
+
+    def set_arguments(self, args):
+        r"""Set the ArgumentDescription for the argument.
+
+        Args:
+            args (ArgumentDescriptionSet): Description of the
+                arguments that this suffix may use.
+
+        """
+        if self.name == 'output':
+            return
+        try:
+            self.arg = args.getnested(self.name)
+        except KeyError:
+            print("MISSING", self.name)
+            pdb.set_trace()
+            raise
+        if self.composite_args is not NoDefault:
+            return
+        if isinstance(self.arg, arguments.CompositeArgumentDescription):
+            self.composite_args = self.arg.argument_names()
 
     def is_valid(self, output):
         r"""Check if the suffix is valid for the provided output.
@@ -3925,13 +3264,8 @@ class ArgumentSuffix(object):
         if not self.is_valid(output):
             return []
         assert isinstance(self.name, str)
-        if self.composite is NoDefault:
-            return [self.name]
         if self.composite_args is NoDefault:
-            self.composite_cls = get_class_registry().get(
-                'argument', self.composite)
-            self.composite_args = self.composite_cls.argument_names(
-                self.name)
+            return [self.name]
         return self.composite_args
 
     def get_value(self, args, output, wildcards):
@@ -3955,7 +3289,7 @@ class ArgumentSuffix(object):
             # value = TaskBase.get_output_task(output).arg2default(
             #     self.name)
             assert hasattr(args, self.name)
-        if isinstance(value, CompositeArgument):
+        if isinstance(value, arguments.RegisteredArgumentClassBase):
             if wildcards:
                 value = value.string_glob(wildcards)
             elif value.string is None:
@@ -4138,6 +3472,17 @@ class ArgumentSetSuffix(ArgumentSuffix):
             self.arguments[name] = ArgumentSuffix(name, **ikws)
         super(ArgumentSetSuffix, self).__init__(names, **kwargs_set)
 
+    def set_arguments(self, args):
+        r"""Set the ArgumentDescription for the argument.
+
+        Args:
+            args (ArgumentDescriptionSet): Description of the
+                arguments that this suffix may use.
+
+        """
+        for v in self.arguments.values():
+            v.set_arguments(args)
+
     def depends(self, output):
         r"""Determine what arguments this suffix depends on for the
         provided output.
@@ -4240,7 +3585,6 @@ class TaskBase(SubparserBase):
             by this task.
         _dont_inherit_base (bool): If True, arguments of the base class
             will not be inherited.
-        _arguments (list): Class arguments.
 
     """
 
@@ -4270,14 +3614,6 @@ class TaskBase(SubparserBase):
         }),
     ]
 
-    @staticmethod
-    def _on_registration(cls):
-        SubparserBase._on_registration(cls)
-        base = inspect.getmro(cls)[1]
-        if base == SubparserBase:
-            return
-        cls._build_arguments(cls)
-
     def __init__(self, args=None, root=None, cached_outputs=None):
         if args is None:
             args = self.copy_external_args(
@@ -4296,8 +3632,7 @@ class TaskBase(SubparserBase):
             assert cached_outputs is None
             self._cached_outputs = root._cached_outputs
         self.external_tasks = {}
-        super(TaskBase, self).__init__()
-        self.args = args
+        super(TaskBase, self).__init__(args)
         for cls in self._external_tasks.keys():
             if cls._name in self.external_tasks:
                 continue
@@ -4385,7 +3720,11 @@ class TaskBase(SubparserBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        super(TaskBase, cls).adjust_args(args, skip=['output'])
+        output_args = [
+            v.dest for v in cls._arguments.values() if v.is_output
+        ]
+        super(TaskBase, cls).adjust_args(args, skip=output_args,
+                                         skip_root=True)
 
     @classmethod
     def adjust_args_external(cls, args, **kwargs):
@@ -4412,8 +3751,9 @@ class TaskBase(SubparserBase):
         """
         for ext in cls._external_tasks.keys():
             ext.adjust_args_output(args)
-        for k in cls._argument_conversions['output']:
-            cls._convert_composite(args, k, base='output')
+        for v in cls._arguments.values():
+            if v.is_output:
+                v.adjust_args(args)
 
     @classmethod
     def complete_external_args(cls, args):
@@ -4424,11 +3764,10 @@ class TaskBase(SubparserBase):
 
         """
         setattr(args, cls._registry_key, cls._name)
-        for k, props in cls.argument_dict(
-                include_subparser='explicit').items():
-            if hasattr(args, k):
+        for v in cls._arguments.flatten():
+            if hasattr(args, v.dest):
                 continue
-            setattr(args, k, cls.arg2default(k, info=props[1]))
+            setattr(args, v.dest, v.default)
         cls.adjust_args(args)
 
     @classmethod
@@ -4468,20 +3807,19 @@ class TaskBase(SubparserBase):
         args_overwrite.setdefault(cls._registry_key, cls._name)
         args_changing = list(args_overwrite.keys())
         if args_changing:
-            for k, kargs in cls._composite_arguments.items():
-                for kk in kargs:
-                    if kk not in args_changing:
-                        continue
-                    v = get_class_registry().get('argument', k)
-                    args_changing += [
-                        x for x in v.argument_names(kk, no_universal=True)
-                        if x not in args_changing
-                    ]
+            for v in cls._arguments.values():
+                if not (isinstance(v, arguments.CompositeArgumentDescription)
+                        and v.dest in args_changing):
+                    continue
+                args_changing += [
+                    x for x in v.argument_names(include='prefixed')
+                    if x not in args_changing
+                ]
         if 'id' not in args_changing:
             args_external += ['_parameter_inst_function']
-        out = {}
-        for k, props in cls.argument_dict(
-                include_subparser='explicit').items():
+        out = {cls._registry_key: args_overwrite[cls._registry_key]}
+        for arg in cls._arguments.flatten():
+            k = arg.dest
             if k in args_overwrite:
                 out[k] = args_overwrite[k]
             elif k in out:
@@ -4489,7 +3827,7 @@ class TaskBase(SubparserBase):
             elif hasattr(args, k):
                 out[k] = getattr(args, k)
             elif set_defaults:
-                out[k] = cls.arg2default(k, info=props[1])
+                out[k] = arg.default
             else:
                 out[k] = None
             v = out[k]
@@ -4515,10 +3853,7 @@ class TaskBase(SubparserBase):
         if return_dict:
             assert not initialize
             return out
-        kws = out
-        out = argparse.Namespace()
-        for k, v in kws.items():
-            setattr(out, k, v)
+        out = arguments.ArgumentDescription.kwargs2args(out)
         if initialize:
             cls.adjust_args(out)
         return out
@@ -4575,15 +3910,13 @@ class TaskBase(SubparserBase):
     # Methods for building arguments
     @staticmethod
     def _build_arguments(cls):
-        for k in ['_subparser_arguments', '_subparser_modifications',
-                  '_arguments', '_argument_defaults',
-                  '_argument_conversions',
-                  '_output_info', '_outputs_required', '_outputs_local',
-                  '_composite_arguments']:
+        SubparserBase._build_arguments(cls)
+        for k in ['_output_info', '_outputs_required', '_outputs_local']:
             setattr(cls, k, copy.deepcopy(getattr(cls, k)))
         if not cls._dont_inherit_base:
             base = inspect.getmro(cls)[1]
-            TaskBase._copy_external_arguments(cls, base)
+            if base != SubparserBase:
+                TaskBase._copy_external_arguments(cls, base)
         cls._dont_inherit_base = False
         if cls._name is not None and cls._name not in cls._outputs_required:
             cls._outputs_required.insert(0, cls._name)
@@ -4616,46 +3949,18 @@ class TaskBase(SubparserBase):
                 xsrc._output_info[x]['downstream'].setdefault(cls, [])
                 if k not in xsrc._output_info[x]['downstream'][cls]:
                     xsrc._output_info[x]['downstream'][cls].append(k)
-            cls._composite_arguments.setdefault('output', {})
             koutput = f'output_{k}'
-            if koutput not in cls._composite_arguments['output']:
-                cls._composite_arguments['output'][koutput] = v
-        CompositeArgument.add_arguments(cls)
-
-    @classmethod
-    def _get_subparser_arguments(cls, k, use_flags=False):
-        assert k in cls._subparser_arguments
-        kargs = cls._subparser_arguments[k]
-        if isinstance(kargs, list):
-            if use_flags:
-                kargs = ['--' + x.replace('_', '-') for x in kargs]
-            return kargs
-        if kargs is False:
-            return []
-        assert kargs is True
-        kargs = []
-        for v in get_class_registry().values(k):
-            kargs += [
-                x for x in v.argument_names(use_flags=use_flags)
-                if x not in kargs
-            ]
-        return kargs
+            if koutput not in cls._arguments:
+                karg = arguments.CompositeArgumentDescription(
+                    koutput, 'output', **v)
+                cls._arguments.append(karg)
 
     @staticmethod
     def _copy_external_arguments(dst, src, include=None, exclude=None,
                                  modifications=None, optional=False):
-        arguments = dst.argument_dict()
         if modifications is None:
             modifications = {}
         modifications = copy.deepcopy(modifications)
-
-        def check(k):
-            if exclude is not None and k in exclude:
-                return False
-            if include is not None and k not in include:
-                return False
-            return True
-
         if include is not None:
             include += [f'output_{k}' for k in src._outputs_local]
             if optional:
@@ -4663,90 +3968,23 @@ class TaskBase(SubparserBase):
                     modifications.setdefault(f'output_{k}', {})
                     modifications[f'output_{k}'].setdefault(
                         'default', False)
-        for argT, v in src._composite_arguments.items():
-            arg_class = get_class_registry().get('argument', argT)
-            for k in v.keys():
-                prefix = arg_class.get_prefix(k)
-                suffix = arg_class.get_suffix(k)
-                added_args = arg_class.argument_names(
-                    prefix=prefix, suffix=suffix)
-                if exclude is not None and k in exclude:
-                    exclude = exclude + [
-                        kk for kk in added_args if kk not in exclude]
-                if include is not None and k in include:
-                    include = include + [
-                        kk for kk in added_args if kk not in include]
-        for k in src._subparser_arguments.keys():
-            subparser_args = None
-            if modifications:
-                subparser_args = src._get_subparser_arguments(k)
-                for kmod in modifications.keys():
-                    if kmod in subparser_args:
-                        dst._subparser_modifications.setdefault(k, {})
-                        dst._subparser_modifications[k].setdefault(
-                            kmod, modifications[kmod])
-            if (not check(k)) or k in dst._subparser_arguments:
+        src_arguments = src._arguments.copy(
+            modifications=modifications, include=include,
+            exclude=exclude, strip_classes=True,
+        )
+        for v in src_arguments.values():
+            if v.name in dst._arguments:
                 continue
-            if include is None and exclude is None:
-                dst._subparser_arguments[k] = copy.deepcopy(
-                    src._subparser_arguments[k])
-                continue
-            if subparser_args is None:
-                subparser_args = src._get_subparser_arguments(k)
-            dst._subparser_arguments[k] = [
-                x for x in subparser_args if check(x)
-            ]
-        for k, v in src._subparser_modifications.items():
-            if (not check(k)) or k in dst._subparser_modifications:
-                continue
-            dst._subparser_modifications[k] = copy.deepcopy(
-                src._subparser_modifications[k])
-        for k, v in src.argument_dict().items():
-            if v[1].get('subparser_specific_dest', False):
-                k = k.rsplit(f'_{src._name}', 1)[0] + f'_{dst._name}'
-            if not check(k):
-                continue
-            if k not in arguments:
-                arguments[k] = v
-            for argT, v in src._composite_arguments.items():
-                if k in v:
-                    if k not in dst._composite_arguments.get(argT, {}):
-                        dst._composite_arguments.setdefault(argT, {})
-                        dst._composite_arguments[argT][k] = (
-                            copy.deepcopy(v[k])
-                        )
-                        if optional and argT == 'output':
-                            dst._composite_arguments[argT][k].setdefault(
-                                'defaults', {})
-                            dst._composite_arguments[argT][k][
-                                'defaults']['output'] = False
-                    break
-        if modifications:
-            for k, v in modifications.items():
-                if k not in arguments:
-                    continue
-                arguments[k] = SubparserBase._modify_argument(
-                    arguments[k], **v)
-        dst._arguments = list(arguments.values())
+            vmod = {}
+            if v.is_output:
+                vmod['cls_kwargs'] = copy.deepcopy(v.cls_kwargs)
+                vmod['cls_kwargs'].setdefault('defaults', {})
+                vmod['cls_kwargs']['defaults']['output'] = False
+            dst._arguments.append(v, **vmod)
+
         dst._outputs_external.update(src._outputs_external)
         for k in src._outputs_total:  # TODO: Verify this works
             dst._outputs_external[k] = src
-        for k, v in src._argument_conversions.items():
-            dst._argument_conversions.setdefault(k, [])
-            dst._argument_conversions[k] += [
-                vv for vv in v
-                if vv not in dst._argument_conversions[k]
-                and check(vv)
-            ]
-            if not dst._argument_conversions[k]:
-                dst._argument_conversions.pop(k)
-                continue
-            if ((k in dst._composite_arguments
-                 or hasattr(dst, f'_convert_{k}'))):
-                continue
-            if not hasattr(dst, f'_convert_{k}'):
-                setattr(dst, f'_convert_{k}',
-                        getattr(src, f'_convert_{k}'))
 
     # Methods for managing task I/O
     @classmethod
@@ -6281,22 +5519,20 @@ class TemporalTaskBase(IterationTaskBase):
 
     _step_task = None
     _step_vary = 'time'
-    _composite_arguments = {
-        'time': {
-            'start_time': {
-                'description': ' to start at.',
-                'defaults': {'hour': 'sunrise'},
-            },
-            'stop_time': {
-                'description': ' to stop at.',
-                'defaults': {'hour': 'sunset'},
-                'name_base': 'start_time',
-            },
-        }
-    }
     _arguments = [
+        arguments.CompositeArgumentDescription(
+            'start_time', 'time',
+            description=' to start at',
+            defaults={'hour': 'sunrise'},
+        ),
+        arguments.CompositeArgumentDescription(
+            'stop_time', 'time',
+            description=' to stop at',
+            defaults={'hour': 'sunset'},
+            name_base='start_time',
+        ),
         (('--duration', ), {
-            'type': parse_quantity, 'units': 'hours',
+            'units': 'hours',
             'help': 'The time that the animation should last',
         }),
         (('--step-count', ), {
@@ -6307,7 +5543,7 @@ class TemporalTaskBase(IterationTaskBase):
                      '\"step_interval\"'),
         }),
         (('--step-interval', ), {
-            'type': parse_quantity, 'units': 'hours',
+            'units': 'hours',
             'help': ('The interval (in hours) that should be used '
                      'between time steps. If not provided, '
                      '\"step_count\" will be used to calculate the '
@@ -6337,8 +5573,8 @@ class TemporalTaskBase(IterationTaskBase):
             args (argparse.Namespace): Parsed arguments.
 
         """
-        cls._convert_composite(args, 'start_time', base='time')
-        if not TimeArgument.any_arguments_set(args, 'stop_time'):
+        cls._arguments['start_time'].adjust_args(args)
+        if not cls._arguments['stop_time'].any_arguments_set(args):
             if args.duration is None and (args.step_interval is None
                                           or args.step_count is None):
                 if args.start_time.crop_age_string == 'planting':
@@ -6371,8 +5607,7 @@ class TemporalTaskBase(IterationTaskBase):
         if args.stop_time.time == args.start_time.time:
             args.stop_time = args.stop_time.time.replace(
                 hour=0, minute=0, microsecond=0)
-            cls._convert_composite(args, 'stop_time', base='time',
-                                   overwrite=True)
+            cls._arguments['stop_time'].adjust_args(args, overwrite=True)
         assert args.stop_time.time > args.start_time.time
         duration = args.stop_time.time - args.start_time.time
         duration = utils.timedelta2quantity(duration)
@@ -6429,8 +5664,10 @@ def parse(**kwargs):
 
     """
     parser = InstrumentedParser("Generate/analyze a 3D canopy model")
-    for v in get_class_registry().values('task'):
-        v.add_arguments(parser)
+    arguments.ClassSubparserArgumentDescription('task').add_to_parser(
+        parser)
+    # for v in get_class_registry().values('task'):
+    #     v.add_arguments(parser)
     if kwargs:
         arglist = [kwargs.get('task', 'generate')]
         args = parser.parse_args(arglist)

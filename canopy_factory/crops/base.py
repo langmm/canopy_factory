@@ -20,6 +20,7 @@ from canopy_factory.utils import (
     cached_property, DataProcessor,
     DictWrapper, DictSet, PrefixedDict, SimpleWrapper, temporary_prefix,
 )
+from canopy_factory.arguments import ArgumentDescription
 
 
 ############################################################
@@ -39,12 +40,13 @@ class PlantParameterBase(SubparserBase):
     _property_dependencies_defaults = {}
     _unit_dimension = None
     _argument_properties = []
+    _args_type = None
 
     @staticmethod
     def _add_parameter_arguments(cls, dst, name=None,
                                  existing=None, **kws):
         if existing is None:
-            existing = [x[0][0] for x in dst._arguments]
+            existing = [x.dest for x in dst._arguments]
         if name is None:
             name = ''
         # for k, v in cls._properties.items():  # Add all properties
@@ -57,7 +59,7 @@ class PlantParameterBase(SubparserBase):
     def _add_parameter_argument(cls, dst, name, existing, k, v,
                                 parents=None, dependencies=None, **kws):
         if existing is None:
-            existing = [x[0][0] for x in dst._arguments]
+            existing = [x.dest for x in dst._arguments]
         if name is None:
             name = ''
         kname = name if name.endswith(k) else name + k
@@ -77,9 +79,9 @@ class PlantParameterBase(SubparserBase):
                                          parents=parents,
                                          dependencies=dependencies,
                                          **kws)
-        if new_arg[0][0] not in existing:
+        if new_arg.dest not in existing:
             dst._arguments.append(new_arg)
-            existing.append(new_arg[0][0])
+            existing.append(new_arg.dest)
 
     @staticmethod
     def _property2argument(cls, dst, name, k, json,
@@ -128,7 +130,7 @@ class PlantParameterBase(SubparserBase):
             kwargs['dest'] = kname
         if any(dependencies):
             kwargs['dependencies'] = dependencies
-        return ((f'--{kname_arg}', ), kwargs)
+        return ArgumentDescription((f'--{kname_arg}', ), kwargs)
 
     @staticmethod
     def _format_help(cls, dst, msg, name, k, parents=None):
@@ -265,7 +267,7 @@ class ParameterValues(DictSet):
         super(ParameterValues, self).__init__(members)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
         return self.simple
 
@@ -368,21 +370,21 @@ class ParameterDict(DictSet):
         self.previous = PrefixedDict(DictSet([]), immutable=True, **kwargs)
         self.defaults = PrefixedDict(DictSet([]), immutable=True, **kwargs)
         self.component = None
-        self._dest = PrefixedDict({}, **kwargs)
+        self._storage = PrefixedDict({}, **kwargs)
         members = [
-            self.provided, self.previous, self._dest, self.defaults,
+            self.provided, self.previous, self._storage, self.defaults,
         ]
         super(ParameterDict, self).__init__(members, **kwargs)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
-        return self._dest
+        return self._storage
 
     @property
     def prefix(self):
         r"""str: Current prefix."""
-        return self.dest.prefix
+        return self.storage.prefix
 
     @contextlib.contextmanager
     def temporary_source_prefix(self, prefix, **kwargs):
@@ -3685,7 +3687,8 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
     @cached_property
     def index_parameters(self):
         r"""list: Set of index parameters that this parameter uses."""
-        out = copy.deepcopy(super(GeometricComponentBase, self).index_parameters)
+        out = copy.deepcopy(
+            super(GeometricComponentBase, self).index_parameters)
         if 'NDivide' in self.parameters and 'X' not in out:
             out.append('X')
         return out
@@ -4219,8 +4222,8 @@ class PlantGenerator(ParameterCollection):
             )
             if component not in cls._required:
                 cls._required.append(component)
-        ParameterCollection._on_registration(cls)
         cls._arguments = []
+        ParameterCollection._on_registration(cls)
         cls._add_parameter_arguments(cls, cls)
 
     def __init__(self, param=None, seed=0, verbose=False,

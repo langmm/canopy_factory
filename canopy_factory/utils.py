@@ -1867,6 +1867,8 @@ def parse_existing_file(x):
         str: File name.
 
     """
+    if x is None:
+        return x
     assert isinstance(x, str) and os.path.isfile(x)
     return os.path.abspath(x)
 
@@ -1882,6 +1884,29 @@ def parse_units(x):
 
     """
     return units.Units(x)
+
+
+class QuantityArgument:
+    r"""Wrapper for argument type that produces a quantity with
+    the specified default units.
+
+    Args:
+        default_units (str, optional): Units that should be added to the
+            returned value if x does not have units or that x should be
+            converted to if it has units.
+        named_choices (list, optional): Set of string values that should
+            also be allowed.
+
+    """
+
+    def __init__(self, default_units=None, named_choices=None):
+        self.default_units = default_units
+        self.named_choices = named_choices
+
+    def __call__(self, x):
+        if self.named_choices and x in self.named_choices:
+            return x
+        return parse_quantity(x, self.default_units)
 
 
 def parse_quantity(x, default_units=None):
@@ -2495,7 +2520,7 @@ class DictWrapper(MutableMapping):
 
     @property
     @abstractmethod
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
         raise ImmutableDictException("Immutable")
 
@@ -2503,7 +2528,7 @@ class DictWrapper(MutableMapping):
     def mutable(self):
         r"""bool: True if keys can be added to the dictionary."""
         try:
-            self.dest
+            self.storage
             return True
         except ImmutableDictException:
             return False
@@ -2627,8 +2652,9 @@ class DictWrapper(MutableMapping):
         elif kdst in self:
             val = self[kdst]
         kdst_raw = self._forward_key(kdst)
-        if (overwrite or kdst_raw not in self.dest) and val is not NoDefault:
-            self.dest[kdst_raw] = val
+        if (((overwrite or kdst_raw not in self.storage)
+             and val is not NoDefault)):
+            self.storage[kdst_raw] = val
 
     def remove_cond(self, fcond):
         r"""Remove key/value pairs from this dictionary based on the
@@ -2908,7 +2934,7 @@ class SimpleWrapper(DictWrapper):
                  **kwargs):
         if wrapped is None:
             if ordered:
-                wrapped = OrderedDict
+                wrapped = OrderedDict()
             else:
                 wrapped = {}
         self._wrapped = wrapped
@@ -2916,7 +2942,7 @@ class SimpleWrapper(DictWrapper):
         super(SimpleWrapper, self).__init__(**kwargs)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
         if self._immutable:
             raise ImmutableDictException("Immutable")
@@ -2952,10 +2978,10 @@ class SimpleWrapper(DictWrapper):
         return self._wrapped[self._forward_key(k)]
 
     def __setitem__(self, k, v):
-        self.dest[self._forward_key(k)] = v
+        self.storage[self._forward_key(k)] = v
 
     def __delitem__(self, k):
-        del self.dest[self._forward_key(k)]
+        del self.storage[self._forward_key(k)]
         assert k not in self
 
     # Methods for nested DictSet
@@ -3173,7 +3199,7 @@ class DictSet(DictWrapper):
         return DictWrapper.coerce(x, **kwargs)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
         for x in self.members:
             if x.mutable:
@@ -3187,10 +3213,10 @@ class DictSet(DictWrapper):
         raise KeyError(k)
 
     def __setitem__(self, k, v):
-        dest = self.dest
+        storage = self.storage
         for x in self.members:
-            if x is dest:
-                dest[k] = v
+            if x is storage:
+                storage[k] = v
                 return
             if k in x:
                 raise ImmutableDictException(
