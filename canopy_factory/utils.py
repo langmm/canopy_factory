@@ -15,7 +15,8 @@ from canopy_factory.config import PackageConfig
 from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from datetime import timedelta
+from datetime import timedelta, datetime
+import pytz
 import yggdrasil_rapidjson as rapidjson
 from yggdrasil_rapidjson import units
 from yggdrasil_rapidjson.geometry import Ply as PlyDict
@@ -213,6 +214,31 @@ class ClassRegistry(object):
                     instance, exclude=exclude, include=include,
                     cls=base, args=args,
                 )
+
+    def has_cached_property(self, instance, k, cls=None):
+        r"""Check if a cached property has been initialized.
+
+        Args:
+            instance (object): Registered class instance to check the
+                cached properties of.
+            k (str): Name of the cached property to check.
+            cls (type, optional): Base class that cached properties
+                should be returned for.
+
+        Returns:
+            bool: True if the cached property has been initialized.
+
+        """
+        registry = self.registry_cached_properties(instance, cls=cls)
+        if k in registry['readwrite']:
+            return (k in instance.__dict__)
+        if k in registry['readonly']:
+            return (k in instance._cached_properties)
+        if cls is None:
+            for base in instance._registered_base_classes:
+                if self.has_cached_property(instance, k, cls=base):
+                    return True
+        return False
 
     def get_cached_properties(self, instance, exclude=None, include=None,
                               cls=None):
@@ -660,6 +686,18 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
                                                 include=include,
                                                 args=args)
 
+    def has_cached_property(self, k):
+        r"""Check if a cached property has been initialized.
+
+        Args:
+            k (str): Name of the cached property to check.
+
+        Returns:
+            bool: True if the cached property has been initialized.
+
+        """
+        return _class_registry.has_cached_property(self, k)
+
     def get_cached_properties(self, exclude=None, include=None):
         r"""Get the set of cached properties.
 
@@ -753,13 +791,27 @@ def input_yes_or_no(question, default=True):
 # Methods for I/O
 ############################################################
 
-def generate_filename(basefile, ext=None, suffix=None, directory=None):
+class FilenameGenerationError(BaseException):
+    r"""Error to raise when a file name cannot be generated."""
+    pass
+
+
+class SuffixGenerationError(FilenameGenerationError):
+    r"""Error to raise when an argument cannot be converted into a
+    suffix."""
+    pass
+
+
+def generate_filename(basefile, ext=None, prefix=None,
+                      suffix=None, directory=None):
     r"""Generate a filename using the base name from another file.
 
     Args:
         basefile (str): Base file name that new file should be based on.
         ext (str, optional): File extension that should be used for the
             generated file name.
+        prefix (str, optional): Prefix that should be added to the base
+            file name in the generated file name.
         suffix (str, optional): Suffix that should be added to the base
             file name in the generated file name.
         directory (str, optional): Directory that the generated file name
@@ -772,14 +824,22 @@ def generate_filename(basefile, ext=None, suffix=None, directory=None):
     assert ext or suffix or directory
     if basefile:
         out = basefile
-    else:
-        assert suffix
+    elif prefix:
+        out = prefix
+        prefix = None
+    elif suffix:
         out = suffix
         suffix = None
+    else:
+        raise ValueError("Cannot construct a file name without a "
+                         "base file, prefix, or suffix")
     if ext:
         out = os.path.splitext(out)[0] + ext
     if suffix:
         out = suffix.join(os.path.splitext(out))
+    if prefix:
+        parts = os.path.split(out)
+        out = os.path.join(parts[0], prefix + parts[1])
     if directory:
         out = os.path.join(directory, os.path.basename(out))
     return out
@@ -856,7 +916,8 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
         args_palette = copy.deepcopy(args)
         args_palette += [
             '-f', 'concat', '-i', os.path.basename(fname_concat),
-            '-vf', 'palettegen=reserve_transparent=true', 'palette.png',
+            '-vf', 'palettegen=reserve_transparent=true', '-y',
+            'palette.png',
         ]
         subprocess.check_call(args_palette, cwd=frame_dir)
         args += [
@@ -1886,6 +1947,88 @@ def parse_units(x):
     return units.Units(x)
 
 
+def parse_solar_time(x):
+    r"""Parse an input for an hour allowing for name-based times.
+
+    Args:
+        x (str): String containing hour.
+
+    Returns:
+        int, str: Hour.
+
+    """
+    if x in SolarModel._solar_times:
+        return x
+    return int(x)
+
+
+def parse_solar_date(x):
+    r"""Parse an input for a doy allowing for name-based times.
+
+    Args:
+        x (str): String containing doy.
+
+    Returns:
+        int, str: Day of year.
+
+    """
+    if x in SolarModel._solar_dates:
+        return x
+    return int(x)
+
+
+def parse_datetime(x):
+    r"""Parse an input that is a datetime.datetime object or a string
+    representation of a datetime.datetime object that can be parsed
+    via datetime.fromisoformat.
+
+    Args:
+        x (str): String containing datetime.
+
+    Returns:
+        datetime.datetime: Date time.
+
+    """
+    if isinstance(x, datetime):
+        return x
+    return datetime.fromisoformat(x)
+
+
+class ChoiceArgument:
+    r"""Wrapper for argument type that allows for named choices.
+
+    Args:
+        parser (callable): Type or argument parser that should be applied
+            if the argument is not one of the named choices.
+        named_choices (list, optional): Set of string values that should
+            also be allowed.
+
+    """
+
+    def __init__(self, parser, named_choices=None):
+        self.parser = parser
+        self.named_choices = named_choices
+
+    def __call__(self, x):
+        if self.named_choices and x in self.named_choices:
+            return x
+        return self.parser(x)
+
+
+class DatetimeArgument(ChoiceArgument):
+    r"""Wrapper for argument type that produces a datetime.
+
+    Args:
+        named_choices (list, optional): Set of string values that should
+            also be allowed.
+
+    """
+
+    def __init__(self, named_choices=None):
+        super(DatetimeArgument, self).__init__(
+            parse_datetime, named_choices=named_choices)
+
+
 class QuantityArgument:
     r"""Wrapper for argument type that produces a quantity with
     the specified default units.
@@ -1929,7 +2072,23 @@ def parse_quantity(x, default_units=None):
         x_units = None
         if ' ' in x:
             x, x_units = x.split(' ', 1)
-        x = float(x)
+        try:
+            x = float(x)
+        except ValueError:
+            if x_units is not None:
+                raise
+            i = 1
+            while i < len(x):
+                try:
+                    float(x[:i])
+                    i += 1
+                except ValueError:
+                    if i > 1:
+                        i -= 1
+                        x_units = x[i:]
+                        x = x[:i]
+                    break
+            x = float(x)
         if x_units is not None:
             x = units.Quantity(x, x_units)
     if default_units is None:
@@ -2015,6 +2174,40 @@ def format_list_for_help(vals, sep=', '):
     return sep.join(vals)
 
 
+def is_date(x):
+    r"""Check if datetime instance is purely a date without time
+    information.
+
+    Args:
+        x (datetime.datetime): Datetime instance to check.
+
+    Returns:
+        bool: True if x is purely a date.
+
+    """
+    if not isinstance(x, datetime):
+        return False
+    return all(getattr(x, k) == 0 for k in
+               ['hour', 'minute', 'second', 'microsecond'])
+
+
+def to_date(x):
+    r"""Convert a datetime instance to a form that is purely a date.
+
+    Args:
+        x (datetime.datetime): Datetime instance to convert.
+
+    Returns:
+        datetime.datetime: Version with time information removed.
+
+    """
+    kws = {k: getattr(x, k) for k in
+           ['year', 'month', 'day', 'tzinfo']}
+    out = datetime(**kws)
+    assert is_date(out)
+    return out
+
+
 class SolarModel(object):
     r"""Solar model using pvlib. For quantities with units, values can
     be provided as floats (in which case the default units will be
@@ -2048,6 +2241,24 @@ class SolarModel(object):
     """
 
     _solar_times = ['sunrise', 'noon', 'transit', 'sunset']
+    _solar_dates = [
+        'summer_solstice', 'june_solstice',
+        'spring_equinox', 'march_equinox',
+        'winter_solstice', 'december_solstice',
+        'fall_equinox', 'september_equinox',
+    ]
+    _season_map_northern = {
+        'spring': 'march',
+        'summer': 'june',
+        'fall': 'september',
+        'winter': 'december',
+    }
+    _season_map_southern = {
+        'spring': 'september',
+        'summer': 'december',
+        'fall': 'march',
+        'winter': 'june',
+    }
 
     def __init__(self, latitude, longitude, time, altitude=None,
                  pressure=None, temperature=12.0, eta_par=0.368,
@@ -2086,7 +2297,34 @@ class SolarModel(object):
         self._solar_position = None
         self._irradiance = None
 
-    def solar_time(self, x, method='spa', horizon_buffer=5.0):
+    @classmethod
+    def is_solar_time(cls, x):
+        r"""Check if a string is a named solar time.
+
+        Args:
+            x (str): Time to check.
+
+        Returns:
+            bool: True if x is a named solar time.
+
+        """
+        return (x in cls._solar_times)
+
+    @classmethod
+    def is_solar_date(cls, x):
+        r"""Check if a string is a named solar date.
+
+        Args:
+            x (str): Time to check.
+
+        Returns:
+            bool: True if x is a named solar date.
+
+        """
+        return (x in cls._solar_dates)
+
+    def solar_time(self, x, method='spa', horizon_buffer=5.0,
+                   date=None):
         r"""Parse an input string as a solar time.
 
         Args:
@@ -2096,15 +2334,20 @@ class SolarModel(object):
             horizon_buffer (float, optional): Time (in minutes) that
                 should be added or subtracted to times when the sun is
                 at the horizon.
+            date (datetime.datetime, optional): Date on which the solar
+                time should be computed.
 
         Returns:
             datetime.datetime: Time determined from solar position.
 
         """
         assert x in self._solar_times
-        date = self.time.replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        if date is None:
+            date = self.time.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        elif date in self._solar_dates:
+            date = self.solar_date(date)
         if x == 'noon':
             x = 'transit'
         date_pv = pd.DatetimeIndex([date])
@@ -2119,6 +2362,75 @@ class SolarModel(object):
                 out -= quantity2timedelta(
                     parse_quantity(horizon_buffer, 'minutes'))
         return out
+
+    def solar_date(self, x, method='spa', date=None):
+        r"""Parse an input string as a solar date.
+
+        Args:
+            x (str): Input string. Can be 'summer_solstice',
+                'june_solstice', 'spring_equinox', 'march_equinox',
+                'winter_solstice', 'december_solstice', 'fall_equinox',
+                or 'september_equinox'. For those values specifying
+                seasons, the latitude will be used to determine the month
+                when that season occurs.
+            method (str, optional): Method that pvlib should use to
+                determine the solar times.
+            date (datetime.datetime, optional): Date from which the year
+                and timezone should be taken.
+
+        Returns:
+            datetime.datetime: Date determined from solar position.
+
+        """
+        if date is None:
+            date = self.time.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        assert x in self._solar_dates
+        northern = (self.latitude >= units.Quantity(0, 'degrees'))
+        season_map = (
+            self._season_map_northern if northern
+            else self._season_map_southern
+        )
+        for k, v in season_map.items():
+            x = x.replace(k, v)
+        if x.startswith('march_'):
+            month = 3
+            days = [20]
+            selection = 'equal'
+        elif x.startswith('june_'):
+            month = 6
+            days = [20, 21]
+            selection = 'max' if northern else 'min'
+        elif x.startswith('september_'):
+            month = 9
+            days = [22, 23]
+            selection = 'equal'
+        elif x.startswith('december_'):
+            month = 12
+            days = [21, 22]
+            selection = 'min' if northern else 'max'
+        else:
+            raise ValueError(x)
+        dates = [
+            datetime(
+                year=date.year, month=month, day=day,
+                tzinfo=pytz.timezone('UTC'),
+            )
+            for day in days
+        ]
+        dates_pv = pd.DatetimeIndex(dates)
+        times = self.location.get_sun_rise_set_transit(
+            dates_pv, method=method)
+        durations = times['sunset'] - times['sunrise']
+        if selection == 'equal':
+            equal = pd.TimedeltaIndex(['12h'])
+            idx = (durations - equal[0]).abs().values.argmin()
+        elif selection == 'max':
+            idx = durations.values.argmax()
+        elif selection == 'min':
+            idx = durations.values.argmin()
+        return to_date(dates[idx].astimezone(date.tzinfo))
 
     @property
     def solar_position(self):
@@ -2948,6 +3260,19 @@ class SimpleWrapper(DictWrapper):
             raise ImmutableDictException("Immutable")
         return self._wrapped
 
+    def move_to_end(self, key, last=True):
+        r"""Move a key to the end of a sorted ordered dictionary.
+
+        Args:
+            key (str): Key to move.
+            last (bool, optional): If True, move the key to the beginning
+                instead of the end.
+
+        """
+        if not isinstance(self._wrapped, OrderedDict):
+            raise NotImplementedError
+        self.storage.move_to_end(key, last=last)
+
     def _get_iterator(self, raw=False, prev=None):
         r"""Yields member key/item pairs.
 
@@ -3456,23 +3781,44 @@ class DataProcessor:
                             f'{crop}_{year}.json')
 
     @classmethod
-    def available_files(cls, crop=None, year=None):
+    def available_files(cls, crop=None, id=None, year=None):
         r"""Locate files containing data for a certain crop and/or year.
 
         Args:
             crop (str, optional): Crop name.
+            id (str, optional): ID string to find files for.
             year (str, optional): Year that data was collected in.
 
         Returns:
             list: Matching files.
 
         """
+        if isinstance(crop, list):
+            out = []
+            for x in crop:
+                out += cls.available_files(crop=x, id=id, year=year)
+            return out
+        if isinstance(year, list):
+            out = []
+            for x in year:
+                out += cls.available_files(crop=crop, id=id, year=x)
+            return out
         if crop is None:
             crop = '*'
         if year is None:
             year = '*'
         regex = cls.output_name(crop, year)
-        return sorted(glob.glob(regex))
+        out = sorted(glob.glob(regex))
+        if id is not None:
+            if not isinstance(id, list):
+                id = [id]
+            out_id = []
+            for fname in out:
+                x = cls.from_file(fname)
+                if any(iid in x.ids for iid in id):
+                    out_id.append(fname)
+            return out_id
+        return out
 
     @classmethod
     def available_years(cls, crop, **kwargs):
@@ -3488,10 +3834,15 @@ class DataProcessor:
             list: Available years.
 
         """
-        files = cls.available_files(crop, **kwargs)
         out = set()
-        for x in files:
-            out |= set([cls.from_file(x).year])
+        for fname in cls.available_files(crop, **kwargs):
+            x = cls.from_file(fname)
+            out |= set([x.year])
+        if kwargs.get('year', None) is not None:
+            years = kwargs['year']
+            if not isinstance(years, list):
+                years = [years]
+            out &= set(years)
         return sorted(list(out))
 
     @classmethod
@@ -3508,11 +3859,49 @@ class DataProcessor:
             list: Available ids.
 
         """
-        files = cls.available_files(crop, **kwargs)
         out = set()
-        for x in files:
+        for x in cls.available_files(crop, **kwargs):
             out |= set(cls.from_file(x).ids)
+        if kwargs.get('id', None) is not None:
+            ids = kwargs['id']
+            if not isinstance(ids, list):
+                ids = [ids]
+            out &= set(ids)
         return sorted(list(out))
+
+    @classmethod
+    def available_param(cls, names, **kwargs):
+        r"""Get a list of available data set parameters.
+
+        Args:
+            names (list): Names of data parameters to include.
+            **kwargs: Additional keyword arguments are passed to
+                available_files and used to select a subset of the
+                available data sets.
+
+        Returns:
+            list: Set of tuples containing available named parameters.
+
+        """
+        out = []
+        for fname in cls.available_files(**kwargs):
+            x = cls.from_file(fname)
+            xparam = [getattr(x, k) if k != 'id' else None for k in names]
+            if 'id' in names:
+                ids = kwargs.get('id', None)
+                if isinstance(ids, str):
+                    ids = [ids]
+                idx = names.index('id')
+                xids = (
+                    x.ids if not ids
+                    else [iid for iid in ids if iid in x.ids]
+                )
+                for iid in xids:
+                    xparam[idx] = iid
+                    out.append(tuple(xparam))
+            else:
+                out.append(tuple(xparam))
+        return out
 
     @cached_property
     def param(self):

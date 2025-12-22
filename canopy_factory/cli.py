@@ -884,8 +884,6 @@ class InstrumentedParser(argparse.ArgumentParser):
         is_subparser = kwargs.pop("is_subparser", False)
         subparsers = kwargs.pop('subparsers', None)
         subparser_options = kwargs.pop('subparser_options', {})
-        subparser_specific_dest = kwargs.pop(
-            'subparser_specific_dest', False)
         assert not subparsers
         assert not subparser_options
         if self._subparsers_action is not None:
@@ -895,10 +893,6 @@ class InstrumentedParser(argparse.ArgumentParser):
         iargs = copy.deepcopy(args)
         ikwargs = copy.deepcopy(kwargs)
         ikwargs = dict(kwargs, **subparser_options.get(x, {}))
-        if subparser_specific_dest:
-            ikwargs['dest'] += f'_{x._subparser_name}'
-            iargs = tuple(
-                list(iargs) + [args[0] + f'-{x._subparser_name}'])
         if is_subparser:
             group = iargs[0].replace('-', '_').lstrip('_')
             action = x.add_subparsers(group, **ikwargs)
@@ -987,6 +981,21 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
             args, args_overwrite=args_overwrite)
 
     @classmethod
+    def is_factory_analogue(cls, other):
+        r"""Check if an instance is an analagous factory class.
+
+        Args:
+            other (CompositeArgument):
+
+        Returns:
+            bool: True if the instance is of an analagous class.
+
+        """
+        if isinstance(other, cls):
+            return True
+        return (other.name == cls.name)
+
+    @classmethod
     def class_factory(cls, name, registry_name=None, **kwargs):
         r"""Create a new class for a modified version of the arguments.
 
@@ -1056,6 +1065,17 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
             )
         super(CompositeArgument, self).reset(
             args, args_overwrite=args_overwrite)
+
+    def setarg(self, name, value):
+        r"""Set an argument value.
+
+        Args:
+            name (str): Argument name.
+            value (object): Argument value.
+
+        """
+        super(CompositeArgument, self).setarg(name, value)
+        self._defaults_set.clear()
 
     @classmethod
     def from_other(cls, other, **kwargs):
@@ -1131,20 +1151,25 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
             cls._arguments.reset_args(args)
         inst = getattr(args, name, None)
         if not isinstance(inst, cls):
+            if isinstance(inst, CompositeArgument):
+                assert cls.is_factory_analogue(inst)
+                inst._arguments.reset_args(args)
             inst = cls(args, **kwargs)
-            # inst = super(CompositeArgument, cls).from_args(
-            #     args, **kwargs)
         if not dont_update:
             inst.update_args(args)
         return inst
 
-    def update_args(self, args):
+    def update_args(self, args, name=None):
         r"""Update a namespace with the parsed arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Alternate name where the argument
+                should be stored.
 
         """
+        if name is None:
+            name = self.name
         setattr(args, self.name, self)
 
     @classmethod
@@ -1185,40 +1210,6 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
             out = cls._name + out
         return out
 
-    @classmethod
-    def is_date(cls, x):
-        r"""Check if datetime instance is purely a date without time
-        information.
-
-        Args:
-            x (datetime.datetime): Datetime instance to check.
-
-        Returns:
-            bool: True if x is purely a date.
-
-        """
-        if not isinstance(x, datetime):
-            return False
-        return all(getattr(x, k) == 0 for k in
-                   ['hour', 'minute', 'second', 'microsecond'])
-
-    @classmethod
-    def to_date(cls, x):
-        r"""Convert a datetime instance to a form that is purely a date.
-
-        Args:
-            x (datetime.datetime): Datetime instance to convert.
-
-        Returns:
-            datetime.datetime: Version with time information removed.
-
-        """
-        kws = {k: getattr(x, k) for k in
-               ['year', 'month', 'day', 'tzinfo']}
-        out = datetime(**kws)
-        assert cls.is_date(out)
-        return out
-
     def any_set(self, names):
         r"""Check if any of the specified arguments were set.
 
@@ -1244,21 +1235,35 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
         """
         raise NotImplementedError(name)
 
-    def check_unused(self, names, output=NoDefault):
+    def check_unused(self, name, output=NoDefault,
+                     matches=None, invalid=None):
         r"""Assert that unused arguments were not set.
 
         Args:
-            names (list): Argument names to check.
+            name (str, list): Argument name(s) to check.
             output (object, optional): Output to try to extract arguments
                 from.
+            matches (dict, optional): Existing dictionary that matches
+                should be added to.
+            invalid (list, optional): Existing list that used arguments
+                should be added to.
 
         Raises:
-            AssertionError: If unused arguments were set.
+            AssertionError: If unused arguments were set and matches
+                or invalid was not provided.
 
         """
-        matches = {}
-        invalid = []
-        for k in names:
+        nested = (matches is not None and invalid is not None)
+        if matches is None:
+            matches = {}
+        if invalid is None:
+            invalid = []
+        if isinstance(name, list):
+            for k in name:
+                self.check_unused(k, output=output, matches=matches,
+                                  invalid=invalid)
+        else:
+            k = name
             if self.args[k] is not None:
                 value = NoDefault
                 if output is not NoDefault:
@@ -1269,7 +1274,7 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
                         pass
                 if value is NoDefault or self.args[k] != value:
                     invalid.append(k)
-        if invalid:
+        if invalid and (not nested):
             invalid = {
                 self.prefix + k + self.suffix: self.args[k]
                 for k in invalid
@@ -1363,23 +1368,6 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
             return any(self.is_wildcard(kk) for kk in k)
         return (self.args[k] == '*')
 
-    def string_glob(self, wildcards):
-        r"""Create a string with the provided list of parameters replaced
-        with *.
-
-        Args:
-            wildcards (list): Arguments that should be replaced.
-
-        Returns:
-            str: Glob pattern.
-
-        """
-        if self._name in wildcards:
-            return '*'
-        args_overwrite = {k: '*' for k in wildcards}
-        other = self.from_other(self, args_overwrite=args_overwrite)
-        return other.string
-
 
 class OutputArgument(CompositeArgument):
     r"""Container for output arguments."""
@@ -1436,15 +1424,16 @@ class OutputArgument(CompositeArgument):
         }),
     ]
     _attributes_kwargs = CompositeArgument._attributes_kwargs + [
-        'ext', 'base', 'base_string', 'directory',
+        'ext', 'base_output', 'base_prefix', 'base_suffix', 'directory',
         'upstream', 'downstream',
         'composite_param', 'merge_all', 'merge_all_output',
     ]
 
-    def __init__(self, args, ext=None, base=None,
-                 base_string=None, directory=None,
-                 upstream=None, downstream=None, composite_param=None,
-                 merge_all=None, merge_all_output=None, **kwargs):
+    def __init__(self, args, ext=None,
+                 base_output=None, base_prefix=None, base_suffix=None,
+                 directory=None, upstream=None, downstream=None,
+                 composite_param=None, merge_all=None,
+                 merge_all_output=None, **kwargs):
         if upstream is None:
             upstream = []
         if downstream is None:
@@ -1452,8 +1441,9 @@ class OutputArgument(CompositeArgument):
         if merge_all_output is None:
             merge_all_output = None
         self.ext = ext
-        self.base_output = base
-        self.base_string = base_string
+        self.base_output = base_output
+        self.base_prefix = base_prefix
+        self.base_suffix = base_suffix
         self._generated_path = None
         self.upstream = upstream
         self.downstream = downstream
@@ -1463,8 +1453,10 @@ class OutputArgument(CompositeArgument):
         self.merge_all_output = merge_all_output
         self._uncached_args = {}
         self.output_name = self.suffix.strip('_')
-        if self.base_string is None and self.base_output is None:
-            self.base_string = self.output_name
+        if self.base_prefix is True:
+            self.base_prefix = f'{self.output_name}_'
+        if self.base_suffix is True:
+            self.base_suffix = f'_{self.output_name}'
         if 'output' not in kwargs.get('defaults', {}):
             kwargs.setdefault('defaults', {})
             if kwargs.get('optional', False):
@@ -1647,10 +1639,6 @@ class OutputArgument(CompositeArgument):
         """
         if k not in self.composite_param:
             return False
-        if k not in self._uncached_args:
-            print(self._uncached_args)
-            print(self)
-            pdb.set_trace()
         return (self._uncached_args[k] == 'all'
                 or (isinstance(self.merge_all, str)
                     and self._uncached_args[k] == self.merge_all))
@@ -1713,9 +1701,12 @@ class OutputArgument(CompositeArgument):
             for k in ['directory', 'base', 'suffix', 'ext']
             if hasattr(task, f'_output_{k}')
         }
-        if 'base' not in out and self.base_string is None:
-            assert self.base_output is not None
-            out['base'] = self._base_generator
+        # TODO: Handle case of using non-generated file name
+        # if 'base' not in out and self.base_output is not None:
+        #     out['base'] = self._base_generator
+        #     # if 'suffix' in out:
+        #     #     base_suffix = self.base_output.parts_generators.get(
+        #     #         'suffix', None)
         return out
 
     @cached_property
@@ -1725,7 +1716,6 @@ class OutputArgument(CompositeArgument):
         out = {
             'directory': self.directory,
             'ext': self.ext,
-            'base': self.base_string,
         }
         return out
 
@@ -1832,7 +1822,6 @@ class OutputArgument(CompositeArgument):
         if not (self.generated and arguments):
             return False
         suffix = self.parts_generators.get('suffix', None)
-        assert isinstance(suffix, SuffixGenerator)
         suffix_args = suffix.depends(self.output_name)
         if bool(set(suffix_args) & set(arguments)):
             return True
@@ -1980,7 +1969,7 @@ class OutputArgument(CompositeArgument):
             str: Generated file name.
 
         """
-        from canopy_factory.cli import FilenameGenerationError
+        from canopy_factory.utils import FilenameGenerationError
         task = self.task_class
         assert self.generated
         assert self.output_name in task._outputs_local
@@ -1998,7 +1987,7 @@ class OutputArgument(CompositeArgument):
         return fname
 
     def _generate(self, args, wildcards=None):
-        from canopy_factory.cli import FilenameGenerationError
+        from canopy_factory.utils import FilenameGenerationError
         iparts = {}
         for k, v in self.parts_generators.items():
             if k in iparts:
@@ -2015,7 +2004,19 @@ class OutputArgument(CompositeArgument):
                 f'\"{self.output_name}\" output disabled by '
                 f'\"{disabled}\"'
             )
-        base = iparts.pop('base')
+        if self.base_prefix:
+            iparts['prefix'] = self.base_prefix + iparts.get('prefix', '')
+        if self.base_suffix:
+            iparts['suffix'] = iparts.get('suffix', '') + self.base_suffix
+        base = iparts.pop('base', '')
+        if ((iparts.get('prefix', '')
+             and not base
+             and ((not iparts.get('suffix', ''))
+                  or iparts.get('suffix', '').startswith('_')))):
+            iparts['prefix'] = iparts['prefix'].rstrip('_')
+        if iparts.get('suffix', '') and not (base or
+                                             iparts.get('prefix', '')):
+            iparts['suffix'] = iparts['suffix'].lstrip('_')
         fname = utils.generate_filename(base, **iparts)
         if wildcards:
             while '**' in fname:
@@ -2059,6 +2060,86 @@ class ColorArgument(CompositeArgument):
         if not self.setdefaults(['color']):
             return None
         return utils.parse_color(self.args['color'], convert_names=True)
+
+
+class ColorMapArgument(CompositeArgument):
+    r"""Container for colormap arguments."""
+
+    _name = 'colormap'
+    _defaults = {
+        'colormap': 'YlGn_r',
+        'colormap_scaling': 'linear',
+    }
+    _arguments_prefixed = [
+        (('--colormap', ), {
+            'type': str,
+            # 'choices': plt.colormaps(),
+            'help': (
+                'Name of the matplotlib color map that should be '
+                'used to map values to colors{description}'
+            ),
+        }),
+        (('--color-vmin', ), {
+            'type': parse_quantity,
+            'help': (
+                'Value that should be mapped to the lowest '
+                'color in the colormap{description}'
+            ),
+        }),
+        (('--color-vmax', ), {
+            'type': parse_quantity,
+            'help': (
+                'Value that should be mapped to the highest '
+                'color in the colormap{description}'
+            ),
+        }),
+        (('--colormap-scaling', ), {
+            'type': str, 'choices': ['linear', 'log'],
+            'help': (
+                'Scaling that should be used to map values '
+                'to colors in the colormap{description}'
+            ),
+        }),
+    ]
+
+    @property
+    def colormap(self):
+        r"""str: Colormap name."""
+        assert self.setdefaults(['colormap'])
+        return self.args['colormap']
+
+    @cached_property
+    def scaling(self):
+        r"""str: Colormap scaling."""
+        assert self.setdefaults(['colormap_scaling'])
+        return self.args['colormap_scaling']
+
+    @property
+    def vmin(self):
+        r"""units.Quantity: Minimum value mapped to colormap."""
+        if not self.setdefaults(['color_vmin']):
+            return None
+        return self.args['color_vmin']
+
+    @vmin.setter
+    def vmin(self, value):
+        self.args['color_vmin'] = value
+
+    @property
+    def vmax(self):
+        r"""units.Quantity: Maximum value mapped to colormap."""
+        if not self.setdefaults(['color_vmax']):
+            return None
+        return self.args['color_vmax']
+
+    @vmax.setter
+    def vmax(self, value):
+        self.args['color_vmax'] = value
+
+    @property
+    def limits_defined(self):
+        r"""bool: True if the limits are defined."""
+        return self.setdefaults(['color_vmin', 'color_vmax'])
 
 
 class AxisArgument(CompositeArgument):
@@ -2325,48 +2406,71 @@ class TimeArgument(AgeArgument):
             'hour': 'noon',
             'timezone': pytz.timezone("America/Chicago"),
             # 'doy': 169,  # 06/17
-            'doy': 173,  # 06/21
+            # 'doy': 173,  # 06/21
+            'doy': 'summer_solstice',
             'year': 2024,
         }
     )
     _arguments_prefixed = AgeArgument._arguments_prefixed + [
         (('--time', '-t'), {
-            'type': str,
+            'type': utils.DatetimeArgument(
+                ["now"] + utils.SolarModel._solar_times
+                + utils.SolarModel._solar_dates),
             'help': (
                 'Date time (in any ISO 8601 format){description}.'
                 'If time information is not provided, the provided '
                 '\"--{prefix_arg}hour{suffix_arg}\" will be used. '
-                'If \"now\" is specified the current date and time '
-                'will be used. If \"sunrise\", \"noon\", \"transit\", '
-                'or \"sunset\" is specified, the time will be calculated'
-                ' from the provided date and location.'
+                'If \"now\" is specified, the current date and time '
+                'will be used. '
+                'The any of the solar string values for '
+                '\"--{prefix_arg}hour{suffix_arg}\" or '
+                '\"--{prefix_arg}doy{suffix_arg}\" is specified, '
+                'it will be transfered to the corresponding argument.'
             ),
         }),
         (('--hour', '--hr', ), {
-            'type': int,
+            'type': utils.parse_solar_time,
             'help': (
                 'Hour{description}. If provided with '
                 '\"--{prefix_arg}time{suffix_arg}\", any hour '
                 'information in the specified time will be overwritten. '
-                'Defaults to 12 if \"--{prefix_arg}doy{suffix_arg}\" is '
+                'If any of '
+            ) + (
+                ", ".join(
+                    [f'"{x}"' for x in utils.SolarModel._solar_times])
+            ) + (
+                ' are provided, the time will be calculated from the '
+                'provided date and location. '
+                'Defaults to \"noon\" if '
+                '\"--{prefix_arg}doy{suffix_arg}\" is '
                 'provided, but \"--{prefix_arg}hour{suffix_arg}\" is '
                 'not.'
             ),
         }),
         (('--date', ), {
-            'type': str,
+            'type': utils.parse_datetime,
             'help': (
                 'Date that should be used with '
+                '\"--{prefix_arg}hour{suffix_arg}\" or '
                 '\"--{prefix_arg}time{suffix_arg}\" '
                 'if a string is provided describing the time of day '
-                '(e.g. \"sunrise\", \"noon\", \"sunset\"). If '
-                'provided, \"--{prefix_arg}doy{suffix_arg}\" and '
+                '(e.g. \"sunrise\", \"noon\", \"sunset\"). '
+                'If provided, \"--{prefix_arg}doy{suffix_arg}\" and '
                 '\"--{prefix_arg}year{suffix_arg}\" will not be used. '
             ),
         }),
         (('--doy', ), {
-            'type': int,
-            'help': 'Day of the year{description}.'
+            'type': utils.parse_solar_date,
+            'help': (
+                'Day of the year{description}. '
+                'If any of '
+            ) + (
+                ", ".join(
+                    [f'"{x}"' for x in utils.SolarModel._solar_dates])
+            ) + (
+                ' are provided, the date will be calculated from the '
+                'provided year and location.'
+            ),
         }),
         (('--year', ), {
             'type': int,
@@ -2382,7 +2486,7 @@ class TimeArgument(AgeArgument):
     ]
     _arguments_universal = AgeArgument._arguments_universal + [
         (('--planting-date', ), {
-            'type': str,
+            'type': utils.parse_datetime,
             'help': (
                 'Date time (in any ISO 8601 format) on which the crop '
                 'was planted (used to calculate age from time or time '
@@ -2403,11 +2507,12 @@ class TimeArgument(AgeArgument):
         }),
     ]
     _attributes_copy = AgeArgument._attributes_copy + [
-        'ignore_date',
+        'ignore_date', 'ignore_age',
     ]
 
     def __init__(self, args, **kwargs):
         self.ignore_date = False
+        self.ignore_age = False
         self.location = None
         super(TimeArgument, self).__init__(args, **kwargs)
 
@@ -2430,17 +2535,21 @@ class TimeArgument(AgeArgument):
             assert self.args['hour'] is None
             self.args['hour'] = self.args['time']
             self.args['time'] = None
+        elif self.is_solar_date(self.args['time']):
+            assert self.args['doy'] is None
+            self.args['doy'] = self.args['time']
+            self.args['time'] = None
         elif self.args['time'] == 'now':
             self.args['time'] = datetime.now()
         elif ((isinstance(self.args['time'], str)
                and not self.is_wildcard('time'))):
             self.args['time'] = datetime.fromisoformat(self.args['time'])
-        if self.is_date(self.args['time']):
+        if utils.is_date(self.args['time']):
             assert self.args['date'] is None
             self.args['date'] = self.args['time']
             self.args['time'] = None
         if self.args['date'] == 'now':
-            self.args['date'] = self.to_date(datetime.now())
+            self.args['date'] = utils.to_date(datetime.now())
         elif self.is_crop_age(self.args['date']):
             assert not self.ignored('age')
             assert self.args['age'] is None or 'age' in self._defaults_set
@@ -2459,10 +2568,26 @@ class TimeArgument(AgeArgument):
              and not self.is_wildcard('planting_date'))):
             self.args['planting_date'] = datetime.fromisoformat(
                 self.args['planting_date'])
-            assert self.is_date(self.args['planting_date'])
+            assert utils.is_date(self.args['planting_date'])
         if ((self.crop_age_string == 'planting'
              and self.args['planting_date'] is None)):
             self.args['planting_date'] = self.date
+
+    def setarg(self, name, value):
+        r"""Set an argument value.
+
+        Args:
+            name (str): Argument name.
+            value (object): Argument value.
+
+        """
+        if name == 'crop_age_string':
+            name = 'age'
+        elif name == 'solar_date_string':
+            name = 'doy'
+        elif name == 'solar_time_string':
+            name = 'hour'
+        super(TimeArgument, self).setarg(name, value)
 
     @classmethod
     def reset_args(cls, name, args, value=NoDefault):
@@ -2482,16 +2607,22 @@ class TimeArgument(AgeArgument):
         AgeArgument.reset_args(prefix + 'age' + suffix, args,
                                value=age_value)
 
-    def update_args(self, args):
+    def update_args(self, args, name=None):
         r"""Update a namespace with the parsed time arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Alternate name where the argument
+                should be stored.
 
         """
-        prefix = self.prefix
-        suffix = self.suffix
-        super(TimeArgument, self).update_args(args)
+        if name is None:
+            prefix = self.prefix
+            suffix = self.suffix
+        else:
+            prefix = self.get_prefix(name)
+            suffix = self.get_suffix(name)
+        super(TimeArgument, self).update_args(args, name=name)
         if not self.ignored('age'):
             age_inst = AgeArgument.from_other(self)
             age_inst._time_argument = self
@@ -2514,37 +2645,17 @@ class TimeArgument(AgeArgument):
             elif name == 'timezone':
                 return out.tzinfo
             elif name == 'doy':
-                return int(out.strftime('%j'))
+                doy = int(out.strftime('%j'))
+                if self.solar_date_string and self.location is not None:
+                    solar_model = self.location.create_solar_model(out)
+                    solar_date = solar_model.solar_date(
+                        self.solar_date_string)
+                    if doy == int(solar_date.strftime('%j')):
+                        return self.solar_date_string
+                return doy
             elif name == 'date':
-                return self.to_date(out)
+                return utils.to_date(out)
         return super(TimeArgument, self).extract_unused(out, name)
-
-    @property
-    def is_summer_solstice(self):
-        r"""bool: True if the date is the summer solstice."""
-        if (not self.setdefaults(['date'])) or self.location is None:
-            return False
-        if self.location.is_northern_hemisphere:
-            return (self.date.month == 6 and self.date.day == 21)
-        return (self.date.month == 12 and self.date.day == 21)
-
-    @property
-    def is_summer_solstice_noon(self):
-        r"""bool: True if the time is noon on the summer solstice."""
-        if (not self.setdefaults(['date'])) or self.location is None:
-            return False
-        return (self.is_summer_solstice
-                and self.solar_time_string in ['noon', 'transit'])
-
-    @property
-    def summer_solstice(self):
-        r"""datetime: Get the date of the summer solstice for this
-        latitude."""
-        if not (self.setdefaults(['date']) and self.location is not None):
-            return False
-        if self.location.is_northern_hemisphere:
-            return self.date.replace(month=6, day=21)
-        return self.date.replace(month=12, day=21)
 
     def iteration_args(self, dt=None, include_bookends=False,
                        dont_age=False):
@@ -2613,6 +2724,19 @@ class TimeArgument(AgeArgument):
         """
         return (x in utils.SolarModel._solar_times)
 
+    @classmethod
+    def is_solar_date(cls, x):
+        r"""Check if a string is a named solar date.
+
+        Args:
+            x (str): Time to check.
+
+        Returns:
+            bool: True if x is a named solar date.
+
+        """
+        return (x in utils.SolarModel._solar_dates)
+
     @cached_property
     def solar_time_string(self):
         r"""str: Solar time string."""
@@ -2625,6 +2749,17 @@ class TimeArgument(AgeArgument):
         return None
 
     @cached_property
+    def solar_date_string(self):
+        r"""str: Solar date string."""
+        if ((self.args['time'] is None
+             and self.args['date'] is None
+             and not self.setdefaults(['doy']))):
+            return None
+        if self.is_solar_date(self.args.get('doy', None)):
+            return self.args['doy']
+        return None
+
+    @cached_property
     def string(self):
         r"""str: String representation of the time."""
         out = ''
@@ -2634,42 +2769,57 @@ class TimeArgument(AgeArgument):
             return out
         if self.time is None:
             return None
-        x = self.time
+        x = self.time.replace(microsecond=0)
         if self.location is not None:
             x = x.replace(tzinfo=None)
+        time_string = x.timetz().isoformat().replace(':', '-')
+        date_string = x.date().isoformat()
+        sep = 'T'
         if self.solar_time_string:
-            if not self.ignore_date:
-                date = self.to_date(x)
-                out += date.date().isoformat() + '-'
-            out += self.solar_time_string
-            return out
-        assert not self.ignore_date  # TODO
-        out += x.replace(microsecond=0).isoformat().replace(':', '-')
+            time_string = self.solar_time_string
+            sep = '-'
+        if self.solar_date_string:
+            date_string = self.solar_date_string
+            sep = '-'
+        if not self.ignore_date:
+            out += date_string + sep
+        out += time_string
+        if not (self.ignored('age') or self.ignore_age):
+            out += '_' + super(TimeArgument, self).string
         return out
 
     @cached_property
     def date(self):
         r"""datetime.datetime: Parsed date instance."""
         if self.args['time'] is not None:
-            return self.to_date(self.time)
+            return utils.to_date(self.time)
         elif self.args['date'] is not None:
             if isinstance(self.args['date'], str):
                 self.args['date'] = datetime.fromisoformat(
                     self.args['date'])
             out = self.args['date']
-            assert self.is_date(out)
+            assert utils.is_date(out)
             self.check_unused(['year', 'doy'], out)
             return out
         elif ((self.args['planting_date'] is not None
                and self.args['age'] is not None)):
             out = self.planting_date + utils.quantity2timedelta(self.age)
-            out = self.to_date(out)
+            out = utils.to_date(out)
             self.check_unused(['year', 'doy'], out)
             return out
         elif self.base and not self.any_set(['year', 'doy']):
             return copy.deepcopy(self.base.date)
         if not self.setdefaults(['year', 'doy']):
             return None
+        if self.solar_date_string:
+            assert self.location is not None
+            if not self.setdefaults(['timezone']):
+                return None
+            date = datetime(month=1, day=1,  # Month & day unused
+                            year=self.args['year'],
+                            tzinfo=self.args['timezone'])
+            solar_model = self.location.create_solar_model(date)
+            return solar_model.solar_date(self.solar_date_string)
         return datetime.strptime(
             f"{self.args['year']}-{self.args['doy']}",
             "%Y-%j"
@@ -2724,7 +2874,7 @@ class TimeArgument(AgeArgument):
         if self.time is None or self.age is None:
             return None
         out = self.time - utils.quantity2timedelta(self.age)
-        return self.to_date(out)
+        return utils.to_date(out)
 
     @cached_property
     def solar_model(self):
@@ -3139,428 +3289,6 @@ class SubparserBase(arguments.RegisteredArgumentClassBase):
     _default = None
 
 
-class FilenameGenerationError(BaseException):
-    r"""Error to raise when a file name cannot be generated."""
-    pass
-
-
-class SuffixGenerationError(FilenameGenerationError):
-    r"""Error to raise when an argument cannot be converted into a
-    suffix."""
-    pass
-
-
-class ArgumentSuffix(object):
-    r"""Class for generating a suffix from an argument.
-
-    Args:
-        name (str, list): Argument name(s).
-        value (object, optional): Value to use in the suffix when
-            the argument is set.
-        prefix (str, optional): Prefix to use with value.
-        suffix (str, optional): Suffix to use with value.
-        cond (bool, optional): Condition under which the argument
-            is considered set. If not provided, the boolean value
-            of the argument will be used.
-        noteq (object, optional): Set the cond to when the value
-            is not equal to this.
-        default (object, optional): Value to use when cond is False.
-        title (bool, optional): If True, use title case for the
-            value.
-        conv (callable, optional): Function that should be used to
-            convert the argument value to a string.
-        sep (str, optional): Separator to use between list/array
-            arguments.
-        composite (str, optional): Name of the composite argument type
-            that will be used to parse this argument.
-        outputs (list, optional): Outputs that this suffix is valid for.
-        skip_outputs (list, optional): Outputs that this suffix is not
-            valid for.
-
-    """
-
-    def __init__(self, name, value=NoDefault, prefix=NoDefault,
-                 suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
-                 default=NoDefault, title=NoDefault, conv=NoDefault,
-                 sep=NoDefault, composite=NoDefault, arg=None,
-                 outputs=NoDefault, skip_outputs=NoDefault):
-        if prefix is NoDefault:
-            prefix = '_'
-        if suffix is NoDefault:
-            suffix = ''
-        if title is NoDefault:
-            title = False
-        if isinstance(outputs, str):
-            outputs = [outputs]
-        if isinstance(skip_outputs, str):
-            skip_outputs = [skip_outputs]
-        assert not (cond is not NoDefault and noteq is not NoDefault)
-        self.name = name
-        self.value = value
-        self.prefix = prefix
-        self.suffix = suffix
-        self.cond = cond
-        self.noteq = noteq
-        self.default = default
-        self.title = title
-        self.conv = conv
-        self.sep = sep
-        self.outputs = outputs
-        self.skip_outputs = skip_outputs
-        self.composite = composite
-        self.composite_cls = NoDefault
-        self.composite_args = NoDefault
-        self.arg = arg
-
-    def set_arguments(self, args):
-        r"""Set the ArgumentDescription for the argument.
-
-        Args:
-            args (ArgumentDescriptionSet): Description of the
-                arguments that this suffix may use.
-
-        """
-        if self.name == 'output':
-            return
-        try:
-            self.arg = args.getnested(self.name)
-        except KeyError:
-            print("MISSING", self.name)
-            pdb.set_trace()
-            raise
-        if self.composite_args is not NoDefault:
-            return
-        if isinstance(self.arg, arguments.CompositeArgumentDescription):
-            self.composite_args = self.arg.argument_names()
-
-    def is_valid(self, output):
-        r"""Check if the suffix is valid for the provided output.
-
-        Args:
-            output (str): Name of output to check.
-
-        Returns:
-            bool: True if the suffix is valid, False otherwise.
-
-        """
-        if self.outputs is not NoDefault and output not in self.outputs:
-            return False
-        if ((self.skip_outputs is not NoDefault
-             and output in self.skip_outputs)):
-            return False
-        return True
-
-    def depends(self, output):
-        r"""Determine what arguments this suffix depends on for the
-        provided output.
-
-        Args:
-            output (str): Name of output to check.
-
-        Returns:
-            list: Names of arguments that the suffix depends on.
-
-        """
-        if not self.is_valid(output):
-            return []
-        assert isinstance(self.name, str)
-        if self.composite_args is NoDefault:
-            return [self.name]
-        return self.composite_args
-
-    def get_value(self, args, output, wildcards):
-        r"""Get the value for an argument.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-
-        Returns:
-            object: Argument value.
-
-        """
-        if hasattr(args, self.name):
-            value = getattr(args, self.name)
-        else:
-            if self.name in wildcards:
-                return None
-            # value = TaskBase.get_output_task(output).arg2default(
-            #     self.name)
-            assert hasattr(args, self.name)
-        if isinstance(value, arguments.RegisteredArgumentClassBase):
-            if wildcards:
-                value = value.string_glob(wildcards)
-            elif value.string is None:
-                value = value.value
-            else:
-                value = value.string
-        return value
-
-    def _value2str(self, x):
-        if isinstance(x, str):
-            return x
-        if ((isinstance(x, (list, np.ndarray, units.QuantityArray))
-             and self.sep is not NoDefault)):
-            return self.sep.join([self._value2str(xx) for xx in x])
-        # Allow precision?
-        # TODO: Handle arithmetic operators
-        if isinstance(x, (float, units.Quantity)):
-            return str(x).replace('.', 'p').replace(' ', '')
-        return str(x)
-
-    def _callable(self, x):
-        return (x is not NoDefault and callable(x))
-
-    def eval_condition(self, args, output, wildcards,
-                       cond=NoDefault, value=NoDefault):
-        r"""Evaluate the condition that determines if the suffix should
-        be generated or default (if provided) should be used.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (str): Name of output to generate suffix for.
-            wildcards (list): List of arguments that wildcards
-                should be used for in the generated output file name.
-
-        Returns:
-            bool: Value of the evaluated condition. If True, the suffix
-                should be generated from the argument value. If False
-                and a default is provided, the default should be used.
-                If False and a default is not provided, an empty suffix
-                should be returned.
-
-        """
-        if cond is NoDefault:
-            if value is NoDefault:
-                value = self.get_value(args, output, wildcards)
-            if self.noteq is not NoDefault:
-                noteq = (self.noteq(args) if self._callable(self.noteq)
-                         else self.noteq)
-                cond = (value != noteq)
-            else:
-                cond = self.cond
-            if cond is NoDefault:
-                try:
-                    cond = bool(value)
-                except ValueError:
-                    cond = bool(len(value))
-        if self._callable(cond):
-            try:
-                cond = cond(args)
-            except AttributeError:
-                print(output, self.name)
-                pdb.set_trace()
-                raise
-        return cond
-
-    def __call__(self, args, output, wildcards=None):
-        r"""Generate the suffix string for this argument by inspecting
-        args.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-
-        Returns:
-            str: Generated suffix.
-
-        """
-        return self.generate(args, output, wildcards=wildcards)
-
-    def generate(self, args, output, wildcards=None, force=False,
-                 value=NoDefault):
-        r"""Generate the suffix string for this argument by inspecting
-        args.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            force (bool, optional): If True, force the condition to be
-                True.
-            value (object, optional): Value that should be used instead
-                of the args attribute.
-
-        Returns:
-            str: Generated suffix.
-
-        """
-        if not self.is_valid(output):
-            return ''
-        if self.name == 'output':
-            assert value is NoDefault
-            value = output
-            force = True
-        if wildcards is None:
-            wildcards = []
-        if self.name in wildcards:
-            return '*'
-        value0 = (value if value is not NoDefault
-                  else self.get_value(args, output, wildcards))
-        value = self.value
-        if self._callable(value):
-            value = value(args)
-        if value is NoDefault:
-            value = value0
-        cond = True if force else self.eval_condition(
-            args, output, wildcards, value=value0)
-        if not cond:
-            if self.default is NoDefault:
-                return ''
-            value = self.default
-        if self.conv is not NoDefault:
-            value = self.conv(value)
-        value = self._value2str(value)
-        if ((any(x in value for x in ',:[](){};\"\'<>/+ ')
-             or ((not wildcards) and '*' in value))):
-            raise SuffixGenerationError(
-                f'{self.name} suffix contains invalid characters: '
-                f'{value}'
-            )
-        if self.title:
-            value = value.title()
-        out = f'{self.prefix}{value}{self.suffix}'
-        if wildcards:
-            while '**' in out:
-                out = out.replace('**', '*')
-        return out
-
-
-class ArgumentSetSuffix(ArgumentSuffix):
-    r"""Class for generating a suffix from a set of arguments.
-
-    Args:
-        names (list): Argument names.
-        kwargs_set (dict, optional): Keyword arguments for the set
-            itself.
-        **kwargs: Additional keyword arguments are passed to
-            to ArgumentSuffix constructors for each argument.
-            If different values for these keywords are required for each
-            argument, a dictionary should be provided.
-
-    """
-
-    _require_all = True
-
-    def __init__(self, names, kwargs_set=None, **kwargs):
-        if kwargs_set is None:
-            kwargs_set = {}
-        for k in kwargs.keys():
-            assert not k.startswith('set_')
-        # kwargs_set = {
-        #     k: kwargs.pop(f'set_{k}') for k in [
-        #         'sep', 'prefix', 'suffix', 'cond'
-        #     ] if k in kwargs
-        # }
-        kwargs_set.setdefault('prefix', '_')
-        kwargs_set.setdefault('suffix', '')
-        kwargs_set.setdefault('sep', '_')
-        kwargs.setdefault('prefix', '')
-        kwargs.setdefault('suffix', '')
-        for k in list(kwargs.keys()):
-            if not isinstance(kwargs.get(k, NoDefault), dict):
-                kwargs[k] = {name: kwargs.get(k, NoDefault)
-                             for name in names}
-        self.arguments = OrderedDict()
-        for name in names:
-            ikws = {k: v[name] for k, v in kwargs.items()}
-            self.arguments[name] = ArgumentSuffix(name, **ikws)
-        super(ArgumentSetSuffix, self).__init__(names, **kwargs_set)
-
-    def set_arguments(self, args):
-        r"""Set the ArgumentDescription for the argument.
-
-        Args:
-            args (ArgumentDescriptionSet): Description of the
-                arguments that this suffix may use.
-
-        """
-        for v in self.arguments.values():
-            v.set_arguments(args)
-
-    def depends(self, output):
-        r"""Determine what arguments this suffix depends on for the
-        provided output.
-
-        Args:
-            output (str): Name of output to check.
-
-        Returns:
-            list: Names of arguments that the suffix depends on.
-
-        """
-        out = []
-        if not self.is_valid(output):
-            return out
-        for v in self.arguments.values():
-            out += v.depends(output)
-        return out
-
-    def get_value(self, args, output, wildcards):
-        r"""Get the value for an argument.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-
-        Returns:
-            object: Argument value.
-
-        """
-        values = OrderedDict()
-        for k, v in self.arguments.items():
-            values[k] = v.generate(args, output, wildcards=wildcards)
-        if not self._require_all:
-            return [v for v in values.values() if v]
-        if not any(values.values()):
-            return ''
-        if any(values.values()) and not all(values.values()):
-            for k, v in self.arguments.items():
-                if values[k]:
-                    continue
-                values[k] = v.generate(args, output, wildcards=wildcards,
-                                       force=True)
-        return list(values.values())
-
-
-class SuffixGenerator(ArgumentSetSuffix):
-    r"""Class for creating a file suffix.
-
-    Args:
-        arguments (dict): Mapping between argument names and
-            ArgumentSuffix construction keyword arguments for those
-            arguments.
-        **kwargs: Additional keyword arguments are passed to the
-            ArgumentSetSuffix constructor as kwargs_set.
-
-    """
-
-    _require_all = False
-
-    def __init__(self, arguments, **kwargs):
-        assert 'kwargs_set' not in kwargs
-        kwargs.setdefault('sep', '')
-        kwargs.setdefault('prefix', '')
-        kwargs.setdefault('suffix', '')
-        super(SuffixGenerator, self).__init__([], kwargs_set=kwargs)
-        if isinstance(arguments, list):
-            arguments = OrderedDict(arguments)
-        for k, v in arguments.items():
-            if isinstance(v, ArgumentSuffix):
-                self.arguments[k] = v
-            elif isinstance(k, tuple):
-                self.arguments[k] = ArgumentSetSuffix(k, **v)
-            else:
-                self.arguments[k] = ArgumentSuffix(k, **v)
-
-
 class TaskBase(SubparserBase):
     r"""Base class for tasks.
 
@@ -3712,18 +3440,21 @@ class TaskBase(SubparserBase):
             cls.adjust_args_output(args)
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, skip=None):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            skip (list, optional): Set of arguments to skip.
 
         """
+        if skip is None:
+            skip = []
         output_args = [
             v.dest for v in cls._arguments.values() if v.is_output
         ]
-        super(TaskBase, cls).adjust_args(args, skip=output_args,
+        super(TaskBase, cls).adjust_args(args, skip=(skip + output_args),
                                          skip_root=True)
 
     @classmethod
@@ -3764,10 +3495,14 @@ class TaskBase(SubparserBase):
 
         """
         setattr(args, cls._registry_key, cls._name)
+        # TODO: This may be redundant
         for v in cls._arguments.flatten():
             if hasattr(args, v.dest):
                 continue
-            setattr(args, v.dest, v.default)
+            if v.default is NoDefault:
+                setattr(args, v.dest, None)
+            else:
+                setattr(args, v.dest, v.default)
         cls.adjust_args(args)
 
     @classmethod
@@ -3826,7 +3561,7 @@ class TaskBase(SubparserBase):
                 continue
             elif hasattr(args, k):
                 out[k] = getattr(args, k)
-            elif set_defaults:
+            elif set_defaults and arg.default is not NoDefault:
                 out[k] = arg.default
             else:
                 out[k] = None
@@ -3935,12 +3670,19 @@ class TaskBase(SubparserBase):
         cls._outputs_total = (
             cls._outputs_local + list(cls._outputs_external.keys())
         )
+        output_bases = {}
         for k, v in cls._output_info.items():
             if k in cls._outputs_external:
                 continue
-            if 'base' in v and v['base'] not in v.get('upstream', []):
+            if (('base_output' in v
+                 and v['base_output'] not in v.get('upstream', []))):
                 v.setdefault('upstream', [])
-                v['upstream'].append(v['base'])
+                v['upstream'].append(v['base_output'])
+                output_bases.setdefault(v['base_output'], [])
+                output_bases[v['base_output']].append(k)
+            else:
+                output_bases.setdefault(None, [])
+                output_bases[None].append(k)
             for x in v.get('upstream', []):
                 xsrc = cls
                 while x not in xsrc._outputs_local:
@@ -3954,10 +3696,13 @@ class TaskBase(SubparserBase):
                 karg = arguments.CompositeArgumentDescription(
                     koutput, 'output', **v)
                 cls._arguments.append(karg)
+        cls._arguments.modify(append_suffix_outputs=output_bases)
+        cls._arguments.sort_by_suffix()
 
     @staticmethod
     def _copy_external_arguments(dst, src, include=None, exclude=None,
-                                 modifications=None, optional=False):
+                                 modifications=None, optional=False,
+                                 suffix_index=None):
         if modifications is None:
             modifications = {}
         modifications = copy.deepcopy(modifications)
@@ -3968,22 +3713,36 @@ class TaskBase(SubparserBase):
                     modifications.setdefault(f'output_{k}', {})
                     modifications[f'output_{k}'].setdefault(
                         'default', False)
+        if suffix_index is None:
+            suffix_index = -1
         src_arguments = src._arguments.copy(
             modifications=modifications, include=include,
-            exclude=exclude, strip_classes=True,
+            exclude=exclude,
+            strip_classes=True,
+            increment_suffix_index=suffix_index,
         )
-        for v in src_arguments.values():
-            if v.name in dst._arguments:
+        new_args = arguments.ArgumentDescriptionSet([])
+        for i, v in enumerate(src_arguments.values()):
+            vnested = dst._arguments.findnested(v, None)
+            if vnested is not None:
+                if vnested.generates_suffix:
+                    if v.suffix_param['index'] < vnested.suffix_param['index']:
+                        print("SUFFIX_INDEX", dst, src,
+                              vnested.dest,
+                              vnested.suffix_param['index'],
+                              v.suffix_param['index'])
+                        vnested.modify(
+                            suffix_index=v.suffix_param['index'])
                 continue
             vmod = {}
             if v.is_output:
                 vmod['cls_kwargs'] = copy.deepcopy(v.cls_kwargs)
                 vmod['cls_kwargs'].setdefault('defaults', {})
                 vmod['cls_kwargs']['defaults']['output'] = False
-            dst._arguments.append(v, **vmod)
-
+            new_args.append(v.copy(**vmod))
+        dst._arguments.append(new_args, dont_copy=True)
         dst._outputs_external.update(src._outputs_external)
-        for k in src._outputs_total:  # TODO: Verify this works
+        for k in src._outputs_total:
             dst._outputs_external[k] = src
 
     # Methods for managing task I/O
@@ -4019,24 +3778,28 @@ class TaskBase(SubparserBase):
                 return fd.read()
         raise NotImplementedError(f'{name}: {fname}')
 
-    def read_output(self, name=None):
+    def read_output(self, name=None, fname=None):
         r"""Load an output file produced by this task.
 
         Args:
             name (str, optional): Name of the output to read.
+            fname (str, optional): File to read if different than the
+                generated file name.
 
         Returns:
             object: Contents of the output file.
 
         """
-        def _read_output(task, name):
-            fname = task.output_file(name, return_disabled=True)
+        def _read_output(task, name, fname):
+            if fname is None:
+                fname = task.output_file(name, return_disabled=True)
             if not os.path.isfile(fname):
                 raise RuntimeError(f'\"{name}\" output file does not '
                                    f'exist: {fname}')
             return task._read_output(task.args, name, fname)
 
-        return self._call_output_task(self, _read_output, name)
+        args = (fname, )
+        return self._call_output_task(self, _read_output, name, args)
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -4189,13 +3952,15 @@ class TaskBase(SubparserBase):
 
     @staticmethod
     def _call_output_task(cls, method, name, args=None):
+        if args is None:
+            args = tuple([])
         if isinstance(name, list):
             return {k: cls._call_output_task(cls, method, k, args)
                     for k in name}
         if name is None:
             name = cls._name
         task = cls._get_output_task(cls, name)
-        return method(task, name)
+        return method(task, name, *args)
 
     def enabled_outputs(self, for_write=False):
         r"""Get the set of outputs enabled by the provided arguments.
@@ -4359,158 +4124,6 @@ class TaskBase(SubparserBase):
 
         """
         return self._output_names(self.args, **kwargs)
-
-    @classmethod
-    def _make_suffix_set(cls, args, names, set_sep=NoDefault,
-                         set_prefix='_', set_suffix='',
-                         wildcards=None, skip=None, **kwargs):
-        r"""Create a suffix by combining multiple arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            names (list): Argument names.
-            set_sep (str, optional): Separator to use between arguments.
-            set_prefix (str, optional): Prefix to use before set suffix.
-            set_suffix (str, optional): Suffix to use after set suffix.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-            **kwargs: Additional keyword arguments are passed to
-                _make_suffix. If different values for these keywords are
-                required for each argument, a dictionary should be
-                provided.
-
-        Returns:
-            str: Generated suffix.
-
-        """
-        kwargs.setdefault('prefix', '')
-        kwargs.setdefault('suffix', '')
-        for k in list(kwargs.keys()):
-            if not isinstance(kwargs.get(k, NoDefault), dict):
-                kwargs[k] = {name: kwargs.get(k, NoDefault)
-                             for name in names}
-        values = []
-        for name in names:
-            ikws = {k: v[name] for k, v in kwargs.items()}
-            ivalue = cls._make_suffix(
-                args, name, wildcards=wildcards, skip=skip, **ikws
-            )
-            if ivalue == '*':
-                return '*'
-            values.append(ivalue)
-        if not any(values):
-            return ''
-        if any(values) and not all(values):
-            for i in range(len(values)):
-                if values[i]:
-                    continue
-                ikws = {k: v[name] for k, v in kwargs.items()}
-                ikws.update(cond=True, noteq=NoDefault)
-                values[i] = cls._make_suffix(
-                    args, name, wildcards=wildcards, skip=skip, **ikws
-                )
-        if set_sep is NoDefault:
-            set_sep = '_'
-        return set_prefix + set_sep.join(values) + set_suffix
-
-    @classmethod
-    def _make_suffix(cls, args, name, value=NoDefault, prefix=NoDefault,
-                     suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
-                     default=NoDefault, title=NoDefault, conv=NoDefault,
-                     sep=NoDefault, wildcards=None, skip=None):
-        r"""Create a suffix associated with an argument.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str, list): Argument name(s).
-            value (object, optional): Value to use in the suffix when
-                the argument is set.
-            prefix (str, optional): Prefix to use with value.
-            suffix (str, optional): Suffix to use with value.
-            cond (bool, optional): Condition under which the argument
-                is considered set. If not provided, the boolean value
-                of the argument will be used.
-            noteq (object, optional): Set the cond to when the value
-                is not equal to this.
-            default (object, optional): Value to use when cond is False.
-            title (bool, optional): If True, use title case for the
-                value.
-            conv (callable, optional): Function that should be used to
-                convert the argument value to a string.
-            sep (str, optional): Separator to use between list/array
-                arguments.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skip (list, optional): Arguments to skip.
-
-        Returns:
-            str: Generated suffix.
-
-        """
-        assert name is not None
-        if skip is not None and name in skip:
-            return ''
-        if wildcards and name in wildcards:
-            return '*'
-        if prefix is NoDefault:
-            prefix = '_'
-        if suffix is NoDefault:
-            suffix = ''
-        if title is NoDefault:
-            title = False
-        if not hasattr(args, name):
-            if wildcards and name in wildcards:
-                value0 = None
-            else:
-                value0 = cls.arg2default(name)
-        else:
-            value0 = getattr(args, name)
-        if isinstance(value0, CompositeArgument):
-            if wildcards:
-                value0 = value0.string_glob(wildcards)
-            elif value0.string is None:
-                value0 = value0.value
-            else:
-                value0 = value0.string
-        if value is NoDefault:
-            value = value0
-        if noteq is not NoDefault:
-            assert cond is NoDefault
-            cond = (value0 != noteq)
-        elif cond is NoDefault:
-            assert noteq is NoDefault
-            try:
-                cond = bool(value0)
-            except ValueError:
-                cond = bool(len(value0))
-        if not cond:
-            if default is NoDefault:
-                return ''
-            value = default
-        if conv is not NoDefault:
-            value = conv(value)
-
-        def float2str(x):
-            # Allow precision?
-            # TODO: Handle arithmetic operators
-            if isinstance(x, (float, units.Quantity)):
-                return str(x).replace('.', 'p').replace(' ', '')
-            return str(x)
-
-        if ((isinstance(value, (list, np.ndarray, units.QuantityArray))
-             and sep is not NoDefault)):
-            value = sep.join([float2str(x) for x in value])
-        if not isinstance(value, str):
-            value = float2str(value)
-        if ((any(x in value for x in ',:[](){};\"\'<>/+ ')
-             or ((not wildcards) and '*' in value))):
-            raise SuffixGenerationError(
-                f'{name} contains invalid characters: {value}'
-            )
-        if title:
-            value = str(value).title()
-        return f'{prefix}{value}{suffix}'
 
     @classmethod
     def _output_depends(cls, args, name, variables):
@@ -5143,6 +4756,14 @@ class TaskBase(SubparserBase):
                 **kwargs
             )
 
+    def __del__(self):
+        if self.has_cached_property('figure'):
+            import matplotlib.pyplot as plt
+            plt.close(self.figure)
+        self.clear_cached_properties(
+            include=['figure', 'axes'],
+        )
+
     @cached_property
     def figure(self):
         r"""Matplotlib figure."""
@@ -5174,6 +4795,7 @@ class IterationTaskBase(TaskBase):
 
     _step_task = None
     _step_vary = None
+    _step_args_preserve = None
 
     def __init__(self, *args, **kwargs):
         self._step_results = []
@@ -5190,8 +4812,9 @@ class IterationTaskBase(TaskBase):
             cls._external_tasks = copy.deepcopy(cls._external_tasks)
             cls._external_tasks[cls._step_task] = step_prop
             cls._output_info.setdefault(cls._name, {})
+            # TODO: Append to upstream instead?
             cls._output_info[cls._name].setdefault(
-                'base', cls._step_task._name)
+                'upstream', [cls._step_task._name])
         TaskBase._on_registration(cls)
 
     def overwrite_outputs(self, downstream=None, wildcards=None):
@@ -5285,6 +4908,7 @@ class IterationTaskBase(TaskBase):
                         args_overwrite=iargs_overwrite,
                         output_name=output_name,
                         copy_outputs_from=x_prev,
+                        args_preserve=self._step_args_preserve,
                     )
                     self._step_results.append(self.finalize_step(x))
                     if isinstance(x, TaskBase):
@@ -5320,12 +4944,14 @@ class OptimizationTaskBase(IterationTaskBase):
 
     _final_outputs = []
     _arguments = [
-        (('--vary', ), {
-            'type': str,
-            'help': 'Argument that should be varied.'
-        }),
         (('--goal', ), {
             'help': 'Goal of the optimization.',
+            'suffix_param': {},
+        }),
+        (('--vary', ), {
+            'type': str,
+            'help': 'Argument that should be varied.',
+            'suffix_param': {'prefix': 'vs_'},
         }),
         (('--method', ), {
             'type': str, 'choices': ['nelder-mead', 'powell'],
@@ -5333,17 +4959,13 @@ class OptimizationTaskBase(IterationTaskBase):
             'help': (
                 'Method that should be used to minimize the objective'
             ),
+            'suffix_param': {'noteq': 'nelder-mead'},
         }),
         (('--tolerance', ), {
             'type': float, 'default': 1e-5,
             'help': 'Tolerance for achieving result',
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('goal', {}),
-        ('vary', {'prefix': '_vs_'}),
-        ('method', {'noteq': 'nelder-mead'}),
-    ])
 
     @staticmethod
     def _on_registration(cls):
@@ -5351,7 +4973,7 @@ class OptimizationTaskBase(IterationTaskBase):
             kcls = cls.get_output_task(k)
             cls._output_info.setdefault(
                 k, {
-                    'base': cls._name,
+                    'base_output': cls._name,
                     'ext': kcls._output_info[k]['ext'],
                     'description': kcls._output_info[k]['description'],
                     'optional': True,
@@ -5524,23 +5146,26 @@ class TemporalTaskBase(IterationTaskBase):
             'start_time', 'time',
             description=' to start at',
             defaults={'hour': 'sunrise'},
+            suffix_param={},
         ),
         arguments.CompositeArgumentDescription(
             'stop_time', 'time',
             description=' to stop at',
             defaults={'hour': 'sunset'},
             name_base='start_time',
+            suffix_param={},
         ),
-        (('--duration', ), {
-            'units': 'hours',
-            'help': 'The time that the animation should last',
-        }),
         (('--step-count', ), {
             'type': int,
             'help': ('The number of time steps that should be taken '
                      'between the start and end time. If not provided, '
                      'the number of time steps will be determined from '
                      '\"step_interval\"'),
+            'suffix_param': {},
+        }),
+        (('--duration', ), {
+            'units': 'hours',
+            'help': 'The time that the animation should last',
         }),
         (('--step-interval', ), {
             'units': 'hours',
@@ -5560,50 +5185,60 @@ class TemporalTaskBase(IterationTaskBase):
             )
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('stop_time', {}),
-    ])
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
-        cls._arguments['start_time'].adjust_args(args)
-        if not cls._arguments['stop_time'].any_arguments_set(args):
-            if args.duration is None and (args.step_interval is None
+        cls._arguments.getnested('location').adjust_args(args)
+        cls._arguments['duration'].adjust_args(args)
+        if args.duration is None and not (args.step_interval is None
                                           or args.step_count is None):
-                if args.start_time.crop_age_string == 'planting':
-                    assert not args.dont_age
-                    args.stop_age = 'maturity'
-                    args.planting_date = args.start_time.date
-                    if args.start_time.solar_time_string:
-                        args.stop_hour = (
-                            args.start_time.solar_time_string
-                        )
-                elif args.start_time.solar_time_string == 'sunrise':
-                    args.stop_hour = 'sunset'
-                    args.stop_date = args.start_time.date
-                    if args.start_time.crop_age_string:
-                        args.stop_age = (
-                            args.start_time.crop_age_string
-                        )
-                else:
-                    args.duration = units.Quantity(24.0, 'hours')
-            else:
-                if args.duration is None:
-                    args.duration = (
-                        args.step_interval * args.step_count
-                    )
+            args.duration = args.step_interval * args.step_count
+        start_set = cls._arguments['start_time'].any_arguments_set(args)
+        stop_set = cls._arguments['stop_time'].any_arguments_set(args)
+        if not (start_set or stop_set):
+            start_set = True  # Force default for start
+        if args.duration is not None:
+            if start_set and not stop_set:
+                cls._arguments['start_time'].adjust_args(args)
                 args.stop_time = (
                     args.start_time.time
                     + utils.quantity2timedelta(args.duration)
                 )
-        super(TemporalTaskBase, cls).adjust_args_internal(args)
+            elif stop_set and not start_set:
+                cls._arguments['stop_time'].adjust_args(args)
+                args.start_time = (
+                    args.stop_time.time
+                    - utils.quantity2timedelta(args.duration)
+                )
+        elif not stop_set:
+            cls._arguments['start_time'].adjust_args(args)
+            if args.start_time.crop_age_string == 'planting':
+                assert not args.dont_age
+                args.stop_age = 'maturity'
+                args.planting_date = args.start_time.date
+                if args.start_time.solar_time_string:
+                    args.stop_hour = (
+                        args.start_time.solar_time_string
+                    )
+            elif args.start_time.solar_time_string == 'sunrise':
+                args.stop_hour = 'sunset'
+                args.stop_date = args.start_time.date
+                if args.start_time.crop_age_string:
+                    args.stop_age = (
+                        args.start_time.crop_age_string
+                    )
+            else:
+                args.duration = units.Quantity(24.0, 'hours')
+        super(TemporalTaskBase, cls).adjust_args_internal(args, **kwargs)
         if args.stop_time.time == args.start_time.time:
             args.stop_time = args.stop_time.time.replace(
                 hour=0, minute=0, microsecond=0)
@@ -5623,9 +5258,22 @@ class TemporalTaskBase(IterationTaskBase):
             args.step_interval = duration / args.step_count
         args.start_time.update_args(args, name='time')
         if args.start_time.date == args.stop_time.date:
+            for k in ['crop_age_string', 'solar_date_string']:
+                vstart = getattr(args.start_time, k)
+                vstop = getattr(args.stop_time, k)
+                if vstart == vstop:
+                    continue
+                if vstart:
+                    assert vstop is None
+                    args.stop_time.setarg(k, vstart)
+                else:
+                    assert vstart is None
+                    args.star_time.setarg(k, vstop)
             args.stop_time.ignore_date = True
             # TODO: Update this?
             args.dont_age = True
+        if args.dont_age:
+            args.start_time.ignore_age = True
 
     def step_args(self):
         r"""Yield the updates that should be made to the arguments for
@@ -5641,7 +5289,7 @@ class TemporalTaskBase(IterationTaskBase):
             iargs = self.args.start_time.iteration_args(
                 i * dt, dont_age=self.args.dont_age)
             yield iargs
-        time = TimeArgument.from_kwargs(None, iargs)
+        time = TimeArgument.from_kwargs(iargs)
         if time.time < self.args.stop_time.time:
             yield self.args.stop_time.iteration_args()
 
@@ -5666,8 +5314,6 @@ def parse(**kwargs):
     parser = InstrumentedParser("Generate/analyze a 3D canopy model")
     arguments.ClassSubparserArgumentDescription('task').add_to_parser(
         parser)
-    # for v in get_class_registry().values('task'):
-    #     v.add_arguments(parser)
     if kwargs:
         arglist = [kwargs.get('task', 'generate')]
         args = parser.parse_args(arglist)

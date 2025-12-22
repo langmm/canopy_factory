@@ -130,6 +130,13 @@ norecursedirs = [
 testpaths = "tests"
 addopts = "--disable-plugin-autoload"
 # -p no:yggdrasil-framework"
+filterwarnings = [
+  "error",
+  "ignore:((.|\n)*)No class for parameter \"LeafArea\"((.|\n)*)",
+  # Errors from traittypes import in hothouse
+  "ignore:((.|\n)*)Sentinel is not a public part of the traitlets API((.|\n)*)",
+  "ignore:((.|\n)*)was set from the constructor((.\n)*)",
+]
 
 [tool.coverage.run]
 omit = [

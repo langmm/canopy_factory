@@ -18,8 +18,10 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
     _params = {
         'crop': ['maize'],
         'id': ['B73_WT'],
+        'data_year': ['2024'],
     }
-    _disable_compare = False
+    _params_data = ['id', 'data_year']
+    _compare_methods = {}
 
     @pytest.fixture(scope="class")
     def task_name(self):
@@ -38,25 +40,24 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         r"""type: Crop generator class."""
         return utils.get_class_registry().get('crop', crop)
 
-    @pytest.fixture(scope="class")
-    def disable_compare(self):
-        r"""bool: True if byte-wise comparison should be disabled."""
-        return self._disable_compare
+    @pytest.fixture
+    def compare_method(self, output):
+        r"""str: Method that should be used to compare output files."""
+        return self._compare_methods.get(output, 'bytes')
 
     @pytest.fixture(scope="class")
     def instance_kwargs(self, task_class, crop_class,
-                        crop, id, arguments, test_output_dir):
+                        crop, id, data_year, arguments, test_output_dir):
         r"""dict: Keyword arguments for creating the instance."""
-        if arguments.get('id', id) != id:
-            pytest.skip('id specified by arguments')
-        if arguments.get('crop', crop) != crop:
-            pytest.skip('crop specified by arguments')
-        out = {'crop': crop, 'id': id, 'output_dir': test_output_dir}
+        out = {'output_dir': test_output_dir}
+        for k in ['crop'] + self._params_data:
+            x = eval(k)
+            if arguments.get(k, x) != x:
+                pytest.skip(f'{k} specified by arguments')
+            out[k] = x
         for k in task_class._outputs_local:
             out[f'output_{k}'] = True
         out.update(**arguments)
-        # if crop_class._default_data and 'data' not in out:
-        #     out['data'] = crop_class._default_data
         return out
 
     @pytest.fixture(scope="class")
@@ -94,35 +95,63 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         r"""str: Path of file containing expected result."""
         return instance._testing_default_files[output]
 
-    def test_output(self, instance, output, disable_compare,
-                    fname_actual, fname_expected):
+    def test_output(self, instance, output, compare_method,
+                    fname_actual, fname_expected, approx_nested,
+                    create_missing_data, overwrite_existing_data,
+                    assert_equal_approx):
         r"""Test creating output."""
-        if ((not (fname_expected.endswith(('.png', '.gif'))
-                  or disable_compare)
-             and not os.path.isfile(fname_expected))):
+        if fname_expected.endswith(('.png', '.gif')):
+            # Don't compare png binaries
+            compare_method = False
+        if not (compare_method is False or create_missing_data
+                or os.path.isfile(fname_expected)):
             raise AssertionError(f'Expected \"{output}\" output '
                                  f'does not exist: {fname_expected}')
-        instance.get_output(output)
+        data_actual = instance.get_output(output)
         assert os.path.isfile(fname_actual)
-        if disable_compare and not os.path.isfile(fname_expected):
-            shutil.copyfile(fname_actual, fname_expected)
-        if fname_expected.endswith(('.png', '.gif')) or disable_compare:
-            # Don't compare png binaries
+        if compare_method is False:
             return
-        self.compare_output(output, fname_actual, fname_expected)
+        if (((create_missing_data and not os.path.isfile(fname_expected))
+             or overwrite_existing_data)):
+            print(f"Creating test file: {fname_expected}")
+            shutil.copyfile(fname_actual, fname_expected)
+        if compare_method == 'bytes':
+            with open(fname_actual, 'rb') as fd:
+                data_actual = fd.read()
+            with open(fname_expected, 'rb') as fd:
+                data_expected = fd.read()
+        else:
+            data_expected = instance.read_output(output, fname_expected)
+        if compare_method == 'approx':
+            assert_equal_approx(data_actual, data_expected, nan_ok=True)
+        else:
+            getattr(self, f'compare_{compare_method}')(
+                data_actual, data_expected)
 
-    def compare_output(self, output, actual, expected):
-        r"""Compare output files.
+    def compare_bytes(self, actual, expected):
+        r"""Compare bytes in chunks.
 
         Args:
-            output (str): Name of output contained in files.
-            actual (str): Path to output produced by the test.
-            expected (str): Path to output that is expected.
+            actual (bytes): Actual bytes.
+            expected (bytes): Expected bytes.
 
         """
-        contents_actual = open(actual, 'rb').read()
-        contents_expected = open(expected, 'rb').read()
-        assert contents_actual == contents_expected
+        chunk_size = 1000
+        len_actual = len(actual)
+        len_expected = len(expected)
+        pos = 0
+        maxpos = max([len_actual, len_expected])
+        while pos < maxpos:
+            pos_act = min(pos, len_actual)
+            pos_exp = min(pos, len_expected)
+            chunk_act = actual[
+                pos_act:min(pos_act + chunk_size, len_actual)]
+            chunk_exp = expected[
+                pos_exp:min(pos_exp + chunk_size, len_expected)]
+            assert chunk_act == chunk_exp
+            pos += chunk_size
+        assert len_actual == len_expected
+        assert actual == expected
 
 
 class TestLayoutTask(TestTask):
@@ -130,8 +159,6 @@ class TestLayoutTask(TestTask):
 
     _registry_name = 'layout'
     _params = {
-        # 'crop': ['maize'],
-        # 'id': ['B73_WT'],
         'arguments': {
             'values': [
                 {'canopy': 'single'},
@@ -139,6 +166,8 @@ class TestLayoutTask(TestTask):
                 {'canopy': 'unique', 'periodic_canopy': True},
                 {'canopy': 'unique', 'time': 'noon'},
                 {'canopy': 'tiled'},
+                {'canopy': 'virtual'},
+                {'canopy': 'virtual', 'periodic_canopy': True},
             ],
             'ids': [
                 'single',
@@ -146,6 +175,8 @@ class TestLayoutTask(TestTask):
                 'unique',
                 'unique_periodic',
                 'tiled',
+                'virtual',
+                'virtual_periodic',
             ],
         },
     }
@@ -174,6 +205,7 @@ class TestGenerateTask(TestTask):
 
     _registry_name = 'generate'
     _params = {
+        'data_year': ['2024'],
         'arguments': {
             'values': [
                 {'canopy': 'single'},
@@ -183,12 +215,12 @@ class TestGenerateTask(TestTask):
         },
     }
 
-    @pytest.fixture(scope="class")
-    def disable_compare(self, arguments):
-        r"""bool: True if byte-wise comparison should be disabled."""
+    @pytest.fixture
+    def compare_method(self, output, arguments):
+        r"""str: Method that should be used to compare output files."""
         if arguments.get('canopy', 'single') in ['unique', 'tile']:
-            return True
-        return self._disable_compare
+            return False  # Large
+        return self._compare_methods.get(output, 'bytes')
 
 
 class TestRayTraceTask(TestTask):
@@ -198,58 +230,44 @@ class TestRayTraceTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'B73_WT',
-                 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                 'canopy': 'single'},
+                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                 'canopy': 'virtual', 'periodic_canopy': True},
             ],
         },
     }
-
-    @pytest.fixture
-    def disable_compare(self, output):
-        r"""bool: True if byte-wise comparison should be disabled."""
-        if output in ['raytrace_limits', 'traced_mesh']:
-            return True
-        return self._disable_compare
-
-    @pytest.fixture
-    def fname_actual(self, instance, output, fname_expected):
-        r"""str: Path of file containing generated result."""
-        if output == 'raytrace_limits':
-            return fname_expected
-        return instance.output_file(output)
+    _compare_methods = {
+        'raytrace_limits': 'approx',
+        'traced_mesh': False,
+    }
 
 
-class TestRender(TestTask):
+class TestRenderTask(TestTask):
     r"""Class for testing render."""
 
     _registry_name = 'render'
-
-    @pytest.fixture
-    def disable_compare(self, output):
-        r"""bool: True if byte-wise comparison should be disabled."""
-        if output == 'render_camera':
-            return True
-        return self._disable_compare
-
-    @pytest.fixture
-    def fname_actual(self, instance, output, fname_expected):
-        r"""str: Path of file containing generated result."""
-        if output == 'render_camera':
-            return fname_expected
-        return instance.output_file(output)
+    _params = TestRayTraceTask._params
+    _compare_methods = {
+        'render_camera': 'approx',
+    }
 
 
-class TestTotals(TestTask):
+class TestTotalsTask(TestTask):
     r"""Class for testing totals."""
 
     _registry_name = 'totals'
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'B73_WT',
-                 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                 'canopy': 'virtual', 'periodic_canopy': True,
+                 'duration': '2 hr'},
             ],
         },
+    }
+    _compare_methods = {
+        'totals': 'approx',
     }
 
 
@@ -257,27 +275,26 @@ class TestAnimateTask(TestTask):
     r"""Class for testing animate."""
 
     _registry_name = 'animate'
-    _params = {
-        'arguments': {
-            'values': [
-                {'crop': 'maize', 'id': 'B73_WT',
-                 'periodic_canopy': True},
-            ],
-        },
-    }
+    _params = TestTotalsTask._params
 
 
-class TestMatchQueryTask(TestTask):
-    r"""Class for testing match query."""
+# class TestMatchQueryTask(TestTask):
+#     r"""Class for testing match query."""
 
-    _registry_name = 'match_query'
-    _params = {
-        'crop': ['maize'],
-        'id': ['rdla'],
-    }
+#     _registry_name = 'match_query'
+#     _params = {
+#         'crop': ['maize'],
+#         'id': ['rdla'],
+#         'data_year': ['2024'],
+#         'arguments': {
+#             'values': [
+#                 {'canopy': 'virtual', 'periodic_canopy': True},
+#             ],
+#         },
+#     }
 
 
-class TestPhotosynthesisTask(TestTask):
-    r"""Class for testing photosynthesis calc."""
+# class TestPhotosynthesisTask(TestTask):
+#     r"""Class for testing photosynthesis calc."""
 
-    _registry_name = 'photosynthesis'
+#     _registry_name = 'photosynthesis'

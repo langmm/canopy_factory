@@ -40,7 +40,7 @@ class SolarLightSource(LightSourceBase):
 
     _name = 'sun'
     _geometry = 'orthographic'
-    _arguments = LightSourceBase._arguments.copy(
+    _arguments = [LightSourceBase._arguments.copy(
         modifications={
             'eta_par': {
                 'default': 0.368,
@@ -58,21 +58,23 @@ class SolarLightSource(LightSourceBase):
                 ),
             },
         },
-    ) + [
+    ),
         arguments.CompositeArgumentDescription(
             'location',
             description=' that the light should be modeled for',
             defaults={
                 'location': 'Champaign',
             },
+            suffix_param={'noteq': 'Champaign'},
         ),
         arguments.CompositeArgumentDescription(
             'time',
             description=' that the light should be modeled for',
             defaults={
                 'hour': 'noon',
-                'date': '2024-06-21',
+                'doy': 'summer_solstice',
             },
+            suffix_param={},
         ),
         (('--method-solar-position', ), {
             'type': str, 'default': 'nrel_numpy',
@@ -119,7 +121,7 @@ class SolarLightSource(LightSourceBase):
             cls._convert_composite(args, k, base=k)
         super(SolarLightSource, cls).adjust_args(args, skip=skip)
         for k in ['method_solar_position', 'method_solar_position']:
-            setattr(args.time.solar_model, getattr(args))
+            setattr(args.time.solar_model, k, getattr(args, k))
 
     @cached_args_property
     def solar_model(self):

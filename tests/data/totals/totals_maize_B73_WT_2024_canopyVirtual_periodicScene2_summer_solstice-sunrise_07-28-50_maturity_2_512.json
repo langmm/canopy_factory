@@ -1,0 +1,31 @@
+{
+    "total_flux_density": {
+        "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTIpIn0=-YGG-DuSNL/NYQ0GwKyEE89okQccgNzdH/TRB-YGG-",
+        "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTIpIn0=-YGG-DuSNL/NYQ0GwKyEE89okQccgNzdH/TRB-YGG-"
+    },
+    "total_flux": {
+        "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSJ9-YGG-pN2ki2qtUEBoX3JCJfoxQGsG06O8F0JA-YGG-",
+        "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSJ9-YGG-pN2ki2qtUEBoX3JCJfoxQGsG06O8F0JA-YGG-"
+    },
+    "total_hits": {
+        "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-YGG-",
+        "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-YGG-"
+    },
+    "total_areas": {
+        "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJjbSoqMiJ9-YGG-xMiawbWrtEDEyJrBtau0QMTImsG1q7RA-YGG-",
+        "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJjbSoqMiJ9-YGG-xMiawbWrtEDEyJrBtau0QMTImsG1q7RA-YGG-"
+    },
+    "average_flux_density": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTIpIn0=-YGG-DuSNL/NYQ0GwKyEE89okQccgNzdH/TRB-YGG-",
+    "average_flux": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSJ9-YGG-pN2ki2qtUEBoX3JCJfoxQGsG06O8F0JA-YGG-",
+    "average_hits": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-YGG-",
+    "average_areas": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJjbSoqMiJ9-YGG-xMiawbWrtEDEyJrBtau0QMTImsG1q7RA-YGG-",
+    "scene_average_flux_density": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTQpIn0=-YGG-RP7zLu9jGUEdSDbAfl77QGQwNNKLiwtB-YGG-",
+    "scene_average_flux": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSooY20qKi0yKSJ9-YGG-xj66DeftUT8F/qnCm1MzP+FqmMprc0M/-YGG-",
+    "scene_average_hits": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiJjbSoqLTIifQ==-YGG-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-YGG-",
+    "scene_average_areas": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXSwidW5pdHMiOiIifQ==-YGG-sU1Eeu84tj+xTUR67zi2P7FNRHrvOLY/-YGG-",
+    "times": [
+        "2024-06-20T12:54:43.950993-05:00",
+        "2024-06-20T06:28:50.549693-05:00",
+        "2024-06-20T07:28:50.549693-05:00"
+    ]
+}

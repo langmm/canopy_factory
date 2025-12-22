@@ -1,0 +1,15 @@
+{
+    "camera_type": "projection",
+    "camera_fov_width": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-AAAAAACARkA=-YGG-",
+    "camera_fov_height": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-AAAAAACARkA=-YGG-",
+    "camera_direction": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlszXX0=-YGG-O80TPzvNE787zRM/-YGG-",
+    "camera_up": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlszXX0=-YGG-7gXRPuoFUT/uBdE+-YGG-",
+    "camera_location": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-Q+OJgJFkgcCLCxCXFOGDQO+pnFZIjoHA-YGG-",
+    "image_nx": 2047,
+    "image_ny": 2048,
+    "image_width": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImNtIn0=-YGG-mLllLOz3fkA=-YGG-",
+    "image_height": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImNtIn0=-YGG-mLllLOz3fkA=-YGG-",
+    "resolution": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImNtKiotMSJ9-YGG-16kU2W+IEEA=-YGG-",
+    "scene_mins": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-CwkYTd5ka8Ac++aFHUxCv4PcRVivtHXA-YGG-",
+    "scene_maxs": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-8u7ISG1GbEDPvYdLjgJjQMY0032bfnVA-YGG-"
+}

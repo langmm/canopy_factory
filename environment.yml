@@ -15,6 +15,7 @@ dependencies:
   - pytest
   - pyyaml
   - scipy
+  - yggdrasil-rapidjson
   - yggdrasil
   # yggdrasil dependencies
   - czmq

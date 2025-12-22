@@ -54,9 +54,7 @@
     "InternodeColorFuncVarMax": "AgeRemove",
     "NodeElements": [
         "Cotyledon",
-        "Leaf",
-        "Branch",
-        "Fruit"
+        "Leaf"
     ],
     "LeafMethod": "sweep",
     "LeafNDivide": 10,

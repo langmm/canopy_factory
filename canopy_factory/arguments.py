@@ -2,13 +2,266 @@ import abc
 import copy
 import argparse
 import inspect
+import uuid
+import numpy as np
 from collections import OrderedDict
 from canopy_factory import utils
 from canopy_factory.utils import (
-    cached_property, get_class_registry,
-    RegisteredClassBase, NoDefault
+    units, cached_property, get_class_registry,
+    RegisteredClassBase, NoDefault,
+    SuffixGenerationError,
 )
-# TODO: Move output_suffix into argument description
+
+
+class MissingSourceError(BaseException):
+    r"""Error to raise when source does not exist."""
+
+    def __init__(self, name, value=True):
+        self.value = value
+        super(MissingSourceError, self).__init__(name)
+
+
+class SuffixGenerator(object):
+    r"""Class for generating a suffix from an argument.
+
+    Args:
+        arg (ArgumentDescription, optional): Argument description.
+        value (object, optional): Value to use in the suffix when
+            the argument is set.
+        prefix (str, optional): Prefix to use with value.
+        suffix (str, optional): Suffix to use with value.
+        cond (bool, optional): Condition under which the argument
+            is considered set. If not provided, the boolean value
+            of the argument will be used.
+        noteq (object, optional): Set the cond to when the value
+            is not equal to this.
+        default (object, optional): Value to use when cond is False.
+        title (bool, optional): If True, use title case for the
+            value.
+        conv (callable, optional): Function that should be used to
+            convert the argument value to a string.
+        sep (str, optional): Separator to use between list/array
+            arguments.
+        outputs (list, optional): Outputs that this suffix is valid for.
+        skip_outputs (list, optional): Outputs that this suffix is not
+            valid for.
+        require_all (bool, optional): If True, require that all arguments
+            in a set have values.
+        disabled (bool, optional): If True, the suffix is disabled.
+        index (int, optional): Index that should be used for ordering
+            suffixes.
+
+    """
+
+    def __init__(self, arg=NoDefault, value=NoDefault, prefix=NoDefault,
+                 suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
+                 default=NoDefault, title=NoDefault, conv=NoDefault,
+                 sep='_', outputs=NoDefault,
+                 skip_outputs=NoDefault, require_all=False,
+                 disabled=False, index=0):
+        if prefix is NoDefault:
+            prefix = ''
+        if suffix is NoDefault:
+            suffix = ''
+        if title is NoDefault:
+            title = False
+        if isinstance(outputs, str):
+            outputs = [outputs]
+        if isinstance(skip_outputs, str):
+            skip_outputs = [skip_outputs]
+        assert not (cond is not NoDefault and noteq is not NoDefault)
+        self.arg = arg
+        self.value = value
+        self.prefix = prefix
+        self.suffix = suffix
+        self.cond = cond
+        self.noteq = noteq
+        self.default = default
+        self.title = title
+        self.conv = conv
+        self.sep = sep
+        self.outputs = outputs
+        self.skip_outputs = skip_outputs
+        self.require_all = require_all
+        self.disabled = disabled
+        self.index = index
+        super(SuffixGenerator, self).__init__()
+
+    def is_valid(self, output):
+        r"""Check if the suffix is valid for the provided output(s).
+
+        Args:
+            output (str, list): Name of output(s) to check.
+
+        Returns:
+            bool: True if the suffix is valid, False otherwise.
+
+        """
+        # TODO: For outputs that have a base, don't include suffix
+        #     parameters from base
+        if self.disabled:
+            return False
+        if output is NoDefault:
+            return True
+        if isinstance(output, list):
+            return any(self.is_valid(x) for x in output)
+        if self.outputs is not NoDefault and output not in self.outputs:
+            return False
+        if ((self.skip_outputs is not NoDefault
+             and output in self.skip_outputs)):
+            return False
+        return True
+
+    def _value2str(self, x):
+        if isinstance(x, str):
+            return x
+        if ((isinstance(x, (list, np.ndarray, units.QuantityArray))
+             and self.sep is not NoDefault
+             and not (isinstance(x, units.Quantity)))):
+            return self.sep.join([self._value2str(xx) for xx in x])
+        # Allow precision?
+        # TODO: Handle arithmetic operators
+        if isinstance(x, (float, units.Quantity)):
+            return str(x).replace('.', 'p').replace(' ', '')
+        return str(x)
+
+    def _callable(self, x):
+        return (x is not NoDefault and callable(x))
+
+    def _resolve_callable(self, x, args):
+        if not self._callable(x):
+            return x
+        return x(args)
+
+    def eval_condition(self, value):
+        r"""Evaluate the condition that determines if the suffix should
+        be generated or default (if provided) should be used.
+
+        Args:
+            value (object): Argument value.
+
+        Returns:
+            bool: Value of the evaluated condition. If True, the suffix
+                should be generated from the argument value. If False
+                and a default is provided, the default should be used.
+                If False and a default is not provided, an empty suffix
+                should be returned.
+
+        """
+        if self.noteq is not NoDefault:
+            if self._callable(self.noteq):
+
+                def cond(args):
+                    return (value != self.noteq(args))
+
+            else:
+                cond = (value != self.noteq)
+        else:
+            cond = self.cond
+        if cond is NoDefault:
+            try:
+                cond = bool(value)
+            except ValueError:
+                cond = bool(len(value))
+        return cond
+
+    def __call__(self, *args, **kwargs):
+        return self.generate(*args, **kwargs)
+
+    def generate(self, args, output, wildcards=None,
+                 value=NoDefault, **kwargs):
+        r"""Generate the suffix.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (str): Name of output to generate suffix for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            value (object, optional): Value that should be used instead
+                of the args attribute.
+            **kwargs: Additional keyword arguments are passed to the
+                suffix generator's generate method.
+
+        Returns:
+            str: Generated suffix.
+
+        """
+        if not self.is_valid(output):
+            return ''
+        if wildcards is None:
+            wildcards = []
+        if self.arg.dest in wildcards:
+            return '*'
+        if value is NoDefault:
+            value = self.arg.from_args_for_suffix(
+                args, output, wildcards=wildcards,
+            )
+        return self.value2suffix(
+            value, args, wildcards=wildcards, **kwargs)
+
+    def value2suffix(self, value, args, wildcards=None, force=False):
+        r"""Generate the suffix string for this argument by inspecting
+        args.
+
+        Args:
+            value (object): Argument value.
+            args (argparse.Namespace): Parsed arguments.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            force (bool, optional): If True, force the condition to be
+                True.
+
+        Returns:
+            str: Generated suffix.
+
+        """
+        if self.disabled:
+            return ''
+        if wildcards is None:
+            wildcards = []
+        suffix_value = self._resolve_callable(self.value, args)
+        if suffix_value is NoDefault:
+            suffix_value = value
+        cond = True if force else self.eval_condition(value)
+        cond = self._resolve_callable(cond, args)
+        if not cond:
+            if self.default is NoDefault:
+                return ''
+            suffix_value = self.default
+        if self.conv is not NoDefault:
+            suffix_value = self.conv(suffix_value)
+        suffix_value = self._value2str(suffix_value)
+        if ((any(x in suffix_value for x in ',:[](){};\"\'<>/+ ')
+             or ((not wildcards) and '*' in suffix_value))):
+            raise SuffixGenerationError(
+                f'{self.arg.dest} suffix contains invalid characters: '
+                f'{suffix_value}'
+            )
+        if self.title:
+            suffix_value = suffix_value.title()
+        out = f'{self.prefix}{suffix_value}{self.suffix}'
+        if wildcards:
+            while '**' in out:
+                out = out.replace('**', '*')
+        return out
+
+    def depends(self, output):
+        r"""Determine what arguments this suffix depends on for the
+        provided output.
+
+        Args:
+            output (str): Name of output to check.
+
+        Returns:
+            list: Names of arguments that the suffix depends on.
+
+        """
+        if not self.is_valid(output):
+            return []
+        return [
+            v.dest for v in self.arg.flatten()
+            if (v.dest and v.suffix_generator.is_valid(output))
+        ]
 
 
 class ArgumentDescriptionABC(abc.ABC):
@@ -18,26 +271,56 @@ class ArgumentDescriptionABC(abc.ABC):
         name (str): Argument name.
         ignored (bool, optional): If True, the argument will be set to
             None during adjustment.
+        no_cli (bool, optional): If True, the argument will not be added
+            to parsers.
+        no_dest (bool, optional): If True, the argument does not have a
+            destination.
+        suffix_param (dict, optional): Parameters used to turn the
+            argument into a file suffix.
         **kwargs: Additional keyword arguments are passed to the parent
             class.
 
     """
-    _properties_attributes = ['ignored']  # , 'output_suffix']
-    _properties_lists = []
-    _properties_dicts = []
-    _properties_inherit = ['ignored']
+    _properties_attributes = [
+        'ignored', 'no_cli', 'no_dest', 'suffix_param',
+    ]
+    _properties_lists = [
+        'suffix_outputs', 'suffix_skip_outputs',
+    ]
+    _properties_dicts = [
+        'suffix_param',
+    ]
+    _properties_index = [
+        'suffix_index',
+    ]
+    _properties_inherit = [
+        'ignored', 'no_cli',
+    ]
+    _modifies_name = [
+        'subparser', 'subparser_specific_dest',
+        'strip_classes', 'add_class', 'remove_class',
+    ]
 
-    def __init__(self, name, ignored=False, output_suffix=False,
-                 **kwargs):
+    def __init__(self, name, ignored=False, no_cli=False,
+                 no_dest=False, suffix_param=NoDefault, **kwargs):
         self._name = name
         self._classes = OrderedDict()
         self.ignored = ignored
-        # self._output_suffix = output_suffix
+        self.no_cli = no_cli
+        self.no_dest = no_dest
+        self.suffix_param = suffix_param
+        self.disabled = False
         super(ArgumentDescriptionABC, self).__init__(**kwargs)
 
     def __repr__(self):
         type_str = str(type(self)).split("'")[1]
-        return f'{type_str}({self.name}, dest={self.dest})'
+        out = f'{type_str}('
+        if self.name:
+            out += self.name
+        if self.dest != self.name:
+            out += f', dest={self.dest}'
+        out += ')'
+        return out
 
     @property
     def name(self):
@@ -47,6 +330,8 @@ class ArgumentDescriptionABC(abc.ABC):
     @property
     def dest(self):
         r"""str: Name of variable where the argument will be stored."""
+        if self.no_dest:
+            return None
         return self.name
 
     @property
@@ -69,18 +354,6 @@ class ArgumentDescriptionABC(abc.ABC):
         r"""bool: True if the argument describes an output."""
         return False
 
-    # @property
-    # def output_suffix(self):
-    #     r"""ArgumentSuffix: Suffix generator for this argument."""
-    #     if self._output_suffix is False:
-    #         return None
-    #     kwargs = (
-    #         self._output_suffix if isinstance(self._output_suffix, dict)
-    #         else {}
-    #     )
-    #     assert self.dest is not None
-    #     return ArgumentSuffix(self.dest, arg=self, **kwargs)
-
     def flatten(self, no_root=False):
         r"""Iterate over all basic arguments (non-containers).
 
@@ -98,7 +371,68 @@ class ArgumentDescriptionABC(abc.ABC):
             for x in v.flatten():
                 yield x
 
-    def getnested(self, k, default=NoDefault):
+    def matches(self, solf):
+        r"""Check if this argument matches another in terms of the
+        destination(s).
+
+        Args:
+            solf (ArgumentDescription): Argument to compare this one to.
+
+        Returns:
+            bool: True if solf matches this argument, False otherwise.
+
+        """
+        if type(self) is not type(solf):
+            return False
+        if self.dest is not None:
+            return (self.dest == solf.dest)
+        if len(self.members) != len(solf.members):
+            return False
+        if len(self.members) == 0:
+            return False
+        return all(xself.matches(xsolf)
+                   for xself, xsolf in zip(self.members, solf.members))
+
+    def findnested(self, x, default=NoDefault, check_root=False):
+        r"""Find a member argument that matches the one provided.
+
+        Args:
+            x (ArgumentDescription): Argument to find.
+
+        Returns:
+            ArgumentDescription: Matching member argument.
+
+        """
+        if check_root and self.matches(x):
+            return self
+        for v in self.members:
+            out = v.findnested(x, None, check_root=True)
+            if out is not None:
+                return out
+        if default is not NoDefault:
+            return default
+        raise KeyError(x)
+
+    def hasnested(self, k, check_root=False):
+        r"""Check if an argument is nested inside a member argument set.
+
+        Args:
+            k (str): Key name to find an argument for.
+            check_root (bool, optional): If True, check the root.
+
+        Returns:
+            bool: True if the argument is a nested member, False
+                otherwise.
+
+        """
+        if check_root and self.dest is not None and k == self.dest:
+            return True
+        for v in self.members:
+            if v.hasnested(k, check_root=True):
+                return True
+        return False
+
+    def getnested(self, k, default=NoDefault, check_root=False):
         r"""Retrieve an argument that may be nested inside another
         argument set.
 
@@ -106,15 +440,16 @@ class ArgumentDescriptionABC(abc.ABC):
             k (str): Key name to find an argument for.
             default (object, optional): Value to return if an argument
                 cannot be located.
+            check_root (bool, optional): If True, check the root.
 
         Returns:
             ArgumentDescription: Argument description instance.
 
         """
-        if self.dest is not None and k == self.dest:
+        if check_root and self.dest is not None and k == self.dest:
             return self
         for v in self.members:
-            out = v.getnested(k, None)
+            out = v.getnested(k, None, check_root=True)
             if out is not None:
                 return out
         if default is not NoDefault:
@@ -191,7 +526,44 @@ class ArgumentDescriptionABC(abc.ABC):
                 return True
         return False
 
-    def _modify(self, name, value, src=None):
+    def _get_property(self, name, src=None, from_name=False):
+        if name in self._properties_attributes:
+            return getattr(self, name)
+        if name.startswith('suffix_'):
+            if self.suffix_param is NoDefault:
+                raise MissingSourceError(name, self.generates_suffix)
+            src = self.suffix_param
+            name = name.split('suffix_', maxsplit=1)[-1]
+        if src is None:
+            if name not in self._properties_inherit:
+                assert (from_name and self.dest
+                        and self.hasnested(self.dest))
+                raise MissingSourceError(name, False)
+            raise MissingSourceError(name)
+        return src.get(name, NoDefault)
+
+    def _set_property(self, name, value, src=None, from_name=False):
+        if name in self._properties_attributes:
+            setattr(self, name, value)
+            return
+        is_suffix = False
+        if name.startswith('suffix_'):
+            if self.suffix_param is NoDefault:
+                raise MissingSourceError(name, self.generates_suffix)
+            src = self.suffix_param
+            name = name.split('suffix_', maxsplit=1)[-1]
+            is_suffix = True
+        if src is None:
+            if name not in self._properties_inherit:
+                assert (from_name and self.dest
+                        and self.hasnested(self.dest))
+                raise MissingSourceError(name, False)
+            raise MissingSourceError(name)
+        src[name] = value
+        if is_suffix:  # Force inheritance
+            raise MissingSourceError(f'suffix_{name}')
+
+    def _modify(self, name, value, src=None, from_name=False):
         r"""Modify an argument property.
 
         Args:
@@ -200,6 +572,8 @@ class ArgumentDescriptionABC(abc.ABC):
             value (object): New property value.
             src (dict, optional): Dictionary for properties in
                 self._properties_dicts should be stored.
+            from_name (bool, optional): If True, this modification is
+                name specific.
 
         Returns:
             bool: True if the property should also be passed to child
@@ -217,6 +591,75 @@ class ArgumentDescriptionABC(abc.ABC):
                 for k in list(self._classes.keys()):
                     self.remove_class(k)
                 return False
+        elif name == 'strip_suffix_outputs':
+            if not value:
+                return False
+            if self.suffix_param is not NoDefault:
+                self.suffix_param.pop('outputs', None)
+            return True
+        elif name == 'replace_suffix_outputs':
+            if (not value) or (not self.generates_suffix):
+                return False
+            if self.suffix_param is NoDefault:
+                return True
+            if 'outputs' in self.suffix_param:
+                for k, v in value.items():
+                    if k in self.suffix_param['outputs']:
+                        self.suffix_param['outputs'].remove(k)
+                        self.suffix_param['outputs'] += v
+            if 'skip_outputs' in self.suffix_param:
+                for k, v in value.items():
+                    if k in self.suffix_param['skip_outputs']:
+                        self.suffix_param['skip_outputs'].remove(k)
+                        self.suffix_param['skip_outputs'] += v
+            return True
+        elif name in ['append_suffix_outputs',
+                      'append_suffix_skip_outputs']:
+            if (not value) or (not self.generates_suffix):
+                return False
+            if self.suffix_param is NoDefault:
+                return True
+            outputs = self.suffix_param.get('outputs', NoDefault)
+            skip_outputs = self.suffix_param.get(
+                'skip_outputs', NoDefault)
+            if outputs is NoDefault:
+                outputs = []
+            if skip_outputs is NoDefault:
+                skip_outputs = []
+            if name == 'append_suffix_skip_outputs':
+                dest = skip_outputs
+            else:
+                dest = outputs
+            if isinstance(value, list):
+                dest += [
+                    x for x in value
+                    if x not in outputs + skip_outputs
+                ]
+            else:
+                assert isinstance(value, dict)
+                for k, v in value.items():
+                    if k is None:
+                        dest += [
+                            x for x in v
+                            if x not in outputs + skip_outputs
+                        ]
+                    elif k in skip_outputs:
+                        skip_outputs += [
+                            x for x in v
+                            if x not in outputs + skip_outputs
+                        ]
+                    elif k in outputs:
+                        outputs += [
+                            x for x in v
+                            if x not in outputs + skip_outputs
+                        ]
+            if not outputs:
+                outputs = NoDefault
+            if not skip_outputs:
+                skip_outputs = NoDefault
+            self.suffix_param['outputs'] = outputs
+            self.suffix_param['skip_outputs'] = skip_outputs
+            return True
         elif name == 'add_class':
             self.add_class(value)
             return False
@@ -225,35 +668,75 @@ class ArgumentDescriptionABC(abc.ABC):
             return False
         if name.startswith('append_'):
             name = name.split('append_', maxsplit=1)[-1]
-            assert name in self._properties_lists
+            try:
+                existing = self._get_property(name, src=src,
+                                              from_name=from_name)
+            except MissingSourceError as e:
+                return e.value
             if name in self._properties_lists:
                 if not isinstance(value, list):
                     value = [value]
-                if name in self._properties_attributes:
-                    value = list(getattr(self, name)) + value
-                else:
-                    if src is None:
-                        return True
-                    value = list(src.get(name, [])) + value
+                if existing is NoDefault:
+                    existing = []
+                value = list(existing) + value
             elif name in self._properties_dicts:
                 assert isinstance(value, dict)
-                if name in self._properties_attributes:
-                    value = dict(getattr(self, name), **value)
-                else:
-                    if src is None:
-                        return True
-                    value = dict(src.get(name, {}), **value)
+                if existing is NoDefault:
+                    existing = {}
+                value = dict(existing, **value)
+            else:
+                raise ValueError(f'\"{name}\" is not a list or dict')
+        elif name.startswith('remove_'):
+            name = name.split('remove_', maxsplit=1)[-1]
+            try:
+                existing = self._get_property(name, src=src,
+                                              from_name=from_name)
+            except MissingSourceError as e:
+                return e.value
+            if name in self._properties_lists:
+                if existing is NoDefault:
+                    existing = []
+                value = [x for x in existing if x not in value]
+            elif name in self._properties_dicts:
+                if existing is NoDefault:
+                    existing = {}
+                value = {k: v for k, v in existing.items()
+                         if k not in value}
+            else:
+                raise ValueError(f'\"{name}\" is not a list or dict')
+        elif name.startswith('increment_'):
+            name = name.split('increment_', maxsplit=1)[-1]
+            if name not in self._properties_index:
+                raise ValueError(f'\"{name}\" is not an index')
+            assert isinstance(value, int)
+            if not value:
+                return False
+            try:
+                existing = self._get_property(name, src=src,
+                                              from_name=from_name)
+            except MissingSourceError as e:
+                return e.value
+            if existing is NoDefault:
+                existing = 0
+            value = existing + value
+        elif name.startswith('default_'):
+            name = name.split('default_', maxsplit=1)[-1]
+            try:
+                existing = self._get_property(name, src=src,
+                                              from_name=from_name)
+            except MissingSourceError as e:
+                return e.value
+            if existing is not NoDefault:
+                return True
         if name in self._properties_lists and not isinstance(value, list):
             value = [value]
         if name == 'keys':
             value = tuple(value)
-        if name in self._properties_attributes:
-            setattr(self, name, value)
-        else:
-            if src is None:
-                return True
-            src[name] = value
-        return (name in self._properties_inherit)
+        try:
+            self._set_property(name, value, src=src, from_name=from_name)
+            return (name in self._properties_inherit)
+        except MissingSourceError as e:
+            return e.value
 
     def modify(self, modifications=None, include=None, exclude=None,
                ignore=None, **kwargs):
@@ -271,19 +754,34 @@ class ArgumentDescriptionABC(abc.ABC):
                 member argument properties.
 
         """
+        # Perform modifications that alter name first
+        kwargs_members = {}
+        for k in self._modifies_name:
+            if k in kwargs:
+                v = kwargs.pop(k)
+                if self._modify(k, v):
+                    kwargs_members[k] = v
         name = self.dest
+        kwargs_name = {}
         if name is not None:
             if modifications and name in modifications:
-                kwargs.update(**modifications[name])
-            if include is not None:
-                assert name in include
-            if exclude is not None:
-                assert name not in exclude
+                kwargs_name.update(**modifications[name])
+            if include is not None and name not in include:
+                self.disabled = True
+            if exclude is not None and name in exclude:
+                self.disabled = True
             if ignore is not None and name in ignore:
-                kwargs['ignored'] = True
-        kwargs_members = {}
+                kwargs_name['ignored'] = True
+        elif self.no_dest and self.name:
+            if modifications and self.name in modifications:
+                kwargs_name.update(**modifications[self.name])
+        if self.disabled:
+            return
         for k, v in kwargs.items():
             if self._modify(k, v):
+                kwargs_members[k] = v
+        for k, v in kwargs_name.items():
+            if self._modify(k, v, from_name=True):
                 kwargs_members[k] = v
         for v in self.members:
             v.modify(
@@ -303,7 +801,7 @@ class ArgumentDescriptionABC(abc.ABC):
                 member's add_to_parser methods.
 
         """
-        if self.ignored:
+        if self.ignored or self.no_cli:
             return
         for v in self.members:
             v.add_to_parser(parser, only_subparsers=True, **kwargs)
@@ -372,6 +870,56 @@ class ArgumentDescriptionABC(abc.ABC):
         for v in self.members:
             v.extract_args(args, out=out)
         return out
+
+    @property
+    def generates_suffix(self):
+        r"""bool: True if the argument generates a suffix."""
+        if self.suffix_param is not NoDefault:
+            return True
+        for v in self.members:
+            if v.generates_suffix:
+                return True
+        return False
+
+    @property
+    def suffix_generator(self):
+        r"""SuffixGenerator: Suffix generator."""
+        if self.suffix_param is NoDefault:
+            kws = {'disabled': (not self.generates_suffix)}
+            return SuffixGenerator(self, **kws)
+        return SuffixGenerator(self, **self.suffix_param)
+
+    def generate_suffix(self, *args, **kwargs):
+        r"""Generate the suffix string for this argument by inspecting
+        args.
+
+        Args:
+            *args, **kwargs: Additional arguments are passed to the
+                suffix generator's generate method.
+
+        Returns:
+            str: Generated suffix.
+
+        """
+        return self.suffix_generator.generate(*args, **kwargs)
+
+    def from_args_for_suffix(self, args, output, wildcards=None):
+        r"""Get the argument in a form for generating the suffix.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (str): Name of output to generate suffix for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            object: Argument value.
+
+        """
+        value = self.from_args(args)
+        if isinstance(value, RegisteredArgumentClassBase):
+            value = value._name
+        return value
 
     @abc.abstractmethod
     def from_args(self, args):
@@ -573,9 +1121,18 @@ class ArgumentDescription(ArgumentDescriptionABC):
             'keys', 'choices',
         ]
     )
+    _modifies_name = (
+        ArgumentDescriptionABC._modifies_name + [
+            'dest', 'prefix', 'suffix',
+        ]
+    )
 
     def __init__(self, keys, properties, prefix='', suffix='',
                  description='', universal=False, **kwargs):
+        for k in ArgumentDescriptionABC._properties_attributes:
+            if k in properties:
+                assert k not in kwargs
+                kwargs[k] = properties.pop(k)
         name = properties.get(
             'dest', keys[0].lstrip('--').replace('-', '_'))
         self._keys = keys
@@ -637,6 +1194,10 @@ class ArgumentDescription(ArgumentDescriptionABC):
     @property
     def dest(self):
         r"""str: Name of variable where the argument will be stored."""
+        if self.no_dest:
+            assert 'dest' not in self.properties
+            assert not (self.prefix or self.suffix)
+            return None
         if 'dest' in self.properties:
             return self.properties['dest']
         return self.prefix + self.name + self.suffix
@@ -658,7 +1219,7 @@ class ArgumentDescription(ArgumentDescriptionABC):
     @cached_property
     def default(self):
         r"""object: Argument default."""
-        out = None
+        out = NoDefault
         if self.properties.get('action', None) == 'store_true':
             return False
         elif self.properties.get('action', None) == 'store_false':
@@ -692,7 +1253,7 @@ class ArgumentDescription(ArgumentDescriptionABC):
         return self.get_class_converter_method(self.top_cls,
                                                self.class_converter)
 
-    def _modify(self, name, value):
+    def _modify(self, name, value, src=None, **kwargs):
         if name == 'subparser':
             if self.subparser_specific_dest is True:
                 self.subparser_specific_dest = value
@@ -700,8 +1261,11 @@ class ArgumentDescription(ArgumentDescriptionABC):
         if ((name == 'class_converter'
              and value != self._class_converter_method)):
             self._class_converter_method = None
+            return False
+        if src is None:
+            src = self.properties
         return super(ArgumentDescription, self)._modify(
-            name, value, self.properties)
+            name, value, src=src, **kwargs)
 
     def add_to_parser(self, parser, only_subparsers=False, **kwargs):
         r"""Add this argument to a parser.
@@ -717,7 +1281,7 @@ class ArgumentDescription(ArgumentDescriptionABC):
         """
         super(ArgumentDescription, self).add_to_parser(
             parser, only_subparsers=only_subparsers, **kwargs)
-        if only_subparsers or self.ignored:
+        if only_subparsers or self.ignored or self.no_cli:
             return
         kws = dict(self.properties)
         kws.setdefault('dest', self.dest)
@@ -748,11 +1312,12 @@ class ArgumentDescription(ArgumentDescriptionABC):
             return
         parser.add_argument(*self.keys, **kws)
 
-    def from_args(self, args):
+    def from_args(self, args, default=NoDefault):
         r"""Construct the argument from an argument namespace.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            default (object, optional): Alternate default to use.
 
         Returns:
             object: Argument value.
@@ -760,15 +1325,22 @@ class ArgumentDescription(ArgumentDescriptionABC):
         """
         if self.ignored:
             return None
-        out = getattr(args, self.dest, self.default)
+        out = getattr(args, self.dest, None)
+        if out is None:
+            if default is NoDefault:
+                default = self.default
+            if default is not NoDefault:
+                out = default
         return self.finalize(out, args=args)
 
-    def finalize(self, x, args=None):
+    def finalize(self, x, args=None, **kwargs):
         r"""Finalize an argument.
 
         Args:
             x (object): Argument value to finalize.
             args (argparse.Namespace, optional): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                base method.
 
         Returns:
             object: The finalized instance.
@@ -787,7 +1359,8 @@ class ArgumentDescription(ArgumentDescriptionABC):
                         f'method \"{self.class_converter}\" (top class = '
                         f'{self.top_cls})')
                 x = method(args, x)
-        return super(ArgumentDescription, self).finalize(x, args=args)
+        return super(ArgumentDescription, self).finalize(
+            x, args=args, **kwargs)
 
     def add_class(self, cls, overwrite=False):
         r"""Add a class that uses the argument(s).
@@ -821,6 +1394,8 @@ class SubparserArgumentDescription(ArgumentDescription):
             names and sets of arguments for that subparser.
         using_flag (bool, optional): If True, a standard option argument
             should be used as a switch for the different subparsers.
+        **kwargs: Additional keyword arguments are passed to the parent
+            class.
 
     """
 
@@ -831,7 +1406,7 @@ class SubparserArgumentDescription(ArgumentDescription):
     )
 
     def __init__(self, name, properties, subparser_properties=None,
-                 subparser_arguments=None, using_flag=False):
+                 subparser_arguments=None, using_flag=False, **kwargs):
         keys = (name.replace('_', '-'), )
         if subparser_properties is None:
             subparser_properties = {}
@@ -846,7 +1421,9 @@ class SubparserArgumentDescription(ArgumentDescription):
         for k, v in self.subparser_arguments.items():
             v.modify(subparser=k)
         super(SubparserArgumentDescription, self).__init__(
-            keys, properties)
+            keys, properties, **kwargs)
+        if self.generates_suffix and self.suffix_param is NoDefault:
+            self.suffix_param = {}
 
     @property
     def members(self):
@@ -865,7 +1442,7 @@ class SubparserArgumentDescription(ArgumentDescription):
                 member's add_to_parser methods.
 
         """
-        if self.ignored:
+        if self.ignored or self.no_cli:
             return
         assert 'choices' in self.properties
         if self.using_flag:
@@ -913,6 +1490,40 @@ class SubparserArgumentDescription(ArgumentDescription):
         super(SubparserArgumentDescription, self).adjust_args(
             args, members=members, **kwargs)
 
+    def from_args_for_suffix(self, args, output, wildcards=None):
+        r"""Get the argument in a form for generating the suffix.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (str): Name of output to generate suffix for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            object: Argument value.
+
+        """
+        # subparser = super(SubparserArgumentDescription, self).from_args(
+        #     args)
+        subparser = super(
+            SubparserArgumentDescription, self).from_args_for_suffix(
+                args, output, wildcards=wildcards)
+        assert isinstance(subparser, str)
+        assert subparser in self.subparser_arguments
+        value = [
+            self.suffix_generator.generate(
+                args, output, wildcards=wildcards, value=subparser)
+        ]
+        value_sub = (
+            self.subparser_arguments[subparser].generate_suffix(
+                args, output, wildcards=wildcards)
+        )
+        if isinstance(value_sub, list):
+            value += value_sub
+        else:
+            value.append(value_sub)
+        return [x for x in value if x]
+
     def from_args(self, args, **kwargs):
         r"""Construct the argument from an argument namespace.
 
@@ -925,13 +1536,41 @@ class SubparserArgumentDescription(ArgumentDescription):
             object: Argument value.
 
         """
-        subparser = super(SubparserArgumentDescription,
-                          self).from_args(args)
+        subparser = super(SubparserArgumentDescription, self).from_args(
+            args, default=kwargs.pop('default', NoDefault))
         if ((subparser not in self.subparser_arguments
              or (not self.subparser_arguments[subparser].cls)
              or self.subparser_arguments[subparser].dont_create)):
             return subparser
         return self.subparser_arguments[subparser].from_args(args, **kwargs)
+
+    def prepend(self, x, dont_copy=False, **kwargs):
+        r"""Prepend one or more arguments to each subparser argument set.
+
+        Args:
+            x (ArgumentDescription, tuple, list): Argument to add.
+            dont_copy (bool, optional): If True, don't copy the argument
+                when it is added.
+            **kwargs: Additional keyword arguments will be used to
+                modify a copy of x prior to adding it.
+
+        """
+        for v in self.members:
+            v.prepend(x, dont_copy=dont_copy, **kwargs)
+
+    def append(self, x, dont_copy=False, **kwargs):
+        r"""Append one or more arguments to each subparser argument set.
+
+        Args:
+            x (ArgumentDescription, tuple, list): Argument to add.
+            dont_copy (bool, optional): If True, don't copy the argument
+                when it is added.
+            **kwargs: Additional keyword arguments will be used to
+                modify a copy of x prior to adding it.
+
+        """
+        for v in self.members:
+            v.append(x, dont_copy=dont_copy, **kwargs)
 
 
 class ClassSubparserArgumentDescription(SubparserArgumentDescription):
@@ -956,12 +1595,15 @@ class ClassSubparserArgumentDescription(SubparserArgumentDescription):
         exclude (list, optional): Subset of arguments to remove.
         dont_create (bool, optional): If True, the argument will not be
             created when it is parsed via from_args.
+        **kwargs: Additional keyword arguments are passed to the parent
+            class.
 
     """
 
     def __init__(self, name, properties=None, subparser_properties=None,
                  subparser_arguments=None, modifications=None,
-                 include=None, exclude=None, dont_create=False):
+                 include=None, exclude=None, dont_create=False,
+                 **kwargs):
         if isinstance(name, type):
             base_class = name
             name = base_class._registry_key
@@ -991,7 +1633,7 @@ class ClassSubparserArgumentDescription(SubparserArgumentDescription):
                 subparser_properties[k].setdefault('help', v._help)
         super(ClassSubparserArgumentDescription, self).__init__(
             name, properties, subparser_properties=subparser_properties,
-            subparser_arguments=subparser_arguments)
+            subparser_arguments=subparser_arguments, **kwargs)
         if include is not None:
             include = [self.dest] + include
         self.modify(modifications=modifications,
@@ -1004,15 +1646,21 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
     Args:
         arguments (list, optional): Argument descriptions.
         name (str, optional): Name to give the argument set.
+        no_dest (bool, optional): If True, the argument does not have a
+            destination. Defaults to True for sets.
         dont_create (bool, optional): If True, don't create an instance
             of the argument class containing this argument set during
             calls to from_args.
+        arg_kwargs (dict, optional): Arguments to provided to each
+            argument.
+        suffix_param (dict, optional): Parameters used to turn the
+            argument set into a file suffix.
         prefix (str, optional): Prefix that should be added to the
-            argument name.
+            names of all arguments in the set.
         suffix (str, optional): Suffix that should be added to the
-            argument name.
+            names of all arguments in the set.
         description (str, optional): Description string that should be
-            used to format the help message.
+            used to format the help messages for arguments in the set.
         ignore (list, optional): Subset of arguments to ignore.
         **kwargs: Additional keyword arguments will be passed to the
             parent class constructor in from_args.
@@ -1029,23 +1677,44 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
             'cls_kwargs',
         ]
     )
+    _properties_inherit = (
+        ArgumentDescriptionABC._properties_inherit + [
+            'subparser', 'subparser_specific_dest',
+            'strip_classes',
+            'prefix', 'suffix', 'description', 'universal',
+        ]
+    )
 
-    def __init__(self, arguments=None, name=None, dont_create=False,
-                 **kwargs):
+    def __init__(self, arguments=None, name=None, no_dest=True,
+                 dont_create=False, arg_kwargs=NoDefault,
+                 suffix_param=NoDefault, **kwargs):
         if arguments is None:
             arguments = []
-        arg_kwargs = {
-            k: kwargs.pop(k) for k in [
-                'prefix', 'suffix', 'description', 'ignore'
-            ] if k in kwargs
-        }
+        if arg_kwargs is NoDefault:
+            arg_kwargs = {}
+        for k in ['prefix', 'suffix', 'description', 'ignore']:
+            if k in kwargs:
+                assert k not in arg_kwargs
+                arg_kwargs[k] = kwargs.pop(k)
         self.cls_kwargs = kwargs
         self.dont_create = dont_create
-        super(ArgumentDescriptionSet, self).__init__(name, ordered=True)
+        super(ArgumentDescriptionSet, self).__init__(
+            name, no_dest=no_dest, ordered=True,
+            suffix_param=suffix_param)
         if not isinstance(arguments, list):
             arguments = [arguments]
         for x in arguments:
             self.append(x, **arg_kwargs)
+        if self.generates_suffix and self.suffix_param is NoDefault:
+            self.suffix_param = {}
+
+    def __repr__(self):
+        out = super(ArgumentDescriptionSet, self).__repr__()[:-1]
+        args = ', '.join([f'{k}: {repr(v)}' for k, v in self.items()])
+        if out[-1] != '(':
+            out += ', '
+        out += f'[{args}])'
+        return out
 
     @property
     def members(self):
@@ -1063,26 +1732,58 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
             include (list, optional): Subset of arguments to retain.
                 Other arguments will be removed.
             exclude (list, optional): Subset of arguments to remove.
+            strip_classes (bool, optional: If True, remove the class
+                associated with this set. If 'all', remove the classes
+                associated with this set and all of it's members.
             **kwargs: Additional keyword arguments are used to update
                 individual argument properties.
 
         """
-        remove = set()
-        if isinstance(exclude, list):
-            dests = self.dests
-            remove |= set([dests[k].name for k in exclude if k in dests])
-        if isinstance(include, list):
-            remove |= set([v.name for v in self.values()
-                           if v.dest not in include])
-        for k in remove:
-            del self[k]
         super(ArgumentDescriptionSet, self).modify(
             modifications=modifications, include=include,
             exclude=exclude, **kwargs)
-        if ((kwargs.get('strip_classes')
-             or any(k in kwargs for k in ['subparser', 'add_class',
-                                          'remove_class']))):
+        remove = [
+            k for k, v in self.items()
+            if (v.disabled
+                or (v.dest is None
+                    and isinstance(v, ArgumentDescriptionSet)
+                    and len(v) == 0))
+        ]
+        for k in remove:
+            del self[k]
+        if any(k in kwargs for k in self._modifies_name):
             self.reset_keys()
+
+    def from_args_for_suffix(self, args, output, wildcards=None):
+        r"""Get the argument in a form for generating the suffix.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (str): Name of output to generate suffix for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            object: Argument value.
+
+        """
+        values = OrderedDict()
+        for k, v in self.items():
+            if not v.generates_suffix:
+                continue
+            values[k] = v.generate_suffix(args, output,
+                                          wildcards=wildcards)
+        if not any(values.values()):
+            return ''
+        if not self.suffix_param.get('require_all', False):
+            return [v for v in values.values() if v]
+        if any(values.values()) and not all(values.values()):
+            for k, v in self.items():
+                if values[k]:
+                    continue
+                values[k] = v.generate_suffix(
+                    args, output, wildcards=wildcards, force=True)
+        return list(values.values())
 
     def from_args(self, args, cls=None, **kwargs):
         r"""Construct the argument from an argument namespace.
@@ -1121,35 +1822,160 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         out.append(self)
         return out
 
-    def append(self, x, **kwargs):
-        r"""Add an argument to the argument set.
+    @property
+    def unsplitable(self):
+        r"""bool: True if the set cannot be split."""
+        # TODO: Check other arguments?
+        return (self.name is not None
+                or self.suffix_param is not NoDefault)
+
+    def dest2key(self, dest):
+        r"""Convert an argument destination name to the key used in this
+        set.
 
         Args:
-            x (ArgumentDescription, tuple): Argument to add.
+            dest (str): Argument destination name.
+
+        Returns:
+            str: Argument key.
+
+        """
+        return self.getdest(dest).name
+
+    def key2dest(self, key):
+        r"""Convert a the key for an argument in this set to the
+        destination name.
+
+        Args:
+            key (str): Argument key.
+
+        Returns:
+            str: Argument destination name.
+
+        """
+        return self[key].dest
+
+    def sort_by_suffix(self):
+        r"""Sort the arguments by suffix."""
+        if not self.generates_suffix:
+            return
+
+        def suffix_index(x):
+            k, v = x[:]
+            if not v.generates_suffix:
+                return 10000000000000
+            assert v.suffix_param is not NoDefault
+            return v.suffix_param.get('index', 0)
+
+        items = sorted([(k, v) for k, v in self.items()], key=suffix_index)
+        self.clear()
+        for k, v in items:
+            if v.name is None:
+                self.__setitem__(k, v, dont_add_class=True)
+            else:
+                self.__setitem__(v.name, v, dont_add_class=True)
+
+    def move(self, key, pos):
+        r"""Move an argument to the designated position.
+
+        Args:
+            key (str): Argument key.
+            pos (int): Position that the argument should be moved to.
+
+        """
+        assert pos < len(self) and pos >= 0
+        existing = list(self.keys())[pos:]
+        self.move_to_end(key)
+        for k in existing:
+            if k == key:
+                continue
+            self.move_to_end(k)
+
+    def index(self, key):
+        r"""Find the index of an argument in this set.
+
+        Args:
+            key (str): Argument key.
+
+        Returns:
+            int: Index of key.
+
+        """
+        return list(self.keys()).index(key)
+
+    def insert(self, pos, x, dont_copy=False, **kwargs):
+        r"""Insert one or more arguments into the argument set.
+
+        Args:
+            pos (int): Position at which the new argument(s) should be
+                inserted.
+            x (ArgumentDescription, tuple, list): Argument to add.
+            dont_copy (bool, optional): If True, don't copy the argument
+                when it is appended.
             **kwargs: Additional keyword arguments will be used to
                 modify a copy of x prior to adding it.
 
         """
-        if isinstance(x, ArgumentDescriptionSet) and x.name is None:
-            kwargs.setdefault('strip_classes', True)
+        existing = list(self.keys())[pos:]
+        self.append(x, dont_copy=dont_copy, **kwargs)
+        for k in existing:
+            self.move_to_end(k)
+
+    def prepend(self, x, dont_copy=False, **kwargs):
+        r"""Add an argument to the argument set at the beginning.
+
+        Args:
+            x (ArgumentDescription, tuple, list): Argument to add.
+            dont_copy (bool, optional): If True, don't copy the argument
+                when it is added.
+            **kwargs: Additional keyword arguments will be used to
+                modify a copy of x prior to adding it.
+
+        """
+        existing = list(self.keys())
+        self.append(x, dont_copy=dont_copy, **kwargs)
+        for k in existing:
+            self.move_to_end(k)
+
+    def append(self, x, dont_copy=False, **kwargs):
+        r"""Add an argument to the argument set.
+
+        Args:
+            x (ArgumentDescription, tuple, list): Argument to add.
+            dont_copy (bool, optional): If True, don't copy the argument
+                when it is added.
+            **kwargs: Additional keyword arguments will be used to
+                modify a copy of x prior to adding it.
+
+        """
+        if isinstance(x, ArgumentDescriptionSet) and not x.unsplitable:
+            if not dont_copy:
+                kwargs.setdefault('strip_classes', True)
             for v in x.values():
-                self.append(v, **kwargs)
+                self.append(v, dont_copy=dont_copy, **kwargs)
             return
         elif isinstance(x, ArgumentDescriptionABC):
-            x = x.copy(**kwargs)
+            if not dont_copy:
+                x = x.copy(**kwargs)
+            elif kwargs:
+                x.modify(**kwargs)
         elif isinstance(x, tuple):
             x = ArgumentDescription(*x)
             if kwargs:
                 x.modify(**kwargs)
         elif isinstance(x, list):
             for xx in x:
-                self.append(xx, **kwargs)
+                self.append(xx, dont_copy=dont_copy, **kwargs)
             return
-        self[x.name] = x
+        key = x.name
+        if key is None:
+            key = str(uuid.uuid4())
+        self[key] = x
 
     def __setitem__(self, k, v, dont_add_class=False):
-        if k in self:
-            if self[k] == v:
+        vnested = self.getnested(k, None)
+        if vnested is not None:
+            if vnested == v:
                 return
             raise KeyError(f"Cannot replace argument \"{k}\"")
         if not isinstance(v, ArgumentDescriptionABC):
@@ -1190,24 +2016,6 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         argument."""
         return {v.dest: v for v in self.values()}
 
-    # def getnested(self, k, default=NoDefault):
-    #     r"""Retrieve an argument that may be nested inside another
-    #     argument set.
-
-    #     Args:
-    #         k (str): Key name to find an argument for.
-    #         default (object, optional): Value to return if an argument
-    #             cannot be located.
-
-    #     Returns:
-    #         ArgumentDescription: Argument description instance.
-
-    #     """
-    #     if k in self:
-    #         return self[k]
-    #     return super(ArgumentDescriptionSet, self).getnested(
-    #         k, default=default)
-
     def getkey(self, k, default=NoDefault):
         r"""Retrieve an argument based on a key value.
 
@@ -1220,8 +2028,8 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
             ArgumentDescription: Argument description instance.
 
         """
-        for v in self.values():
-            if k in v.keys:
+        for v in self.flatten():
+            if isinstance(v, ArgumentDescription) and k in v.keys:
                 return v
         if default is not NoDefault:
             return default
@@ -1249,27 +2057,27 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
     def reset_keys(self):
         r"""Reinitialize the member arguments to allow the regeneration
         of argument keys (destination names)."""
-        values = list(self.values())
+        items = list(self.items())
         self.clear()
-        for v in values:
-            self.__setitem__(v.name, v, dont_add_class=True)
+        for k, v in items:
+            if v.name is None:
+                self.__setitem__(k, v, dont_add_class=True)
+            else:
+                self.__setitem__(v.name, v, dont_add_class=True)
 
-    # @property
-    # def output_suffix(self):
-    #     r"""ArgumentSuffix: Suffix generator for this argument."""
-    #     if self._output_suffix is False:
-    #         return None
-    #     assert self.dest is None
-    #     kwargs = (
-    #         self._output_suffix if isinstance(self._output_suffix, dict)
-    #         else {}
-    #     )
-    #     out = ArgumentSetSuffix([], **kwargs)
-    #     for v in self.values():
-    #         vsuffix = v.output_suffix
-    #         if vsuffix:
-    #             out.arguments[vsuffix.name] = vsuffix
-    #     return out
+
+class DimensionArgumentDescription(ArgumentDescriptionSet):
+    r"""A set of arguments that specifies dimensions."""
+
+    def __init__(self, *args, **kwargs):
+        super(DimensionArgumentDescription, self).__init__(
+            *args, **kwargs)
+        if self.generates_suffix:
+            for v in self.values():
+                if v.suffix_param is NoDefault:
+                    v.suffix_param = {}
+            self.suffix_param.setdefault('sep', 'x')
+            self.suffix_param.setdefault('require_all', True)
 
 
 class CompositeArgumentDescription(ArgumentDescriptionSet):
@@ -1298,8 +2106,29 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
         }
         cls = cls_base.class_factory(name, **kwargs_cls)
         super(CompositeArgumentDescription, self).__init__(
-            cls._arguments, name=name, **kwargs)
+            cls._arguments, name=name, no_dest=False, **kwargs)
         self.add_class(cls, overwrite=True)
+
+    def from_args_for_suffix(self, args, output, wildcards=None):
+        r"""Get the argument in a form for generating the suffix.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            output (str): Name of output to generate suffix for.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+
+        Returns:
+            object: Argument value.
+
+        """
+        if wildcards and any(v.dest in wildcards for v in self.values()):
+            return '*'
+        value = self.from_args(args)
+        out = value.string
+        if out is None:
+            return ''
+        return out
 
     @property
     def is_output(self):
@@ -1393,14 +2222,17 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
         if inspect.getmro(cls)[1] == RegisteredClassBase:
             return
         cls._build_arguments(cls)
-        if hasattr(cls, '_output_suffix'):
-            cls._output_suffix.set_arguments(cls._arguments)
+        cls._output_suffix = cls._arguments.suffix_generator
 
     @staticmethod
     def _build_arguments(cls):
         if isinstance(cls._arguments, list):
-            cls._arguments = ArgumentDescriptionSet(cls._arguments)
-        cls._arguments = cls._arguments.copy(strip_classes=True)
+            cls._arguments = ArgumentDescriptionSet(
+                cls._arguments, suffix_param={})
+        cls._arguments = cls._arguments.copy(
+            strip_classes=True,
+            default_suffix_index=0,
+        )
         if cls._name is not None:
             cls._arguments.add_class(cls)
             assert cls._arguments.cls == cls
@@ -1450,6 +2282,22 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
                     setattr(self, k, v)
             else:
                 raise ValueError(self._args_type)
+
+    def setarg(self, name, value):
+        r"""Set an argument value.
+
+        Args:
+            name (str): Argument name.
+            value (object): Argument value.
+
+        """
+        if self._args_type == 'namespace':
+            setattr(self.args, name, value)
+        elif self._args_type == 'dict':
+            self.args[name] = value
+        elif self._args_type == 'attributes':
+            setattr(self, name, value)
+        self.clear_cached_properties()
 
     def getarg(self, name, default=NoDefault):
         r"""Get an argument value.
@@ -1562,29 +2410,6 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
         assert name is None
         return cls._arguments.parse(x, args, **kwargs)
 
-    # def output_suffix(self, args, output, wildcards=None):
-    #     r"""Generate an output suffix from the arguments.
-
-    #     Args:
-    #         args (argparse.Namespace): Parsed arguments.
-    #         output (str): Name of output to generate suffix for.
-    #         wildcards (list, optional): List of arguments that wildcards
-    #             should be used for in the generated output file name.
-
-    #     Returns:
-    #         object: Argument value.
-
-    #     """
-    #     if hasattr(self, '_output_suffix'):
-    #         return self._output_suffix(args, output, wildcards=wildcards)
-    #     generator = self._arguments.output_suffix
-    #     if generator is None:
-    #         if wildcards and self._registry_key in wildcards:
-    #             return '*'
-    #         return self._name
-    #     return self._arguments.output_suffix(
-    #         args, output, wildcards=wildcards)
-
     @property
     def value(self):
         r"""object: Parsed base argument value."""
@@ -1593,25 +2418,10 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
     @property
     def string(self):
         r"""str: String representation of this variable."""
-        out = self.value
-        if isinstance(out, str):
-            return out
+        # out = self.value
+        # if isinstance(out, str):
+        #     return out
         return None
-
-    def string_glob(self, wildcards):
-        r"""Create a string with the provided list of parameters replaced
-        with *.
-
-        Args:
-            wildcards (list): Arguments that should be replaced.
-
-        Returns:
-            str: Glob pattern.
-
-        """
-        if self._registry_key in wildcards:
-            return '*'
-        return self.string
 
 
 class RegisteredArgumentClassKwargsBase(RegisteredArgumentClassBase):

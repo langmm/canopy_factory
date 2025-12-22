@@ -6,11 +6,11 @@ from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_axis, parse_color,
-    get_class_registry, UnitSet, NoDefault,
+    get_class_registry, UnitSet,
     cached_property, readonly_cached_property,
 )
 from canopy_factory.cli import (
-    TaskBase, TimeArgument, OutputArgument, SuffixGenerator,
+    TaskBase, TimeArgument, OutputArgument,
 )
 from canopy_factory.crops import (
     monocot, maize,
@@ -32,17 +32,14 @@ class ParametrizeCropTask(TaskBase):
     ]
     _output_info = {
         'parametrize': {
-            'base_string': '',
             'directory': utils.cfg['directories']['param'],
             'ext': '.json',
             'description': (
                 'parameters used to generate 3D '
                 'representations of a canopy'
             ),
-            'composite_param': ['id', 'data_year'],
         },
         'lpy_model': {
-            'base_string': '',
             'directory': utils.cfg['directories']['lpy'],
             'ext': '.lpy',
             'description': 'LPy L-system rules',
@@ -55,10 +52,20 @@ class ParametrizeCropTask(TaskBase):
             modifications={
                 'id': {
                     'append_choices': ['all'],
+                    'suffix_param': {
+                        'cond': True,
+                        'skip_outputs': ['lpy_model'],
+                    },
                 },
                 'data_year': {
                     'append_choices': ['all'],
+                    'suffix_param': {
+                        'skip_outputs': ['lpy_model'],
+                    },
                 },
+            },
+            suffix_param={
+                'cond': True,
             },
         ),
         (('--debug-param', ), {
@@ -74,11 +81,6 @@ class ParametrizeCropTask(TaskBase):
                      'be enabled for.'),
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('crop', {'cond': True, 'prefix': ''}),
-        ('id', {'cond': True, 'outputs': ['parametrize']}),
-        ('data_year', {'outputs': ['parametrize']}),
-    ])
 
     @staticmethod
     def _on_registration(cls):
@@ -135,23 +137,43 @@ class ParametrizeCropTask(TaskBase):
         self.finalize()
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
-        super(ParametrizeCropTask, cls).adjust_args_internal(args)
+        super(ParametrizeCropTask, cls).adjust_args_internal(args, **kwargs)
+        idstr = args.id
+        if isinstance(idstr, str) and idstr.startswith('all'):
+            idstr = None
+        fdata = None
         if args.data:
-            args.data_year = utils.DataProcessor.from_file(args.data).year
-        elif args.data_year:
+            fdata = utils.DataProcessor.from_file(args.data)
+            args.data_year = fdata.year
+        elif args.data_year and not args.data_year.startswith('all'):
             args.data = utils.DataProcessor.output_name(args.crop,
                                                         args.data_year)
             if not os.path.isfile(args.data):
                 args.data = None
                 args.data_year = None
+            else:
+                fdata = utils.DataProcessor.from_file(args.data)
+        if ((idstr is not None and fdata is not None
+             and idstr not in fdata.ids)):
+            args.data = None
+            args.data_year = None
+        if not args.data_year:
+            years = utils.DataProcessor.available_years(
+                args.crop, id=idstr)
+            if years:
+                args.data_year = years[0]
+                args.data = utils.DataProcessor.output_name(
+                    args.crop, args.data_year)
 
     @cached_property
     def generator_class(self):
@@ -329,97 +351,123 @@ class LayoutTask(TaskBase):
     _name = 'layout'
     _output_info = {
         'layout': {
+            'base_prefix': True,
             'ext': '.png',
             'description': 'a plot of the layout',
         },
     }
     _arguments = [
+        (('--canopy', ), {
+            'choices': ['single', 'tile', 'unique', 'virtual'],
+            'default': 'unique',
+            'help': 'Type of canopy to layout',
+            'suffix_param': {
+                'prefix': 'canopy', 'title': True, 'noteq': 'single',
+            },
+        }),
+        arguments.DimensionArgumentDescription([
+            (('--plot-length', '--row-length'), {
+                'default': 200, 'units': 'cm',
+                'units_arg': 'mesh_units',
+                'help': 'Length of plot rows forming canopy (in cm)',
+            }),
+            (('--plot-width', ), {
+                'units': 'cm',
+                'units_arg': 'mesh_units',
+                'help': (
+                    'Width of plot forming canopy (in cm). If provided '
+                    '\'nrows\' will be determined based on the provided '
+                    '\'row_spacing\'. If not provided, \'plot_width\' '
+                    'will be determined from \'nrows\' and '
+                    '\'row_spacing\'.'
+                ),
+            }),
+        ], name='plot_dimensions'),
+        arguments.DimensionArgumentDescription([
+            (('--row-spacing', ), {
+                'units': 'cm', 'default': 76.2,
+                'units_arg': 'mesh_units',
+                'help': 'Space between adjacent rows in plot (in cm)',
+                'suffix_param': {'noteq': parse_quantity(76.2, 'cm')},
+            }),
+            (('--plant-spacing', '--col-spacing'), {
+                'units': 'cm', 'default': 18.3,
+                'units_arg': 'mesh_units',
+                'help': 'Space between adjacent plants in rows (in cm)',
+                'suffix_param': {'noteq': parse_quantity(18.3, 'cm')},
+            }),
+        ], name='plot_spacing', suffix_param={
+            'cond': lambda x: (x.periodic_canopy or x.canopy != 'single'),
+        }),
+        arguments.DimensionArgumentDescription([
+            (('--nrows', ), {
+                'type': int, 'default': 4,
+                'help': 'Number of rows to generate in plot',
+                'suffix_param': {'noteq': 4},
+            }),
+            (('--ncols', ), {
+                'type': int,
+                'help': 'Number of plants to generate in each row',
+                'suffix_param': {'noteq': 10},
+            }),
+        ], name='plant_count', suffix_param={
+            'cond': lambda x: (x.canopy != 'single'),
+        }),
+        arguments.ArgumentDescriptionSet([
+            (('--periodic-canopy', ), {
+                'nargs': '?', 'const': 'scene', 'default': False,
+                'choices': [False, 'scene', 'rays'],
+                'help': (
+                    'Make the canopy periodic for ray tracing so '
+                    'that is infinitely wide'
+                ),
+                'suffix_param': {
+                    'prefix': 'periodic', 'title': True,
+                },
+            }),
+            (('--periodic-canopy-count', ), {
+                'type': int,
+                'help': (
+                    'Number of times the canopy should be repeated in '
+                    'each direction'
+                ),
+                'suffix_param': {},
+            }),
+        ], name='periodic_canopy_properties', suffix_param={
+            'sep': '',
+            'cond': lambda x: bool(x.periodic_canopy),
+        }),
+        arguments.CompositeArgumentDescription(
+            'location',
+            description=' that the sun should be modeled for',
+            defaults={
+                'location': 'Champaign',
+            },
+            suffix_param={'noteq': 'Champaign'},
+        ),
         arguments.CompositeArgumentDescription(
             'time', description=' that the sun should be modeled for',
             ignore=['age', 'planting_date'],
             optional=True,
+            suffix_param={},
         ),
-        (('--canopy', ), {
-            'choices': ['single', 'tile', 'unique'],
-            'default': 'unique',
-            'help': 'Type of canopy to layout',
-        }),
-        (('--plot-length', '--row-length'), {
-            'default': 200, 'units': 'cm',
-            'units_arg': 'mesh_units',
-            'help': 'Length of plot rows forming canopy (in cm)',
-        }),
-        (('--plot-width', ), {
-            'units': 'cm',
-            'units_arg': 'mesh_units',
-            'help': ('Width of plot forming canopy (in cm). If provided '
-                     '\'nrows\' will be determined based on the provided '
-                     '\'row_spacing\'. If not provided, \'plot_width\' '
-                     'will be determined from \'nrows\' and '
-                     '\'row_spacing\'.'),
-        }),
-        (('--nrows', ), {
-            'type': int, 'default': 4,
-            'help': 'Number of rows to generate in plot',
-        }),
-        (('--ncols', ), {
-            'type': int,
-            'help': 'Number of plants to generate in each row',
-        }),
-        # (('--match-id', ), {
-        #     'type': str, 'nargs': '?', 'const': True,
-        #     'help': ('Match the \"--match-goal\" raytraced value '
-        #              'for this ID by varying the \"--match-vary\" '
-        #              'argument.'),
-        # }),
-        # (('--match-goal', ), {
-        #     'type': str, 'default': 'flux_per_area',
-        #     'help': ('Raytraced property that should be matched to '
-        #              '\"--match-id\" by varying \"--match-vary\" '
-        #              'argument.'),
-        # }),
-        # (('--match-vary', ), {
-        #     'type': str, 'default': 'row_spacing',
-        #     'help': ('Argument that should be varied in order to match '
-        #              'the raytraced property from \"--match-goal\" to '
-        #              '\"--match-id\".'),
-        # }),
-        (('--row-spacing', ), {
-            'units': 'cm', 'default': 76.2,
-            'units_arg': 'mesh_units',
-            'help': 'Space between adjacent rows in plot (in cm)',
-        }),
-        (('--plant-spacing', '--col-spacing'), {
-            'units': 'cm', 'default': 18.3,
-            'units_arg': 'mesh_units',
-            'help': 'Space between adjacent plants in rows (in cm)',
-        }),
-        (('-x', '--x', '--row-offset'), {
-            'units': 'cm', 'default': 0.0,
-            'units_arg': 'mesh_units',
-            'help': ('Starting position in the x direction '
-                     '(perpendicular to rows)'),
-        }),
-        (('-y', '--y', '--plant-offset'), {
-            'units': 'cm', 'default': 0.0,
-            'units_arg': 'mesh_units',
-            'help': ('Starting position in the y direction (along '
-                     'rows)'),
-        }),
+        arguments.DimensionArgumentDescription([
+            (('-x', '--x', '--row-offset'), {
+                'units': 'cm', 'default': 0.0,
+                'units_arg': 'mesh_units',
+                'help': ('Starting position in the x direction '
+                         '(perpendicular to rows)'),
+            }),
+            (('-y', '--y', '--plant-offset'), {
+                'units': 'cm', 'default': 0.0,
+                'units_arg': 'mesh_units',
+                'help': ('Starting position in the y direction (along '
+                         'rows)'),
+            }),
+        ], name='plot_offsets'),
         (('--plantid', ), {
             'type': int, 'default': 0,
             'help': 'Starting plant ID',
-        }),
-        (('--periodic-canopy', ), {
-            'nargs': '?', 'const': 'scene', 'default': False,
-            'choices': [False, 'scene', 'rays'],
-            'help': ('Make the canopy periodic for ray tracing so '
-                     'that is infinitely wide')
-        }),
-        (('--periodic-canopy-count', ), {
-            'type': int,
-            'help': ('Number of times the canopy should be repeated in '
-                     'each direction'),
         }),
         (('--axis-up', ), {
             'type': parse_axis, 'default': 'y',
@@ -445,6 +493,14 @@ class LayoutTask(TaskBase):
             'type': parse_units, 'default': units.Units('cm'),
             'help': 'Units that mesh should be output in',
         }),
+        (('--real-plant-color', ), {
+            'type': parse_color, 'default': 'red',
+            'help': ('Color that should be used for the real plant when '
+                     'a virtual canopy is created. '
+                     'This should be a color string or 3 '
+                     'comma separated RGB values expressed as floats in '
+                     'the range [0, 1]'),
+        }),
         (('--interior-plant-color', ), {
             'type': parse_color, 'default': 'blue',
             'help': ('Color that should be used for interior plants. '
@@ -467,67 +523,19 @@ class LayoutTask(TaskBase):
                      'as floats in the range [0, 1]'),
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('canopy', {
-            'prefix': '_canopy', 'title': True, 'noteq': 'single',
-        }),
-        ('periodic', SuffixGenerator(
-            [
-                ('periodic_canopy_count', {
-                    'value': lambda x: getattr(
-                        x, 'periodic_canopy_count_array', NoDefault),
-                    'sep': 'x',
-                }),
-                ('periodic_canopy', {}),
-            ],
-            cond=lambda x: bool(x.periodic_canopy),
-        )),
-        ('geometry', SuffixGenerator(
-            [
-                (('row_spacing', 'plant_spacing'), {
-                    'kwargs_set': {'sep': 'x'},
-                    'noteq': {
-                        'row_spacing': parse_quantity(76.2, 'cm'),
-                        'plant_spacing': parse_quantity(18.3, 'cm'),
-                    },
-                }),
-                (('nrows', 'ncols'), {
-                    'kwargs_set': {'sep': 'x'},
-                    'noteq': {
-                        'nrows': (
-                            lambda x: (1 if x.canopy == 'single'
-                                       else 4)
-                        ),
-                        'ncols': (
-                            lambda x: (1 if x.canopy == 'single'
-                                       else 10)
-                        ),
-                    },
-                }),
-            ],
-            cond=lambda x: (x.periodic_canopy or x.canopy != 'single'),
-        )),
-        ('time', {'composite': 'time'}),
-    ])
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
-        super(LayoutTask, cls).adjust_args_internal(args)
-        if args.canopy == 'single':
-            args.nrows = 1
-            args.ncols = 1
-            args.plot_width = args.row_spacing
-            args.plot_length = args.plant_spacing
-        else:
-            if args.periodic_canopy_count is None:
-                args.periodic_canopy_count = 2
+        super(LayoutTask, cls).adjust_args_internal(args, **kwargs)
         if args.plot_width is None:
             args.plot_width = args.nrows * args.row_spacing
         if args.plot_length is None:
@@ -538,33 +546,31 @@ class LayoutTask(TaskBase):
         args.axis_east = np.cross(args.axis_north, args.axis_up)
         if args.periodic_canopy is True:
             args.periodic_canopy = 'scene'
-        if args.periodic_canopy:
-            args.periodic_period = np.array([
-                args.nrows * args.row_spacing,
-                args.ncols * args.plant_spacing,
-                0.0
-            ], 'f4')
-            args.periodic_direction = np.vstack([
-                args.axis_rows,
-                args.axis_cols,
-                args.axis_up,
-            ])
-            if args.periodic_canopy_count is None:
-                assert args.canopy == 'single'
-                periodic_canopy_count = 2
-                nrows = 4
-                ncols = 10
-                args.periodic_canopy_count_array = np.array([
-                    periodic_canopy_count * nrows,
-                    periodic_canopy_count * ncols,
-                    0,
-                ], 'i4')
+        if args.canopy == 'single':
+            args.nrows = 1
+            args.ncols = 1
+            args.plot_width = args.row_spacing
+            args.plot_length = args.plant_spacing
+        if args.periodic_canopy_count is None:
+            if args.periodic_canopy:
+                args.periodic_canopy_count = 2
             else:
-                args.periodic_canopy_count_array = np.array([
-                    args.periodic_canopy_count,
-                    args.periodic_canopy_count,
-                    0,
-                ], 'i4')
+                args.periodic_canopy_count = 1
+        args.periodic_period = np.array([
+            args.nrows * args.row_spacing,
+            args.ncols * args.plant_spacing,
+            0.0
+        ], 'f4')
+        args.periodic_direction = np.vstack([
+            args.axis_rows,
+            args.axis_cols,
+            args.axis_up,
+        ])
+        args.periodic_canopy_count_array = np.array([
+            args.periodic_canopy_count,
+            args.periodic_canopy_count,
+            0,
+        ], 'i4')
 
     @cached_property
     def nplants(self):
@@ -593,6 +599,48 @@ class LayoutTask(TaskBase):
             x = x + self.args.row_spacing
         return out
 
+    @classmethod
+    def get_periodic_shifts(cls, period, direction, count,
+                            include_origin=False):
+        r"""Get the shifts that should be applied to plants.
+
+        Args:
+            period (np.ndarray): Length of the period along each
+                direction.
+            direction (np.ndarray): Unit vector for the directions
+                along which the period should be applied.
+            count (np.ndarray): Number of times the period should be
+                repeated in each direction.
+            include_origin (bool, optional): If True, include the origin
+                in the returned shifts.
+
+        Returns:
+            np.ndarray: Shifts in each coordinate that should be applied.
+
+        """
+        import itertools
+        shifts = []
+        opts = []
+        for axis in range(len(count)):
+            if period[axis] == 0:
+                opts.append([0])
+                continue
+            else:
+                opts.append(list(range(-count[axis], count[axis] + 1)))
+        for buffers in itertools.product(*opts):
+            if (not include_origin) and all(ibuffer == 0 for ibuffer
+                                            in buffers):
+                continue
+
+            def _shift(axis):
+                return buffers[axis] * period[axis] * direction[axis, :]
+
+            ishift = _shift(0)
+            for axis in range(1, len(count)):
+                ishift += _shift(axis)
+            shifts.append(ishift)
+        return np.vstack(shifts)
+
     @cached_property
     def nplants_periodic(self):
         r"""int: Number of plants in the periodic canopy buffer."""
@@ -611,11 +659,10 @@ class LayoutTask(TaskBase):
         # TODO: Allow all?
         if not self.args.periodic_canopy:
             return self.args.plant_spacing * np.zeros((0, 3), 'f4')
-        from hothouse.scene import PeriodicScene as Scene
         pos_units0 = self.plant_positions.units
         pos0 = self.plant_positions
         shifts = units.QuantityArray(
-            Scene.get_periodic_shifts(
+            self.get_periodic_shifts(
                 self.args.periodic_period.astype('f4'),
                 self.args.periodic_direction.astype('f4'),
                 self.args.periodic_canopy_count_array,
@@ -765,6 +812,8 @@ class LayoutTask(TaskBase):
         return out
 
     def _get_color(self, plantid):
+        if plantid == 0 and self.args.canopy == 'virtual':
+            return self.args.real_plant_color
         if self.isExteriorPlant(plantid):
             return self.args.exterior_plant_color
         return self.args.interior_plant_color
@@ -944,14 +993,14 @@ class GenerateTask(TaskBase):
     _help = 'Generate a canopy mesh'
     _output_info = {
         'generate': {
-            'base': 'parametrize',
             'description': 'mesh',
             'upstream': ['parametrize', 'lpy_model'],
             'merge_all': 'all_combined',
         },
         'geometryids': {
             'ext': '.csv',
-            'base': 'generate',
+            'base_output': 'generate',
+            'base_suffix': True,
             'description': (
                 'the IDs of the plant/component each face '
                 'belongs to'
@@ -960,18 +1009,6 @@ class GenerateTask(TaskBase):
         },
     }
     _external_tasks = {
-        LayoutTask: {
-            'include': [
-                'canopy', 'plot_length', 'plot_width',
-                'nrows', 'ncols', 'row_spacing', 'plant_spacing',
-                'x', 'y', 'plantid', 'periodic_canopy',
-                'periodic_canopy_count', 'mesh_units',
-            ],
-            'modifications': {
-                'canopy': {'default': 'single'},
-            },
-            'optional': True,
-        },
         ParametrizeCropTask: {
             'include': [
                 'crop', 'id', 'data', 'data_year',
@@ -986,11 +1023,29 @@ class GenerateTask(TaskBase):
                 },
             },
         },
+        LayoutTask: {
+            'include': [
+                'canopy', 'plot_length', 'plot_width',
+                'nrows', 'ncols', 'row_spacing', 'plant_spacing',
+                'x', 'y', 'plantid', 'mesh_units',
+            ],
+            'modifications': {
+                'canopy': {
+                    'default': 'single',
+                    'remove_choices': ['virtual'],
+                },
+                'plantid': {
+                    'suffix_param': {'cond': lambda x: (x.plantid > 0)},
+                },
+            },
+            'optional': True,
+        },
     }
     _arguments = [
         arguments.CompositeArgumentDescription(
             'age', description=' to generate model for',
             ignore=['planting_date'],
+            suffix_param={'noteq': 'maturity'},
         ),
         arguments.CompositeArgumentDescription(
             'color', description=(
@@ -1000,6 +1055,7 @@ class GenerateTask(TaskBase):
                 'the blue channel to the plant ID.'
             ),
             optional=True,
+            suffix_param={'noteq': None},
         ),
         # (('--derivation-length', ), {
         #     'type': int,
@@ -1022,28 +1078,7 @@ class GenerateTask(TaskBase):
             'action': 'store_true',
             'help': 'Enable debug messages within the lpy model',
         }),
-        # (('--animate', ), {
-        #     'action': 'store_true',
-        #     'help': 'Generate a geometry for each iteration',
-        # }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('geometryids', SuffixGenerator([
-            ('output', {'outputs': ['geometryids']}),
-        ])),
-        ('generate', SuffixGenerator(
-            [
-                (k, v) for k, v in
-                LayoutTask._output_suffix.arguments.items()
-                if k not in ['periodic', 'time']
-            ] + [
-                ('age', {'noteq': 'maturity'}),
-                ('color', {'noteq': None}),
-                ('plantid', {'cond': lambda x: (x.plantid > 0)}),
-            ],
-            outputs=['generate'],
-        )),
-    ])
 
     @classmethod
     def mesh_generated(cls, args):
@@ -1072,25 +1107,34 @@ class GenerateTask(TaskBase):
             list: All crop classes for current arguments.
 
         """
-        if not (cls.mesh_generated(args) and args.data):
+        if not cls.mesh_generated(args):
             return []
-        return utils.DataProcessor.from_file(args.data).ids
+        if args.data:
+            return utils.DataProcessor.from_file(args.data).ids
+        elif args.data_year:
+            data = utils.DataProcessor.output_name(args.crop,
+                                                   args.data_year)
+            if os.path.isfile(data):
+                return utils.DataProcessor.from_file(data).ids
+        return []
 
     @classmethod
-    def base_id_class(cls, args):
-        r"""Determine the base ID for the provided args.
+    def base_param_class(cls, args):
+        r"""Determine the base parameters for the provided args.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
 
         Returns:
-            str: Base ID.
+            dict: Base parameters.
 
         """
-        ids = cls.all_ids_class(args)
-        if not ids:
-            return None
-        return ids[0]
+        years = utils.DataProcessor.available_years(args.crop)
+        if not years:
+            return {'id': None, 'data_year': None}
+        ids = utils.DataProcessor.available_ids(args.crop, year=years[0])
+        assert ids
+        return {'id': ids[0], 'data_year': years[0]}
 
     @classmethod
     def _read_output(cls, args, name, fname):
@@ -1137,12 +1181,14 @@ class GenerateTask(TaskBase):
         super(GenerateTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
         args.save_all_plantids = False
@@ -1151,7 +1197,7 @@ class GenerateTask(TaskBase):
         if args.plantid > 0 and not args.save_all_plantids:
             args.dont_write_generate = True
             args.dont_write_geometryids = True
-        super(GenerateTask, cls).adjust_args_internal(args)
+        super(GenerateTask, cls).adjust_args_internal(args, **kwargs)
 
     @classmethod
     def _output_ext(cls, args, name, wildcards=None):

@@ -3892,6 +3892,7 @@ class WhorlComponent(SimplePlantParameter):
                     if x in self.root._components]
         out = []
         for element in elements:
+            assert element in self.root._components
             args = self.root.parameters[element].lsystem_args(for_rule=True)
             out += [
                 f'for w in range(generator.{element}WMax()):',
@@ -3910,9 +3911,7 @@ class NodeComponent(WhorlComponent):
     r"""Node component."""
 
     _name = 'Node'
-    _properties = {}
-    _required = []
-    _constants = {'Elements': ['Cotyledon', 'Leaf', 'Branch', 'Fruit']}
+    _defaults = {'Elements': ['Cotyledon', 'Leaf', 'Branch', 'Fruit']}
 
 
 class LeafComponent(GeometricComponentBase):
@@ -4311,54 +4310,29 @@ class PlantGenerator(ParameterCollection):
         r"""str: Crop class."""
         return self.get("id")
 
-    @classmethod
-    def add_arguments(cls, parser, **kwargs):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            **kwargs: Additional keyword arguments are passed to parent
-                method.
-
-        """
-        super(PlantGenerator, cls).add_arguments(parser, **kwargs)
-        if not kwargs.get('only_subparser', False):
-            cls._add_ids_from_file(parser)
-
-    @classmethod
-    def _add_ids_from_file(cls, parser):
+    @staticmethod
+    def _add_parameter_arguments(cls, dst, **kws):
+        PlantParameterBase._add_parameter_arguments(cls, dst, **kws)
         if not cls._name:
             return
-        vparser = parser.get_subparser('crop', cls._name)
         ids = DataProcessor.available_ids(cls._name)
         if ids:
-            ids_action = vparser.find_argument('id')
-            ids_action.choices = (
-                ids + ids_action.choices if ids_action.choices
-                else ids
-            )
+            mods = {'append_choices': ids}
             if 'id' in cls._defaults:
                 assert cls._defaults['id'] in ids
-                ids_action.default = cls._defaults['id']
+                mods['default'] = cls._defaults['id']
             else:
-                ids_action.default = ids[0]
+                mods['default'] = ids[0]
+            dst._arguments['id'].modify(**mods)
         years = DataProcessor.available_years(cls._name)
         if years:
-            years_action = vparser.find_argument('data_year')
-            years_action.choices = (
-                years + years_action.choices if years_action.choices
-                else years
-            )
+            mods = {'append_choices': years}
             if 'data_year' in cls._defaults:
                 assert cls._defaults['data_year'] in years
-                years_action.default = cls._defaults['data_year']
+                mods['default'] = cls._defaults['data_year']
             else:
-                years_action.default = years[0]
-
-        available = set()
-        for action in vparser._actions:
-            available |= set(action.option_strings + [action.dest])
+                mods['default'] = years[0]
+            dst._arguments['data_year'].modify(**mods)
 
     @property
     def lsystem(self):

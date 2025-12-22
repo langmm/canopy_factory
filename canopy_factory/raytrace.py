@@ -19,7 +19,7 @@ from canopy_factory.utils import (
 )
 from canopy_factory.cli import (
     TaskBase, TemporalTaskBase,
-    OptimizationTaskBase, SuffixGenerator,
+    OptimizationTaskBase,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
 from canopy_factory import light_sources
@@ -85,6 +85,38 @@ def generate_rays(ray_origins, ray_directions,
     return mesh
 
 
+class SceneModel(RegisteredClassBase):
+    r"""Container for scene properties.
+
+    Args:
+        mins (np.ndarray): Minimum bounds of scene in each dimension.
+        maxs (np.ndarray): Maximum bounds of scene in each dimension.
+
+    """
+
+    def __init__(self, mins, maxs):
+        self.mins = mins
+        self.maxs = maxs
+
+    @cached_property
+    def limits(self):
+        r"""np.ndarray: Corners of a box containing the scene."""
+        limits = np.vstack([self.mins, self.maxs])
+        xx, yy, zz = np.meshgrid(limits[:, 0], limits[:, 1], limits[:, 2])
+        out = np.vstack([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        return out
+
+    @cached_args_property
+    def center(self):
+        r"""np.ndarray: Coordinates of the scene's center."""
+        return (self.maxs + self.mins) / 2
+
+    @cached_args_property
+    def dim(self):
+        r"""np.ndarray: Scene's dimensions in each direction."""
+        return (self.maxs - self.mins)
+
+
 class RayTracerBase(RegisteredClassBase):
     r"""Base class for ray tracers."""
 
@@ -114,6 +146,24 @@ class RayTracerBase(RegisteredClassBase):
         self.log(f'Creating scene with up = {self.up}, '
                  f'north = {self.north}, '
                  f'east = {self.east}, ground = {self.ground}')
+
+    @cached_property
+    def periodic_canopy(self):
+        r"""str: Periodic canopy type."""
+        if self.args.virtual_canopy and not self.args.periodic_canopy:
+            return 'scene'
+        return self.args.periodic_canopy
+
+    @cached_property
+    def periodic_canopy_count_array(self):
+        r"""np.ndarray: Array specifying how many times the canopy
+        should be replicated in each direction."""
+        out = self.args.periodic_canopy_count_array
+        if self.args.virtual_canopy:
+            out = copy.deepcopy(out)
+            out[0] *= self.args.virtual_nrows
+            out[1] *= self.args.virtual_ncols
+        return out
 
     @cached_property
     def geometryid_order(self):
@@ -332,47 +382,59 @@ class RayTracerBase(RegisteredClassBase):
         return np.cross(self.north, self.up)
 
     @cached_args_property
-    def scene_mins(self):
-        r"""np.ndarray: Minimum scene vertices in each dimension."""
+    def virtual_shifts(self):
+        r"""np.ndarray: Shifts for positions of virtual plants."""
+        if not self.args.virtual_canopy:
+            return None
+        return LayoutTask.get_periodic_shifts(
+            self.args.periodic_period,
+            self.args.periodic_direction,
+            np.array([
+                self.args.virtual_nrows,
+                self.args.virtual_ncols,
+                0
+            ], 'i4'),
+            include_origin=True,
+        )
+
+    @cached_args_property
+    def real_scene_model(self):
+        r"""SceneModel: Scene properties."""
+        mins = None
+        maxs = None
         if getattr(self.args, 'scene_mins', None) is not None:
-            return self.args.scene_mins
-        if self.mesh_dict['vertex'].shape[0] == 0:
-            return np.zeros((3, ), dtype=self.mesh_dict['vertex'].dtype)
-        return self.mesh_dict['vertex'].min(axis=0)
-
-    @cached_args_property
-    def scene_maxs(self):
-        r"""np.ndarray: Maximum scene vertices in each dimension."""
+            mins = self.args.scene_mins
+        elif self.mesh_dict['vertex'].shape[0] == 0:
+            mins = np.zeros((3, ), dtype=self.mesh_dict['vertex'].dtype)
+        else:
+            mins = self.mesh_dict['vertex'].min(axis=0)
         if getattr(self.args, 'scene_maxs', None) is not None:
-            return self.args.scene_maxs
-        if self.mesh_dict['vertex'].shape[0] == 0:
-            return np.zeros((3, ), dtype=self.mesh_dict['vertex'].dtype)
-        return self.mesh_dict['vertex'].max(axis=0)
+            maxs = self.args.scene_maxs
+        elif self.mesh_dict['vertex'].shape[0] == 0:
+            maxs = np.zeros((3, ), dtype=self.mesh_dict['vertex'].dtype)
+        else:
+            maxs = self.mesh_dict['vertex'].max(axis=0)
+        return SceneModel(mins, maxs)
 
     @cached_args_property
-    def scene_limits(self):
-        r"""np.ndarray: Corners of a box containing the scene."""
-        limits = np.vstack([self.scene_mins, self.scene_maxs])
-        xx, yy, zz = np.meshgrid(limits[:, 0], limits[:, 1], limits[:, 2])
-        out = np.vstack([xx.flatten(), yy.flatten(), zz.flatten()]).T
-        return out
-
-    @cached_args_property
-    def scene_center(self):
-        r"""np.ndarray: Coordinates of the scene's center."""
-        return (self.scene_maxs + self.scene_mins) / 2
-
-    @cached_args_property
-    def scene_dim(self):
-        r"""np.ndarray: Scene's dimensions in each direction."""
-        return (self.scene_maxs - self.scene_mins)
+    def virtual_scene_model(self):
+        r"""SceneModel: Virtual scene properties."""
+        if not self.args.virtual_canopy:
+            return self.real_scene_model
+        mins = self.real_scene_model.mins
+        maxs = self.real_scene_model.maxs
+        if getattr(self.args, 'scene_mins', None) is None:
+            mins = (mins + self.virtual_shifts).min(axis=0)
+        if getattr(self.args, 'scene_maxs', None) is None:
+            maxs = (maxs + self.virtual_shifts).max(axis=0)
+        return SceneModel(mins, maxs)
 
     @cached_args_property
     def ground(self):
-        r"""np.ndarray: """
+        r"""np.ndarray: Coordinates of the scene center on the ground."""
         return (
-            np.dot(self.scene_dim / 2, self.north) * self.north
-            + np.dot(self.scene_dim / 2, self.east) * self.east
+            np.dot(self.real_scene_model.dim / 2, self.north) * self.north
+            + np.dot(self.real_scene_model.dim / 2, self.east) * self.east
             + self.args.ground_height.value * self.up
         )
 
@@ -400,7 +462,7 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.camera_location is None:
             out = self.parse_axis('downsoutheast')
         else:
-            out = self.scene_center - self.camera_location
+            out = self.virtual_scene_model.center - self.camera_location
         out /= np.linalg.norm(out)
         return out
 
@@ -415,14 +477,14 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.camera_location is not None:
             return self.parse_axis(self.args.camera_location)
         fov_width = np.max(np.abs(np.dot(
-            self.scene_limits - self.scene_center,
+            self.virtual_scene_model.limits - self.virtual_scene_model.center,
             self.camera_right)))
         camera_distance = np.abs(
             fov_width / np.tan(self.args.camera_fov_width / 2.0))
         if camera_distance < self.clipping_distance.value:
             camera_distance = self.clipping_distance.value
         out = (
-            self.scene_center
+            self.virtual_scene_model.center
             - (camera_distance * self.camera_direction)
         )
         if isinstance(out, units.QuantityArray) and out.is_dimensionless():
@@ -433,7 +495,8 @@ class RayTracerBase(RegisteredClassBase):
     def camera_distance(self):
         r"""float: Distance between the camera and the scene scenter."""
         return units.Quantity(
-            np.linalg.norm(self.scene_center - self.camera_location),
+            np.linalg.norm(
+                self.virtual_scene_model.center - self.camera_location),
             self.args.mesh_units)
 
     @cached_args_property
@@ -469,13 +532,13 @@ class RayTracerBase(RegisteredClassBase):
         r"""np.ndarray: Scene dimensions parallel to the image plant."""
         return np.array([
             2 * np.max(np.abs(np.dot(
-                self.scene_limits - self.camera_location,
+                self.virtual_scene_model.limits - self.camera_location,
                 self.camera_right))),
             2 * np.max(np.abs(np.dot(
-                self.scene_limits - self.camera_location,
+                self.virtual_scene_model.limits - self.camera_location,
                 self.camera_up))),
             2 * np.max(np.abs(np.dot(
-                self.scene_limits - self.camera_location,
+                self.virtual_scene_model.limits - self.camera_location,
                 self.camera_direction))),
         ])
 
@@ -485,7 +548,8 @@ class RayTracerBase(RegisteredClassBase):
         center along the camera line-of-sight."""
         return units.Quantity(
             np.max(np.abs(np.dot(
-                self.scene_limits - self.scene_center,
+                self.virtual_scene_model.limits
+                - self.virtual_scene_model.center,
                 self.camera_direction))),
             self.args.mesh_units)
 
@@ -631,12 +695,12 @@ class HothouseRayTracer(RayTracerBase):
         r"""hothouse.scene.Scene: Scene containing geometry."""
         from hothouse.plant_model import PlantModel
         kws = {}
-        if self.args.periodic_canopy == 'scene':
+        if self.periodic_canopy == 'scene':
             from hothouse.scene import PeriodicScene as Scene
             kws.update(
                 period=self.args.periodic_period.astype('f4'),
                 direction=self.args.periodic_direction.astype('f4'),
-                count=self.args.periodic_canopy_count_array,
+                count=self.periodic_canopy_count_array,
             )
         else:
             from hothouse.scene import Scene
@@ -696,7 +760,7 @@ class HothouseRayTracer(RayTracerBase):
     def point_source_blaster(self):
         r"""hothouse.blaster.SolarBlaster: Blaster for a point source."""
         from hothouse.blaster import SphericalRayBlaster
-        assert self.args.periodic_canopy != 'rays'
+        assert self.periodic_canopy != 'rays'
         direct_ppfd = self.args.light_intensity_direct
         diffuse_ppfd = self.args.light_intensity_diffuse
         self.log(f"Total PPFD"
@@ -730,18 +794,18 @@ class HothouseRayTracer(RayTracerBase):
                  f"\n   diffuse = {self.solar_model.ppfd_diffuse}",
                  force=True)
         kws = {}
-        if self.args.periodic_canopy == 'rays':
+        if self.periodic_canopy == 'rays':
             kws.update(
                 period=self.args.periodic_period.astype('f4'),
                 periodic_direction=self.args.periodic_direction.astype('f4'),
-                periodic_count=self.args.periodic_canopy_count_array,
+                periodic_count=self.periodic_canopy_count_array,
             )
         return self.scene.get_sun_blaster(
             self.solar_model.latitude.value,
             self.solar_model.longitude.value,
             self.solar_model.time,
-            direct_ppfd=self.solar_model.ppfd_direct,
-            diffuse_ppfd=self.solar_model.ppfd_diffuse,
+            direct_ppfd=self.solar_model.ppfd_direct.value[0],
+            diffuse_ppfd=self.solar_model.ppfd_diffuse.value[0],
             solar_altitude=self.solar_model.apparent_elevation,
             solar_azimuth=self.solar_model.azimuth,
             nx=self.args.nrays, ny=self.args.nrays,
@@ -872,20 +936,18 @@ class RayTraceTask(TaskBase):
     _name = 'raytrace'
     _output_info = {
         'raytrace': {
-            'base': 'generate',
+            'upstream': ['generate'],
             'ext': '.csv',
             'description': (
                 'the query values for each face in the mesh'
             ),
         },
         'raytrace_limits': {
-            'base': 'raytrace',
             'ext': '.json',
             'description': 'limits on raytrace query values',
             'optional': True,
         },
         'traced_mesh': {
-            'base': 'raytrace',
             'description': (
                 'the mesh with faces colored by a ray tracer result'
             ),
@@ -915,14 +977,74 @@ class RayTraceTask(TaskBase):
                 },
                 'canopy': {
                     'default': 'unique',
+                    'append_choices': ['virtual'],
                 },
             }
         },
+        LayoutTask: {
+            'include': [
+                'periodic_canopy', 'periodic_canopy_count',
+            ],
+            'optional': True,
+            'suffix_index': -1,
+        },
     }
+    _virtual_argument_names = [
+        'canopy', 'row_spacing', 'plant_spacing',
+        'nrows', 'ncols', 'plot_length', 'plot_width',
+    ]
     _arguments = [
-        GenerateTask._arguments['crop'].copy(remove_class='task'),
+        # GenerateTask._arguments['crop'].copy(remove_class='task'),
+        arguments.ArgumentDescriptionSet([
+            (('--virtual-canopy', ), {
+                'no_cli': True,
+                'suffix_param': {'prefix': 'canopy', 'title': True},
+            }),
+            arguments.ArgumentDescriptionSet([
+                (('--virtual-plot-length', ), {
+                    'no_cli': True,
+                }),
+                (('--virtual-plot-width', ), {
+                    'no_cli': True,
+                }),
+            ], name='virtual_plot_dimensions'),
+            arguments.ArgumentDescriptionSet([
+                (('--virtual-row-spacing', ), {
+                    'no_cli': True,
+                    'suffix_param': {
+                        'noteq': parse_quantity(76.2, 'cm'),
+                    },
+                }),
+                (('--virtual-plant-spacing', ), {
+                    'no_cli': True,
+                    'suffix_param': {
+                        'noteq': parse_quantity(18.3, 'cm'),
+                    },
+                }),
+            ], name='virtual_plant_spacing', suffix_param={
+                'sep': 'x',
+                'require_all': True,
+            }),
+            arguments.ArgumentDescriptionSet([
+                (('--virtual-nrows', ), {
+                    'no_cli': True,
+                    'suffix_param': {'noteq': 4},
+                }),
+                (('--virtual-ncols', ), {
+                    'no_cli': True,
+                    'suffix_param': {'noteq': 10},
+                }),
+            ], name='virtual_plant_count', suffix_param={
+                'sep': 'x',
+                'require_all': True,
+            }),
+        ], name='virtual_canopy_properties', suffix_param={
+            'cond': lambda x: bool(getattr(x, 'virtual_canopy', None)),
+            'index': -1,
+        }),
         arguments.ClassSubparserArgumentDescription(
             'light_source',
+            suffix_param={'noteq': 'sun'},
         ),
         arguments.CompositeArgumentDescription(
             'ray_color', 'color',
@@ -948,6 +1070,7 @@ class RayTraceTask(TaskBase):
             'type': str, 'default': 'hothouse',
             'choices': list(get_class_registry().keys('raytracer')),
             'help': 'Name of the ray tracer that should be used.',
+            'suffix_param': {'noteq': 'hothouse'},
         }),
         (('--separate-plants', ), {
             'action': 'store_true',
@@ -962,6 +1085,13 @@ class RayTraceTask(TaskBase):
             'type': int, 'default': 512,
             'help': ('Number of rays that should be cast along each '
                      'dimension'),
+            'suffix_param': {'cond': True},
+        }),
+        (('--multibounce', ), {
+            'action': 'store_true',
+            'help': ('Include multiple bounces when performing the '
+                     'trace.'),
+            'suffix_param': {'value': 'multibounce'},
         }),
         (('--any-direction', ), {
             'action': 'store_true',
@@ -969,11 +1099,7 @@ class RayTraceTask(TaskBase):
                      'from any direction relative to the surface. If '
                      'not set, only ray intercepting a surface from '
                      'the \"top\" will be counted.'),
-        }),
-        (('--multibounce', ), {
-            'action': 'store_true',
-            'help': ('Include multiple bounces when performing the '
-                     'trace.'),
+            'suffix_param': {'value': 'anydirection'},
         }),
         (('--query', ), {
             'type': str, 'choices': _query_options,
@@ -988,17 +1114,30 @@ class RayTraceTask(TaskBase):
                      '\"plantids\" uses the IDs of the plant each face '
                      'belongs to, and \"componentids\" uses the IDs '
                      'of the plant architecture component.'),
+            'suffix_param': {
+                'cond': True,
+                'skip_outputs': ['raytrace', 'raytrace_limits'],
+            },
         }),
         (('--show-rays', ), {
             'action': "store_true",
             'help': ('Show the rays in the generated mesh if '
                      '"--output-traced-mesh" is passed.'),
+            'suffix_param': {
+                'value': 'rays',
+                'skip_outputs': ['raytrace', 'raytrace_limits'],
+            },
         }),
         (('--highlight', ), {
             'type': str, 'choices': ['min', 'max'],
             'help': ('Highlight the face with the \"min\" or \"max\" '
                      'query value in the resulting (only valid if '
                      '"--output-traced-mesh" is passed).'),
+            'suffix_param': {
+                'prefix': 'highlight',
+                'title': True,
+                'skip_outputs': ['raytrace', 'raytrace_limits'],
+            },
         }),
         (('--ray-width', ), {
             'default': 1.0, 'units': 'cm',
@@ -1018,59 +1157,17 @@ class RayTraceTask(TaskBase):
             'help': ('Width of arrows of rays drawn when "--show-rays" '
                      'is passed.'),
         }),
-        (('--colormap', ), {
-            'type': str, 'default': 'YlGn_r',
-            'help': ('Name of the matplotlib color map that should be '
-                     'used to map query values for each face to colors '
-                     'if "--output-traced-mesh" is passed'),
-            'subparser_specific_dest': True,
-        }),
-        (('--color-vmin', ), {
-            'type': parse_quantity,
-            'help': ('Query value that should be mapped to the lowest '
-                     'value for the colormap if "--output-traced-mesh" '
-                     'is passed'),
-            'subparser_specific_dest': True,
-        }),
-        (('--color-vmax', ), {
-            'type': parse_quantity,
-            'help': ('Query value that should be mapped to the highest '
-                     'value for the colormap if "--output-traced-mesh" '
-                     'is passed'),
-            'subparser_specific_dest': True,
-        }),
-        (('--colormap-scaling', ), {
-            'type': str, 'choices': ['linear', 'log'],
-            'default': 'linear',
-            'help': ('Scaling that should be used to map query values '
-                     'to colors in the color map if '
-                     '"--output-traced-mesh" is passed'),
-            'subparser_specific_dest': True,
-        }),
+        arguments.CompositeArgumentDescription(
+            'traced_mesh_colormap', 'colormap',
+            description=(
+                'that should be used for query values '
+                'if "--output-traced-mesh" is passed'
+            ),
+            defaults={
+                'colormap': 'YlGn_r',
+            },
+        ),
     ]
-    _output_suffix = SuffixGenerator([
-        ('traced_mesh', SuffixGenerator(
-            [
-                ('query', {'cond': True}),
-                ('show_rays', {'value': 'rays'}),
-                ('highlight', {'prefix': '_highlight', 'title': True}),
-            ],
-            outputs=['traced_mesh'],
-        )),
-        ('raytrace', SuffixGenerator(
-            [
-                ('location', {'composite': 'location'}),
-                ('time', {'composite': 'time'}),
-                ('light_source', {'noteq': 'sun'}),
-                ('nrays', {'cond': True}),
-                ('multibounce', {'value': 'multibounce'}),
-                ('any_direction', {'value': 'anydirection'}),
-                ('periodic',
-                 LayoutTask._output_suffix.arguments['periodic'])
-            ],
-            outputs=['raytrace'],
-        )),
-    ])
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -1108,6 +1205,9 @@ class RayTraceTask(TaskBase):
         r"""units.Quantity: Area that the scene covers."""
         if self.args.canopy != 'single':
             return self.args.plot_width * self.args.plot_length
+        if self.args.virtual_canopy:
+            return (self.args.virtual_plot_width
+                    * self.args.virtual_plot_length)
         assert self.args.periodic_canopy
         return self.args.row_spacing * self.args.plant_spacing
 
@@ -1132,18 +1232,35 @@ class RayTraceTask(TaskBase):
         return self.geometryids['plantids']
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, skip=None, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            skip (list, optional): Set of arguments to skip.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
+        if skip is None:
+            skip = []
         args.include_units = True
         if not GenerateTask.mesh_generated(args):
             args.periodic_canopy = False
-        super(RayTraceTask, cls).adjust_args_internal(args)
+            args.virtual_canopy = False
+            args.canopy = 'external'
+        LayoutTask.adjust_args_internal(
+            args, skip=(skip + ['time', 'location']))
+        for k in cls._virtual_argument_names:
+            cls._arguments.getnested(f'virtual_{k}').adjust_args(
+                args, default=getattr(args, k, None))
+        if args.canopy == 'virtual':
+            args.canopy = 'single'
+        elif args.virtual_canopy != 'virtual':
+            args.virtual_canopy = False
+        super(RayTraceTask, cls).adjust_args_internal(
+            args, skip=skip, **kwargs)
         if not cls.is_limits_base_class(args):
             args.dont_write_raytrace_limits = True
 
@@ -1443,32 +1560,27 @@ class RayTraceTask(TaskBase):
         return out
 
     @classmethod
-    def _adjust_color_limits(cls, self, name=None):
+    def _adjust_color_limits(cls, self, cmap):
         r"""Set the minimum and maximum for color mapping.
 
         Args:
-            self (TaskBase): Task that is running.
-            name (str, optional): Name for limits to set if different
-                than raytrace.
+            self (TaskBase): Task that colormap limits are being set for.
+            cmap (ColorMapArgument): Colormap argument information.
 
         """
-        if name is None:
-            name = self._name
-        var_min = f'color_vmin_{name}'
-        var_max = f'color_vmax_{name}'
-        if ((getattr(self.args, var_min) is not None
-             and getattr(self.args, var_max) is not None)):
+        if cmap.limits_defined:
             return
         limits = self.get_output('raytrace_limits')
-        cls.update_color_limits(self.args, limits=limits, name=name)
+        cls.update_color_limits(self.args, cmap, limits=limits)
 
     @classmethod
-    def update_color_limits(cls, args, limits=None, name=None,
-                            force=False, **kwargs):
+    def update_color_limits(cls, args, cmap=None, limits=None,
+                            name=None, force=False, **kwargs):
         r"""Set the minimum and maximum for color mapping.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            cmap (ColorMapArgument): Colormap argument information.
             limits (dict, optional): Set of calculated limits. If not
                 provided, limits will be calculated via
                 _generate_limits_class.
@@ -1485,26 +1597,22 @@ class RayTraceTask(TaskBase):
         """
         if name is None:
             name = cls._name
-        var_min = f'color_vmin_{name}'
-        var_max = f'color_vmax_{name}'
-        var_scaling = f'colormap_scaling_{name}'
-        if (((not force)
-             and getattr(args, var_min) is not None
-             and getattr(args, var_max) is not None)):
+        if cmap is None:
+            cmap = getattr(args, f'{name}_colormap')
+        if (not force) and cmap.limits_defined:
             return False
         out = False
         if limits is None:
             limits = RayTraceTask._generate_limits_class(args, **kwargs)
             out = True
-        vscaling = getattr(args, var_scaling)
+        vscaling = cmap.scaling
         limits = limits[args.query]
-        if force or getattr(args, var_min) is None:
-            setattr(args, var_min, limits[f'vmin_{vscaling}'])
-        if force or getattr(args, var_max) is None:
-            setattr(args, var_max, limits[f'vmax_{vscaling}'])
-        cls.log_class(f'LIMITS[{cls._name}, {name}]: '
-                      f'{getattr(args, var_min)}, '
-                      f'{getattr(args, var_max)}')
+        if force or cmap.vmin is None:
+            cmap.vmin = limits[f'vmin_{vscaling}']
+        if force or cmap.vmax is None:
+            cmap.vmax = limits[f'vmax_{vscaling}']
+        cls.log_class(f'LIMITS[{cls._name}, {cmap.name}]: '
+                      f'{cmap.vmin}, {cmap.vmax}')
         return out
 
     def _color_scene(self):
@@ -1527,7 +1635,8 @@ class RayTraceTask(TaskBase):
                               arrow_width=self.args.arrow_width.value)
             )
             return mesh
-        self._adjust_color_limits(self)
+        cmap = self.args.traced_mesh_colormap
+        self._adjust_color_limits(self, cmap)
         mesh = self.mesh
         face_values = self.extract_query(query_values, self.args.query)
         if isinstance(face_values, units.QuantityArray):
@@ -1536,10 +1645,10 @@ class RayTraceTask(TaskBase):
             face_values, method='deposit')
         vertex_colors = utils.apply_color_map(
             vertex_values,
-            color_map=self.args.colormap_raytrace,
-            vmin=self.args.color_vmin_raytrace,
-            vmax=self.args.color_vmax_raytrace,
-            scaling=self.args.colormap_scaling_raytrace,
+            color_map=cmap.colormap,
+            vmin=cmap.vmin,
+            vmax=cmap.vmax,
+            scaling=cmap.scaling,
             highlight=self.args.highlight,
             highlight_color=self.args.highlight_color.value,
         )
@@ -1692,24 +1801,26 @@ class RayTraceTask(TaskBase):
         if base:
             out = {
                 'time': 'noon',
-                'date': args.time.summer_solstice,
+                'date': None,
+                'doy': 'summer_solstice',
             }
         else:
             out = {
                 'time': args.time.solar_time_string,
-                'date': args.time.date,
+                'date': None,
+                'doy': args.time.solar_date_string,
             }
         if not GenerateTask.mesh_generated(args):
             return out
         if base:
-            base_id = GenerateTask.base_id_class(args)
             out.update(
-                id=base_id,
                 age='maturity',
+                **GenerateTask.base_param_class(args)
             )
         else:
             out.update(
                 id=args.id,
+                data_year=args.data_year,
                 age=args.time.crop_age_string,
             )
         return out
@@ -1761,13 +1872,13 @@ class RenderTask(TaskBase):
     _output_info = {
         'render': {
             'ext': '.png',
-            'base': 'raytrace',
+            'base_output': 'raytrace',
             'description': 'the rendered image',
             'merge_all': True,
         },
         'render_camera': {
             'ext': '.json',
-            'base': 'generate',
+            'base_output': 'generate',
             'description': 'camera properties',
             'optional': True,
         },
@@ -1777,61 +1888,25 @@ class RenderTask(TaskBase):
             'exclude': [
                 'show_rays', 'ray_color', 'ray_width', 'ray_length',
                 'arrow_width', 'highlight', 'highlight_color',
+                'traced_mesh_colormap',
             ],
             'modifications': {
-                'colormap': {'default': 'viridis'},
-                'colormap_scaling': {'default': 'log'},
-            }
+                'query': {
+                    'append_suffix_outputs': ['render'],
+                },
+                'virtual_canopy_properties': {
+                    'append_suffix_outputs': ['render_camera'],
+                },
+            },
         },
     }
     _arguments = [
-        arguments.CompositeArgumentDescription(
-            'scene_age', 'age',
-            description=(
-                'that the camera position should be calculated for '
-                '(only valid for generated meshes)'
-            ),
-            ignore=['planting_date'],
-            optional=True,
-        ),
-        arguments.CompositeArgumentDescription(
-            'background_color', 'color',
-            description='that should be used for the scene',
-            defaults={'color': 'transparent'},
-        ),
-        (('--camera-type', ), {
-            'type': str,
-            'choices': ['projection', 'orthographic'],  # 'spherical'],
-            'default': 'projection',
-            'help': ('Type of camera that should be used to render the '
-                     'scene'),
-        }),
-        (('--scene-mins', ), {
-            'help': 'Minimum extent of scene along each dimension',
-        }),
-        (('--scene-maxs', ), {
-            'help': 'Maximum extent of scene along each dimension',
-        }),
         (('--camera-direction', ), {
             'type': str,
             'help': ('Direction that camera should face. If not '
                      'provided, the camera will point to the center of '
                      'the scene from its location.'),
-        }),
-        (('--camera-fov-width', ), {
-            'units': 'degrees', 'default': 45.0,
-            'help': ('Angular width of the camera\'s field of view (in '
-                     'degrees) for a projection camera.'),
-        }),
-        (('--camera-fov-height', ), {
-            'units': 'degrees', 'default': 45.0,
-            'help': ('Angular height of the camera\'s field of view (in '
-                     'degrees) for a projection camera.'),
-        }),
-        (('--camera-up', ), {
-            'type': str,
-            'help': ('Up direction for the camera. If not provided, the '
-                     'up direction for the scene will be assumed.'),
+            'suffix_param': {},
         }),
         (('--camera-location', ), {
             'type': str,
@@ -1844,42 +1919,111 @@ class RenderTask(TaskBase):
                      'scene. If \"maturity\" is specified, the location '
                      'will be set for the mature plant (only valid for '
                      'generated meshes).'),
+            'suffix_param': {'prefix': 'from_'},
         }),
-        (('--image-nx', ), {
-            'type': int,
-            'help': ('Number of pixels for the rendered image in the '
-                     'horizontal direction. If not provided, but '
-                     '--image-ny is provided, the value for --image-nx '
-                     'will be determined from --image-ny by assuming '
-                     'a constant resolution in both directions. If '
-                     'neither are provided, --image-ny defaults to '
-                     '1024.'),
+        arguments.CompositeArgumentDescription(
+            'scene_age', 'age',
+            description=(
+                'that the camera position should be calculated for '
+                '(only valid for generated meshes)'
+            ),
+            ignore=['planting_date'],
+            optional=True,
+            suffix_param={}
+        ),
+        (('--camera-type', ), {
+            'type': str,
+            'choices': ['projection', 'orthographic'],  # 'spherical'],
+            'default': 'projection',
+            'help': ('Type of camera that should be used to render the '
+                     'scene'),
+            'suffix_param': {'noteq': 'projection'},
         }),
-        (('--image-ny', ), {
-            'type': int,
-            'help': ('Number of pixels for the rendered image in the '
-                     'vertical direction. If not provided, but '
-                     '--image-nx is provided, the value for --image-ny '
-                     'will be determined from --image-nx by assuming '
-                     'a constant resolution in both directions. If '
-                     'neither are provided, --image-ny defaults to '
-                     '1024.'),
+        arguments.DimensionArgumentDescription([
+            (('--camera-fov-width', ), {
+                'units': 'degrees', 'default': 45.0,
+                'help': (
+                    'Angular width of the camera\'s field of view (in '
+                    'degrees) for a projection camera.'
+                ),
+                'suffix_param': {'conv': int},
+            }),
+            (('--camera-fov-height', ), {
+                'units': 'degrees', 'default': 45.0,
+                'help': (
+                    'Angular height of the camera\'s field of view (in '
+                    'degrees) for a projection camera.'
+                ),
+                'suffix_param': {'conv': int},
+            }),
+        ], name='camera_fov_dimensions', suffix_param={
+            'cond': lambda x: (x.camera_type == 'projection'),
         }),
-        (('--image-width', ), {
-            'units': 'cm',
-            'units_arg': 'mesh_units',
-            'help': ('Width of the image (in cm). If not provided, '
-                     'the width will be set based on the camera '
-                     'position and type such that the entire scene '
-                     'is captured.'),
+        (('--camera-up', ), {
+            'type': str,
+            'help': ('Up direction for the camera. If not provided, the '
+                     'up direction for the scene will be assumed.'),
+            'suffix_param': {'prefix': 'up', 'sep': 'x'},
         }),
-        (('--image-height', ), {
-            'units': 'cm',
-            'units_arg': 'mesh_units',
-            'help': ('Height of the image (in cm). If not provided, '
-                     'the height will be set based on the camera '
-                     'position and type such that the entire scene '
-                     'is captured.'),
+        arguments.CompositeArgumentDescription(
+            'background_color', 'color',
+            description='that should be used for the scene',
+            defaults={'color': 'transparent'},
+            suffix_param={'noteq': 'transparent'},
+        ),
+        arguments.DimensionArgumentDescription([
+            (('--image-nx', ), {
+                'type': int,
+                'help': (
+                    'Number of pixels for the rendered image in the '
+                    'horizontal direction. If not provided, but '
+                    '--image-ny is provided, the value for --image-nx '
+                    'will be determined from --image-ny by assuming '
+                    'a constant resolution in both directions. If '
+                    'neither are provided, --image-ny defaults to '
+                    '1024.'
+                ),
+                'suffix_param': {},
+            }),
+            (('--image-ny', ), {
+                'type': int,
+                'help': (
+                    'Number of pixels for the rendered image in the '
+                    'vertical direction. If not provided, but '
+                    '--image-nx is provided, the value for --image-ny '
+                    'will be determined from --image-nx by assuming '
+                    'a constant resolution in both directions. If '
+                    'neither are provided, --image-ny defaults to '
+                    '1024.'
+                ),
+                'suffix_param': {},
+            }),
+        ], name='resolution_dimensions', suffix_param={}),
+        arguments.DimensionArgumentDescription([
+            (('--image-width', ), {
+                'units': 'cm',
+                'units_arg': 'mesh_units',
+                'help': (
+                    'Width of the image (in cm). If not provided, '
+                    'the width will be set based on the camera '
+                    'position and type such that the entire scene '
+                    'is captured.'
+                ),
+                'suffix_param': {'conv': int},
+            }),
+            (('--image-height', ), {
+                'units': 'cm',
+                'units_arg': 'mesh_units',
+                'help': (
+                    'Height of the image (in cm). If not provided, '
+                    'the height will be set based on the camera '
+                    'position and type such that the entire scene '
+                    'is captured.'
+                ),
+                'suffix_param': {'conv': int},
+            }),
+        ], name='image_dimensions', suffix_param={
+            'suffix': 'cm',
         }),
         (('--resolution', ), {
             'units': 'cm**-1',  # 'default': 5,
@@ -1889,34 +2033,37 @@ class RenderTask(TaskBase):
                      'will be ignored. If not provided, the resolution '
                      'in each direction will be determined by '
                      '--image-nx and --image-ny.'),
-        }),
-    ]
-    _output_suffix = SuffixGenerator([
-        ('query', {'cond': True, 'outputs': ['render']}),
-        ('camera_direction', {}),
-        ('camera_location', {'prefix': '_from_'}),
-        ('scene_age', {}),
-        ('camera_type', {'noteq': 'projection'}),
-        (('camera_fov_width', 'camera_fov_height'), {
-            'kwargs_set': {
-                'cond': lambda x: (x.camera_type == 'projection'),
-                'sep': 'x', 'prefix': '',
+            'suffix_param': {
+                'conv': int,
+                'suffix': 'percm',
             },
-            'conv': int,
         }),
-        ('camera_up', {'prefix': 'up', 'sep': 'x'}),
-        ('background_color', {'noteq': 'transparent'}),
-        (('image_nx', 'image_ny'), {
-            'kwargs_set': {'sep': 'x'},
+        (('--scene-mins', ), {
+            'help': 'Minimum extent of scene along each dimension',
+            'suffix_param': {
+                'sep': 'x',
+                'prefix': 'SCMIN',
+            },
         }),
-        (('image_width', 'image_height'), {
-            'kwargs_set': {'sep': 'x', 'suffix': 'cm'},
-            'conv': int,
+        (('--scene-maxs', ), {
+            'help': 'Maximum extent of scene along each dimension',
+            'suffix_param': {
+                'sep': 'x',
+                'prefix': 'SCMAX',
+            },
         }),
-        ('resolution', {'conv': int, 'suffix': 'percm'}),
-        ('scene_mins', {'sep': 'x', 'prefix': '_SCMIN'}),
-        ('scene_maxs', {'sep': 'x', 'prefix': '_SCMAX'}),
-    ])
+        arguments.CompositeArgumentDescription(
+            'render_colormap', 'colormap',
+            description=(
+                'that should be used for query values '
+                'if "--output-render" is passed'
+            ),
+            defaults={
+                'colormap': 'viridis',
+                'colormap_scaling': 'log',
+            },
+        ),
+    ]
 
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
@@ -1925,6 +2072,8 @@ class RenderTask(TaskBase):
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
         args.show_rays = False
@@ -1963,7 +2112,8 @@ class RenderTask(TaskBase):
 
         """
         query_values = self.get_output('raytrace')
-        RayTraceTask._adjust_color_limits(self)
+        cmap = self.args.render_colormap
+        RayTraceTask._adjust_color_limits(self, cmap)
         face_values = RayTraceTask.extract_query(
             query_values, self.args.query)
         if isinstance(face_values, units.QuantityArray):
@@ -1975,10 +2125,10 @@ class RenderTask(TaskBase):
         pixel_values = (pixel_values.T)[::-1, :]
         image = utils.apply_color_map(
             pixel_values,
-            color_map=self.args.colormap_render,
-            vmin=self.args.color_vmin_render,
-            vmax=self.args.color_vmax_render,
-            scaling=self.args.colormap_scaling_render,
+            color_map=cmap.colormap,
+            vmin=cmap.vmin,
+            vmax=cmap.vmax,
+            scaling=cmap.scaling,
             highlight=(pixel_values < 0),
             highlight_color=self.args.background_color.value,
             include_alpha=(len(self.args.background_color.value) == 4)
@@ -2030,6 +2180,14 @@ class RenderTask(TaskBase):
                 'age': args.time.args['age'],
                 'scene_age': args.scene_age.args['age'],
             }
+        if args.virtual_canopy:
+            out['canopy'] = 'virtual'
+            out['nrows'] = args.virtual_nrows
+            out['ncols'] = args.virtual_ncols
+        else:
+            out['canopy'] = args.canopy
+            out['nrows'] = args.nrows
+            out['ncols'] = args.ncols
         return out
 
     @classmethod
@@ -2101,8 +2259,11 @@ class RenderTask(TaskBase):
         for k in ['camera_direction', 'camera_up', 'camera_location',
                   'image_nx', 'image_ny',
                   'image_width', 'image_height',
-                  'resolution', 'scene_mins', 'scene_maxs']:
+                  'resolution']:
             out[k] = getattr(self.raytracer, k)
+        for k in ['mins', 'maxs']:
+            out[f'scene_{k}'] = getattr(
+                self.raytracer.virtual_scene_model, k)
         return out
 
     def _merge_output(self, name, output, merged_param):
@@ -2156,13 +2317,13 @@ class TotalsTask(TemporalTaskBase):
     _step_task = RayTraceTask
     _output_info = {
         'totals': {
+            'base_prefix': True,
             'ext': '.json',
             'description': 'raytraced query totals',
-            'composite_param': ['id', 'data_year'],
         },
         'totals_plot': {
             'ext': '.png',
-            'base': 'totals',
+            'base_output': 'totals',
             'description': 'a plot of raytraced query totals',
             'optional': True,
             'merge_all': True,
@@ -2171,10 +2332,17 @@ class TotalsTask(TemporalTaskBase):
     }
     _external_tasks = {
         RayTraceTask: {
+            'exclude': [
+                'show_rays', 'ray_color', 'ray_width', 'ray_length',
+                'arrow_width', 'highlight', 'highlight_color',
+                'traced_mesh_colormap',
+            ],
             'modifications': {
                 'query': {
                     'default': 'total_flux',
                     'choices': _query_options_calc,
+                    'append_suffix_skip_outputs': ['totals'],
+                    'append_suffix_outputs': ['totals_plot'],
                 },
             },
         },
@@ -2186,18 +2354,6 @@ class TotalsTask(TemporalTaskBase):
                      'totals_plot only'),
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        ('totals_plot', SuffixGenerator(
-            [
-                ('query', {'cond': True}),
-                ('per_plant', {'value': 'per_plant'}),
-            ],
-            outputs=['totals_plot'],
-        )),
-    ] + [
-        (k, v) for k, v in
-        TemporalTaskBase._output_suffix.arguments.items()
-    ])
 
     @classmethod
     def _read_output(cls, args, name, fname):
@@ -2242,11 +2398,11 @@ class TotalsTask(TemporalTaskBase):
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
-        # TODO: Verify that this can be set before call base (i.e. that
-        #     none of the external tasks will modify 'canopy')
-        if args.canopy == 'single':
+        if args.canopy in ['single', 'virtual']:
             args.per_plant = False
         super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
 
@@ -2357,10 +2513,7 @@ class TotalsTask(TemporalTaskBase):
             object: Finalized step result.
 
         """
-        if self.args.canopy == 'single':
-            per_plant = False
-        else:
-            per_plant = (self.args.nrows * self.args.ncols)
+        per_plant = (self.args.nrows * self.args.ncols)
         query = _query_options_calc
         value = x.calculate_query(query, per_plant=per_plant)
         return (x.args.time.time, value)
@@ -2460,9 +2613,10 @@ class AnimateTask(TemporalTaskBase):
 
     _name = 'animate'
     _step_task = RenderTask
+    _step_args_preserve = ['render_colormap']
     _output_info = {
         'animate': {
-            'base': 'render',
+            'base_output': 'render',
             'description': 'the animation',
         },
     }
@@ -2476,6 +2630,7 @@ class AnimateTask(TemporalTaskBase):
         },
         TotalsTask: {
             'optional': True,
+            'suffix_index': 1,
         },
     }
     _arguments = [
@@ -2483,30 +2638,21 @@ class AnimateTask(TemporalTaskBase):
             'type': str, 'choices': ['mp4', 'mpeg', 'gif'],
             'default': 'gif',
             'help': 'Format that the movie should be output in',
+            'suffix_param': {'prefix': '.', 'cond': False},
         }),
         (('--frame-rate', ), {
             'type': int, 'default': 1,
             'help': ('The frame rate that should be used for the '
                      'generated movie in frames per second'),
+            'suffix_param': {'suffix': 'fps', 'noteq': 1},
         }),
         (('--inset-totals', ), {
             'action': 'store_true',
             'help': ('Inset a plot of the query total below the '
                      'image.'),
-
+            'suffix_param': {'value': 'totals'},
         }),
     ]
-    _output_suffix = SuffixGenerator([
-        (k, v) for k, v in
-        TemporalTaskBase._output_suffix.arguments.items()
-    ] + [
-        ('inset_totals', {'value': 'totals'}),
-        # ('totals', SuffixGenerator(
-        #     TotalsTask._output_suffix.arguments,
-        #     cond=lambda x: bool(x.inset_totals),
-        # )),
-        ('frame_rate', {'suffix': 'fps', 'noteq': 1}),
-    ])
 
     def __init__(self, *args, **kwargs):
         self._inset_figure = None
@@ -2527,20 +2673,6 @@ class AnimateTask(TemporalTaskBase):
                           verbose=args.verbose)
 
     @classmethod
-    def adjust_args_internal(cls, args, **kwargs):
-        r"""Adjust the parsed arguments including setting defaults that
-        depend on other provided arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-
-        """
-        for k in ['colormap', 'color_vmin', 'color_vmax',
-                  'colormap_scaling']:
-            setattr(args, f'{k}_render', getattr(args, f'{k}_animate'))
-        super(AnimateTask, cls).adjust_args_internal(args, **kwargs)
-
-    @classmethod
     def _output_ext(cls, args, name, wildcards=None):
         r"""Determine the extension that should be used for output files.
 
@@ -2554,9 +2686,8 @@ class AnimateTask(TemporalTaskBase):
             str: Output file extension.
 
         """
-        return cls._make_suffix(
-            args, 'movie_format', prefix='.', cond=True,
-            wildcards=wildcards,
+        return cls._arguments['movie_format'].generate_suffix(
+            args, name, wildcards=wildcards, force=True,
         )
 
     @property
@@ -2608,60 +2739,53 @@ class MatchQuery(OptimizationTaskBase):
     _name = 'match_query'
     _final_outputs = ['totals_plot']
     _arguments = [
-        (('--vary', ), {
-            'type': str,
-            'help': 'Argument that should be varied.',
-            'default': 'row_spacing',
-        }),
         (('--goal-id', ), {
             'help': (
                 'ID that the goal of the optimization should be matched '
                 'to.'),
+            'suffix_param': {'prefix': 'matchTo_'},
         }),
         (('--goal', ), {
             'help': 'Goal of the optimization.',
             'default': 'scene_average_flux',
             'choices': _query_options,
+            'suffix_param': {},
         }),
+        (('--vary', ), {
+            'type': str,
+            'help': 'Argument that should be varied.',
+            'default': 'row_spacing',
+            'suffix_param': {'prefix': 'vs_'},
+        }),
+        OptimizationTaskBase._arguments['method'],
     ]
-    _output_suffix = SuffixGenerator([
-        ('output', {'skip_outputs': ['match_query']}),
-        ('match_query', SuffixGenerator(
-            [
-                ('goal_id', {'prefix': '_matchTo_'}),
-            ] + [
-                (k, v) for k, v in
-                OptimizationTaskBase._output_suffix.arguments.items()
-            ],
-            outputs=['match_query'],
-        )),
-    ])
 
     @classmethod
-    def adjust_args_internal(cls, args):
+    def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
         depend on other provided arguments.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
 
         """
         args.final_args = {}
         for k in ['canopy', 'periodic_canopy', 'nrows', 'ncols',
-                  'periodic_canopy_count']:
+                  'periodic_canopy_count', 'plot_width', 'plot_length']:
             args.final_args[k] = getattr(args, k)
-        if args.canopy != 'single':
+        if args.canopy not in ['single', 'virtual']:
             # Regenerating unique canopies is very time intensive
-            args.canopy = 'single'
-            if not args.periodic_canopy:
-                args.periodic_canopy = 'scene'
+            args.canopy = 'virtual'
         if args.goal_id is None:
             ids = GenerateTask.all_ids_class(args)
+            assert ids
             for x in ids:
                 if x != args.id:
                     args.goal_id = x
                     break
-        super(MatchQuery, cls).adjust_args_internal(args)
+        super(MatchQuery, cls).adjust_args_internal(args, **kwargs)
 
     @cached_property
     def goal(self):
@@ -2711,7 +2835,7 @@ class MatchQuery(OptimizationTaskBase):
         out = copy.deepcopy(self.args.final_args)
         if name == 'totals_plot':
             out['query'] = self.args.goal
-            if ((out['canopy'] != 'single'
+            if ((out['canopy'] not in ['single', 'virtual']
                  and out['query'].startswith('total_'))):
                 out['per_plant'] = True
         return out
