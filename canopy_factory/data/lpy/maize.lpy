@@ -1,0 +1,233 @@
+
+############################################################
+## External parameters
+############################################################
+
+extern(RUNTIME_PARAM = {})
+extern(OUTPUT_TIME = 27)
+extern(DERIVATION_LENGTH = OUTPUT_TIME)
+
+############################################################
+## Python functions
+############################################################
+
+from canopy_factory.utils import get_class_registry
+generator_cls = get_class_registry().get("crop", "maize")
+generator = generator_cls(context=context(), **RUNTIME_PARAM)
+NMax = generator.NMax()
+PLASTOCHRON = generator.Plastocron()
+StartingAngle = generator.sample_dist("uniform", 0, 360)
+if generator.verbose_lpy:
+    print(f"OUTPUT_TIME = {OUTPUT_TIME}")
+    print(f"DERIVATION_LENGTH = {DERIVATION_LENGTH}")
+    print(f"PLASTOCHRON = {PLASTOCHRON}")
+
+
+############################################################
+## Begin LSystem syntax
+############################################################
+
+module A
+module Apex
+module Internode
+module Node
+module Leaf
+
+Axiom: @Gc/(StartingAngle)Apex(0,0,0,0)@Ge
+derivation length: DERIVATION_LENGTH
+
+production:
+
+Apex(time,age,n,b):
+    nmin = generator.ApexNFirst()
+    nmax = generator.ApexNLast()
+    nperiod = generator.ApexNPeriod()
+    if ((n < nmin
+         or (nmax != -1 and n > nmax)
+         or (((n - nmin) % nperiod) != 0))):
+        print(f"Removing Apex[n={n}] P")
+        produce *
+    bmin = generator.ApexBFirst()
+    bmax = generator.ApexBLast()
+    bperiod = generator.ApexBPeriod()
+    if ((b < bmin
+         or (bmax != -1 and b > bmax)
+         or (((b - bmin) % bperiod) != 0))):
+        print(f"Removing Apex[b={b}] P")
+        produce *
+    if age >= generator.ApexAgeRemove():
+        if generator.verbose_lpy:
+            print(f"Removing Apex[{age},{n}]")
+        produce *
+    elif (time + age) >= OUTPUT_TIME:
+        produce Apex(time,age,n,b)
+    elif ((age >= PLASTOCHRON and n < NMax)
+          or ((time + age) == 0 and n == 0)):
+        time = time + age
+        if age >= PLASTOCHRON:        age = age - PLASTOCHRON
+        if generator.verbose_lpy:
+            print(f"Node: {n} (t = {time})")
+        nproduce @Ge @Gc Internode(time,age,n,b)
+        nproduce [Node(time,age,n,b)]
+        if generator.verbose_lpy:
+            print(f"Next apex: {n + 1}")
+        produce Apex(time,age,n+1,b)
+    else:
+        if generator.verbose_lpy:
+            print(f"Ageing Apex[{age},{n}]")
+        ageinc = min(generator.AgeInc(),
+                     OUTPUT_TIME - (time + age))
+        produce Apex(time,age+ageinc,n,b)
+
+Internode(time,age,n,b):
+    nmin = generator.InternodeNFirst()
+    nmax = generator.InternodeNLast()
+    nperiod = generator.InternodeNPeriod()
+    if ((n < nmin
+         or (nmax != -1 and n > nmax)
+         or (((n - nmin) % nperiod) != 0))):
+        print(f"Removing Internode[n={n}] P")
+        produce *
+    bmin = generator.InternodeBFirst()
+    bmax = generator.InternodeBLast()
+    bperiod = generator.InternodeBPeriod()
+    if ((b < bmin
+         or (bmax != -1 and b > bmax)
+         or (((b - bmin) % bperiod) != 0))):
+        print(f"Removing Internode[b={b}] P")
+        produce *
+    if age >= generator.InternodeAgeRemove():
+        if generator.verbose_lpy:
+            print(f"Removing Internode[{age},{n}]")
+        produce *
+    elif (time + age) >= OUTPUT_TIME:
+        produce Internode(time,age,n,b)
+    else:
+        if generator.verbose_lpy:
+            print(f"Ageing Internode[{age},{n}]")
+        ageinc = min(generator.AgeInc(),
+                     OUTPUT_TIME - (time + age))
+        produce Internode(time,age+ageinc,n,b)
+
+Node(time,age,n,b):
+    for w in range(generator.LeafWMax()):
+        nproduce [Leaf(time,age,n,b)]
+    produce [/(0)]
+
+Leaf(time,age,n,b):
+    nmin = generator.LeafNFirst()
+    nmax = generator.LeafNLast()
+    nperiod = generator.LeafNPeriod()
+    if ((n < nmin
+         or (nmax != -1 and n > nmax)
+         or (((n - nmin) % nperiod) != 0))):
+        print(f"Removing Leaf[n={n}] P")
+        produce *
+    bmin = generator.LeafBFirst()
+    bmax = generator.LeafBLast()
+    bperiod = generator.LeafBPeriod()
+    if ((b < bmin
+         or (bmax != -1 and b > bmax)
+         or (((b - bmin) % bperiod) != 0))):
+        print(f"Removing Leaf[b={b}] P")
+        produce *
+    if age >= generator.LeafAgeRemove():
+        if generator.verbose_lpy:
+            print(f"Removing Leaf[{age},{n}]")
+        produce *
+    elif (time + age) >= OUTPUT_TIME:
+        produce Leaf(time,age,n,b)
+    else:
+        if generator.verbose_lpy:
+            print(f"Ageing Leaf[{age},{n}]")
+        ageinc = min(generator.AgeInc(),
+                     OUTPUT_TIME - (time + age))
+        produce Leaf(time,age+ageinc,n,b)
+
+homomorphism:
+maximum depth: 3
+
+Apex(time,age,n,b):
+    produce &(90)@o^(90)
+
+Internode(time,age,n,b):
+    component = generator.parameters["Internode"]
+    with component.temporary_index(time,age,n,b):
+        nmin = generator.InternodeNFirst()
+        nmax = generator.InternodeNLast()
+        nperiod = generator.InternodeNPeriod()
+        if ((n < nmin
+             or (nmax != -1 and n > nmax)
+             or (((n - nmin) % nperiod) != 0))):
+            print(f"Removing Internode[n={n}]")
+            produce [/(0)]
+        bmin = generator.InternodeBFirst()
+        bmax = generator.InternodeBLast()
+        bperiod = generator.InternodeBPeriod()
+        if ((b < bmin
+             or (bmax != -1 and b > bmax)
+             or (((b - bmin) % bperiod) != 0))):
+            print(f"Removing Internode[b={b}]")
+            produce [/(0)]
+        if generator.verbose_lpy:
+            print(f"Homomorphism Internode[{age},{n}]")
+        nproduce SetColor(generator.InternodeColor(time,age,n,b))
+        nproduce /(generator.InternodeRotationAngle(time,age,n,b))
+        nproduce &(generator.InternodeAngle(time,age,n,b))
+        length = generator.InternodeLength(time,age,n,b)
+        nproduce F(0.001 * length)
+        xprev = 0.0
+        for x in component.XIterator():
+            DX = length * (x - xprev)
+            xprev = x
+            nproduce _(generator.InternodeWidth(time,age,n,b,x=x))
+            nproduce &(generator.InternodeBend(time,age,n,b,x=x)*DX)
+            nproduce /(generator.InternodeTwist(time,age,n,b,x=x)*DX)
+            if x == 1:
+                produce F(DX)
+            else:
+                nproduce F(DX)
+
+Leaf(time,age,n,b):
+    component = generator.parameters["Leaf"]
+    with component.temporary_index(time,age,n,b):
+        nmin = generator.LeafNFirst()
+        nmax = generator.LeafNLast()
+        nperiod = generator.LeafNPeriod()
+        if ((n < nmin
+             or (nmax != -1 and n > nmax)
+             or (((n - nmin) % nperiod) != 0))):
+            print(f"Removing Leaf[n={n}]")
+            produce [/(0)]
+        bmin = generator.LeafBFirst()
+        bmax = generator.LeafBLast()
+        bperiod = generator.LeafBPeriod()
+        if ((b < bmin
+             or (bmax != -1 and b > bmax)
+             or (((b - bmin) % bperiod) != 0))):
+            print(f"Removing Leaf[b={b}]")
+            produce [/(0)]
+        if generator.verbose_lpy:
+            print(f"Homomorphism Leaf[{age},{n}]")
+        nproduce SetColor(generator.LeafColor(time,age,n,b))
+        nproduce /(generator.LeafRotationAngle(time,age,n,b))
+        nproduce &(generator.LeafAngle(time,age,n,b))
+        nproduce SetContour(generator.LeafProfile(time,age,n,b,x=0))
+        length = generator.LeafLength(time,age,n,b)
+        nproduce F(0.001 * length)
+        xprev = 0.0
+        for x in component.XIterator():
+            DX = length * (x - xprev)
+            xprev = x
+            nproduce _(generator.LeafWidth(time,age,n,b,x=x))
+            nproduce &(generator.LeafBend(time,age,n,b,x=x)*DX)
+            nproduce /(generator.LeafTwist(time,age,n,b,x=x)*DX)
+            nproduce SetContour(generator.LeafProfile(time,age,n,b,x=x))
+            if x == 1:
+                produce F(DX)
+            else:
+                nproduce F(DX)
+
+interpretation:
+
+endlsystem

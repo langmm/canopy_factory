@@ -1,10 +1,22 @@
-name: lpy
+name: canopy
 channels:
   - conda-forge
   - fredboudon
 dependencies:
-  - openalea.lpy
-  - yggdrasil
+  - ffmpeg
+  - imageio
+  - matplotlib
+  - numpy < 2  # Compatibility with pandas
+  # - openalea.lpy  # Current conda install fails as of 9/11/2025
   - pandas
+  - pvlib
+  - python
+  - pyshp
+  - pytest
+  - pyyaml
   - scipy
-  - numpy
+  - yggdrasil
+  # yggdrasil dependencies
+  - czmq
+  # - ePhotosynthesis_C  # Once this is released
+  - sundials>=5.7.0  # For building ePhotosynthesis_C
