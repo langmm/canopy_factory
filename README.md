@@ -1,4 +1,4 @@
-# maize_architecture
+# canopy_factory
 
 First attempt at a procedurally generated 3D maize canopy architecture
 model based on field measurements provided by Matthew Runyun for the
@@ -247,6 +247,9 @@ Most important:
 
 Need multiple time points for age dependence, probably 3 or more. Movies along the row (e.g. by rover) could be segmented to get parameters if manual measurements would not be possible. Drone images probably would not help with these parameters, but would be good for validating the canopy coverage predicted by the model.
 
+# Funding
+
+This work is supported by funding from the CROPPS NSF STC (Grant No. DBI-2019674).
 
 # Citations
 
@@ -274,7 +277,6 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 - allow for other crops
 - allow for inputs to be specified for input parameters and data
 - gravitropism
-- add tests
 - publish to PyPI
 - publish to conda_forge
 - build docs
