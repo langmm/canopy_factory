@@ -2,9 +2,12 @@ name: Build, test and upload to PyPI
 
 on:
   push:
-    branches: [ main, package ]
-  pull_request:
-    branches: [ main ]
+    branches-ignore:
+     - gh-pages
+    tags:
+     - '*'
+  schedule:
+    - cron: 0 10 * * 1  # 3AM PST
 
 jobs:
   tests:
