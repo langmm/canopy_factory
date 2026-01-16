@@ -57,8 +57,9 @@ jobs:
       #     ./canopy_factory/build_ePhotosynthesis_C.sh
       - name: Install lpy
         run: |
-          cd ..
-          ./canopy_factory/build_lpy.sh
+          conda install -c fredboudon openalea.lpy
+          # cd ..
+          # ./canopy_factory/build_lpy.sh
       # - name: Install embree
       #   run: |
       #     cd ..
