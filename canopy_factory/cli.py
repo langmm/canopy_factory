@@ -1,7 +1,6 @@
 import os
 import gc
 import sys
-import pdb
 import copy
 import pprint
 import argparse
@@ -12,8 +11,8 @@ import glob
 import shutil
 import itertools
 import uuid
+import datetime
 from collections import OrderedDict
-from datetime import datetime
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     cfg, rapidjson, units, parse_quantity, format_list_for_help,
@@ -933,6 +932,7 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
     """
 
     _registry_key = 'argument'
+    _is_factory_class = False
     _name = None
     _name_as_suffix = False
     _name_as_prefix = False
@@ -950,7 +950,7 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
 
     @staticmethod
     def _on_registration(cls):
-        if cls.name is None:
+        if cls.name is None or not cls._is_factory_class:
             cls.name = cls._name
         if isinstance(cls._arguments_prefixed, list):
             cls._arguments_prefixed = arguments.ArgumentDescriptionSet(
@@ -961,7 +961,19 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
         cls._arguments_universal.modify(universal=True)
         cls._arguments = (
             cls._arguments_prefixed + cls._arguments_universal)
+        cls._composite_argument = None
         arguments.RegisteredArgumentClassDict._on_registration(cls)
+
+    @classmethod
+    def composite_argument(cls):
+        if ((cls._composite_argument is None
+             or (cls._composite_argument.name != cls.name))):
+            assert cls.name is not None
+            cls._composite_argument = arguments.CompositeArgumentDescription(
+                cls.name, composite_type=cls,
+                prefix=cls.prefix, suffix=cls.suffix,
+            )
+        return cls._composite_argument
 
     def __init__(self, args, name_base=None, defaults=None,
                  optional=False, args_overwrite=None):
@@ -1039,6 +1051,7 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
         class FactoryCompositeClass(cls):
 
             _registry_name = registry_name
+            _is_factory_class = True
             # _arguments = arguments
             _arguments_prefixed = arguments_prefixed
             _arguments_universal = arguments_universal
@@ -1153,11 +1166,33 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
         if not isinstance(inst, cls):
             if isinstance(inst, CompositeArgument):
                 assert cls.is_factory_analogue(inst)
+                if dont_update and not overwrite:
+                    args = copy.deepcopy(args)
                 inst._arguments.reset_args(args)
             inst = cls(args, **kwargs)
         if not dont_update:
             inst.update_args(args)
         return inst
+
+    @classmethod
+    def parse(cls, x, args, name=None, **kwargs):
+        r"""Parse an argument.
+
+        Args:
+            x (object): Instance to parse.
+            args (argparse.Namespace): Parsed arguments.
+            name (str, optional): Name that should be used for the
+                composite argument.
+            **kwargs: Additional keyword arguments are passed to the
+                from_args method.
+
+        Returns:
+            CompositeArgument: The parsed instance.
+
+        """
+        if name is not None:
+            return cls.class_factory(name).parse(x, args, **kwargs)
+        return cls.composite_argument().parse(x, args, **kwargs)
 
     def update_args(self, args, name=None):
         r"""Update a namespace with the parsed arguments.
@@ -2494,7 +2529,8 @@ class TimeArgument(AgeArgument):
             ),
         }),
         (('--timezone', '--tz', ), {
-            'type': pytz.timezone,
+            'type': utils.ChoiceArgument(pytz.timezone,
+                                         type=datetime.tzinfo),
             'help': (
                 'Name of timezone (as accepted by pytz){description}. '
                 'If provided '
@@ -2532,7 +2568,7 @@ class TimeArgument(AgeArgument):
             self.location = args.location
             self.args['timezone'] = args.location.timezone
         if self.is_solar_time(self.args['time']):
-            assert self.args['hour'] is None
+            assert self.args['hour'] in [None, self.args['time']]
             self.args['hour'] = self.args['time']
             self.args['time'] = None
         elif self.is_solar_date(self.args['time']):
@@ -2540,16 +2576,17 @@ class TimeArgument(AgeArgument):
             self.args['doy'] = self.args['time']
             self.args['time'] = None
         elif self.args['time'] == 'now':
-            self.args['time'] = datetime.now()
+            self.args['time'] = datetime.datetime.now()
         elif ((isinstance(self.args['time'], str)
                and not self.is_wildcard('time'))):
-            self.args['time'] = datetime.fromisoformat(self.args['time'])
+            self.args['time'] = datetime.datetime.fromisoformat(
+                self.args['time'])
         if utils.is_date(self.args['time']):
             assert self.args['date'] is None
             self.args['date'] = self.args['time']
             self.args['time'] = None
         if self.args['date'] == 'now':
-            self.args['date'] = utils.to_date(datetime.now())
+            self.args['date'] = utils.to_date(datetime.datetime.now())
         elif self.is_crop_age(self.args['date']):
             assert not self.ignored('age')
             assert self.args['age'] is None or 'age' in self._defaults_set
@@ -2566,7 +2603,7 @@ class TimeArgument(AgeArgument):
         if (((not self.ignored('planting_date'))
              and isinstance(self.args['planting_date'], str)
              and not self.is_wildcard('planting_date'))):
-            self.args['planting_date'] = datetime.fromisoformat(
+            self.args['planting_date'] = datetime.datetime.fromisoformat(
                 self.args['planting_date'])
             assert utils.is_date(self.args['planting_date'])
         if ((self.crop_age_string == 'planting'
@@ -2588,6 +2625,26 @@ class TimeArgument(AgeArgument):
         elif name == 'solar_time_string':
             name = 'hour'
         super(TimeArgument, self).setarg(name, value)
+
+    def getarg(self, name, default=NoDefault):
+        r"""Get an argument value.
+
+        Args:
+            name (str): Argument name.
+            default (object, optional): Value to return if argument
+                does not exist.
+
+        Returns:
+            object: Argument value.
+
+        Raises:
+            KeyError: If the argument does not exist and default is not
+                provided.
+
+        """
+        if name == 'time' and self.solar_time_string is not None:
+            name = 'hour'
+        return super(TimeArgument, self).getarg(name, default=default)
 
     @classmethod
     def reset_args(cls, name, args, value=NoDefault):
@@ -2639,7 +2696,7 @@ class TimeArgument(AgeArgument):
             object: Argument value.
 
         """
-        if isinstance(out, datetime):
+        if isinstance(out, datetime.datetime):
             if name in ['year', 'hour']:
                 return getattr(out, name)
             elif name == 'timezone':
@@ -2795,7 +2852,7 @@ class TimeArgument(AgeArgument):
             return utils.to_date(self.time)
         elif self.args['date'] is not None:
             if isinstance(self.args['date'], str):
-                self.args['date'] = datetime.fromisoformat(
+                self.args['date'] = datetime.datetime.fromisoformat(
                     self.args['date'])
             out = self.args['date']
             assert utils.is_date(out)
@@ -2815,12 +2872,14 @@ class TimeArgument(AgeArgument):
             assert self.location is not None
             if not self.setdefaults(['timezone']):
                 return None
-            date = datetime(month=1, day=1,  # Month & day unused
-                            year=self.args['year'],
-                            tzinfo=self.args['timezone'])
+            date = datetime.datetime(
+                month=1, day=1,  # Month & day unused
+                year=self.args['year'],
+                tzinfo=self.args['timezone'],
+            )
             solar_model = self.location.create_solar_model(date)
             return solar_model.solar_date(self.solar_date_string)
-        return datetime.strptime(
+        return datetime.datetime.strptime(
             f"{self.args['year']}-{self.args['doy']}",
             "%Y-%j"
         )
@@ -3340,7 +3399,61 @@ class TaskBase(SubparserBase):
             'type': str, 'default': cfg['directories']['output'],
             'help': 'Base directory where output should be stored.',
         }),
+        (('--figure-dpi', ), {
+            'type': int, 'default': 300,
+            'help': 'DPI for generated figures',
+        }),
+        (('--figure-font-weight', ), {
+            'type': str, 'default': 'bold',
+            'help': 'Font weight for generated figures',
+        }),
+        (('--figure-linewidth', ), {
+            'type': float, 'default': 2.0,
+            'help': 'Line width for plots',
+        }),
+        (('--figure-color-by', ), {
+            'type': str,
+            'choices': ['id', 'idbase', 'idvar', 'location'],
+            'help': 'How colors should be mapped to the plot data',
+        }),
+        (('--figure-linestyle-by', ), {
+            'type': str,
+            'choices': ['id', 'idbase', 'idvar', 'location'],
+            'help': 'How line styles should be mapped to the plot data',
+        }),
     ]
+    _lineprop_map = {
+        'linestyle': {
+            'class': ['-', '--', ':', '-.'],
+            'idvar': {
+                'WT': '-',
+                'rdla': '--',
+            },
+            'idbase': {
+                'B73': '-',
+                'PHKW3': '--',
+            },
+            'location': {
+                'interior': '-',
+                'exterior': '--',
+            },
+        },
+        'color': {
+            'class': ['blue', 'orange', 'purple', 'teal'],
+            'idvar': {
+                'WT': 'blue',
+                'rdla': 'orange',
+            },
+            'idbase': {
+                'B73': 'blue',
+                'PHKW3': 'orange',
+            },
+            'location': {
+                'interior': 'blue',
+                'exterior': 'green',
+            },
+        },
+    }
 
     def __init__(self, args=None, root=None, cached_outputs=None):
         if args is None:
@@ -3454,6 +3567,16 @@ class TaskBase(SubparserBase):
         output_args = [
             v.dest for v in cls._arguments.values() if v.is_output
         ]
+        if args.figure_color_by is None:
+            if ((getattr(args, 'crop', None) == 'maize'
+                 and getattr(args, 'id', None) == 'all')):
+                args.figure_color_by = 'idbase'
+            else:
+                args.figure_color_by = 'class'
+        if args.figure_linestyle_by is None:
+            if ((getattr(args, 'crop', None) == 'maize'
+                 and getattr(args, 'id', None) == 'all')):
+                args.figure_linestyle_by = 'idvar'
         super(TaskBase, cls).adjust_args(args, skip=(skip + output_args),
                                          skip_root=True)
 
@@ -3569,6 +3692,8 @@ class TaskBase(SubparserBase):
             if isinstance(v, CompositeArgument):
                 for kk, vv in v.raw_args(k).items():
                     if kk in args_overwrite:
+                        if kk not in out:
+                            out[kk] = args_overwrite[kk]
                         continue
                     out[kk] = vv
                 continue
@@ -3698,11 +3823,12 @@ class TaskBase(SubparserBase):
                 cls._arguments.append(karg)
         cls._arguments.modify(append_suffix_outputs=output_bases)
         cls._arguments.sort_by_suffix()
+        cls._arguments.modify(suffix_index=0)
 
     @staticmethod
     def _copy_external_arguments(dst, src, include=None, exclude=None,
                                  modifications=None, optional=False,
-                                 suffix_index=None):
+                                 increment_suffix_index=None):
         if modifications is None:
             modifications = {}
         modifications = copy.deepcopy(modifications)
@@ -3713,13 +3839,13 @@ class TaskBase(SubparserBase):
                     modifications.setdefault(f'output_{k}', {})
                     modifications[f'output_{k}'].setdefault(
                         'default', False)
-        if suffix_index is None:
-            suffix_index = -1
+        if increment_suffix_index is None:
+            increment_suffix_index = -1
         src_arguments = src._arguments.copy(
             modifications=modifications, include=include,
             exclude=exclude,
             strip_classes=True,
-            increment_suffix_index=suffix_index,
+            increment_suffix_index=increment_suffix_index,
         )
         new_args = arguments.ArgumentDescriptionSet([])
         for i, v in enumerate(src_arguments.values()):
@@ -3727,10 +3853,10 @@ class TaskBase(SubparserBase):
             if vnested is not None:
                 if vnested.generates_suffix:
                     if v.suffix_param['index'] < vnested.suffix_param['index']:
-                        print("SUFFIX_INDEX", dst, src,
-                              vnested.dest,
-                              vnested.suffix_param['index'],
-                              v.suffix_param['index'])
+                        # print("SUFFIX_INDEX", dst, src,
+                        #       vnested.dest,
+                        #       vnested.suffix_param['index'],
+                        #       v.suffix_param['index'])
                         vnested.modify(
                             suffix_index=v.suffix_param['index'])
                 continue
@@ -3744,6 +3870,50 @@ class TaskBase(SubparserBase):
         dst._outputs_external.update(src._outputs_external)
         for k in src._outputs_total:
             dst._outputs_external[k] = src
+
+    @classmethod
+    def get_line_properties(cls, args, **kws):
+        r"""Get keyword arguments for a line plot based on properties
+        passed via the command line arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            **kws: Additional keyword arguments are properties that
+                should be used when selecting line styles & colors.
+
+        Returns:
+           dict: Keyword arguments for line plot.
+
+        """
+        id = kws.get('id', args.id)
+        out = {}
+        if args.figure_linewidth:
+            out['linewidth'] = args.figure_linewidth
+        if '_' in id:
+            kws['idbase'], kws['idvar'] = id.split('_')
+        else:
+            kws['idvar'] = id
+        for k in ['color', 'linestyle']:
+            karg = getattr(args, f'figure_{k}_by')
+            if karg is None:
+                continue
+            if karg in cls._lineprop_map[k] and karg != 'class':
+                out[k] = cls._lineprop_map[k][karg][kws[karg]]
+            else:
+                v = kws.get(karg, getattr(args, karg, None))
+                if not hasattr(args, f'_used_figure_{k}'):
+                    setattr(args, f'_used_figure_{k}', [])
+                used = getattr(args, f'_used_figure_{k}')
+                if v in used:
+                    idx = used.index(v)
+                else:
+                    idx = len(used)
+                    used.append(v)
+                out[k] = cls._lineprop_map[k]['class'][idx]
+        for k in ['linewidth', 'color', 'linestyle']:
+            if k in kws:
+                out[k] = kws[k]
+        return out
 
     # Methods for managing task I/O
     @classmethod
@@ -3830,7 +4000,7 @@ class TaskBase(SubparserBase):
         elif ext == '.png':
             from matplotlib.figure import Figure
             if isinstance(output, Figure):
-                output.savefig(fname, dpi=300)
+                output.savefig(fname, dpi=args.figure_dpi)
                 return
             utils.write_png(output, fname, verbose=args.verbose)
             return
@@ -4501,6 +4671,10 @@ class TaskBase(SubparserBase):
             out = getattr(self, f'all_{k}s')
             if not out:
                 out = [None]
+        elif k == 'canopy':
+            out = ['unique', 'tile', 'virtual', 'virtual_single']
+        elif k == 'periodic_canopy':
+            out = [False, 'scene']  # , 'plants', 'rays']
         else:
             raise NotImplementedError(k)
         return out
@@ -4527,7 +4701,7 @@ class TaskBase(SubparserBase):
             i = 0
             for x in self.run_series(over=over):
                 if merged_param:
-                    ikey = tuple([getattr(x.args, k)
+                    ikey = tuple([self.args._iteration_param[-1][k]
                                   for k in output.merged_param])
                     out[ikey] = x.get_output(merge_all_output)
                 i += 1
@@ -4745,16 +4919,23 @@ class TaskBase(SubparserBase):
             if not isinstance(over[k], list):
                 over[k] = [over[k]]
         cls.log_class(f"STARTING LOOP OVER: {keys}")
+        if not hasattr(args, '_iteration_param'):
+            args._iteration_param = []
         for x in itertools.product(*[over[k] for k in keys]):
             iargs_overwrite = dict(args_overwrite, **per_iter)
             iargs_overwrite[f'output_{cls._name}'] = True
             for k, v in zip(keys, x):
                 iargs_overwrite[k] = v
-            cls.log_class(f'ITERATION: {dict(zip(keys, x))}')
-            yield cls.run_iteration_class(
-                args, args_overwrite=iargs_overwrite,
-                **kwargs
-            )
+            cls.log_class(
+                f'ITERATION:\n{pprint.pformat(iargs_overwrite)}')
+            try:
+                args._iteration_param.append(iargs_overwrite)
+                yield cls.run_iteration_class(
+                    args, args_overwrite=iargs_overwrite,
+                    **kwargs
+                )
+            finally:
+                args._iteration_param.pop()
 
     def __del__(self):
         if self.has_cached_property('figure'):
@@ -4771,7 +4952,7 @@ class TaskBase(SubparserBase):
         import matplotlib.dates as mdates
         import matplotlib.units as munits
         converter = mdates.ConciseDateConverter()
-        munits.registry[datetime] = converter
+        munits.registry[datetime.datetime] = converter
         return plt.figure()
 
     @cached_property
@@ -4805,6 +4986,8 @@ class IterationTaskBase(TaskBase):
     def _on_registration(cls):
         if cls._step_task is not None:
             step_prop = cls._external_tasks.get(cls._step_task, {})
+            # Force the step parameters to be first in the suffix
+            step_prop.setdefault('increment_suffix_index', -2)
             if cls._step_vary is not None:
                 step_prop.setdefault('exclude', [])
                 if cls._step_vary not in step_prop['exclude']:
@@ -4812,9 +4995,8 @@ class IterationTaskBase(TaskBase):
             cls._external_tasks = copy.deepcopy(cls._external_tasks)
             cls._external_tasks[cls._step_task] = step_prop
             cls._output_info.setdefault(cls._name, {})
-            # TODO: Append to upstream instead?
             cls._output_info[cls._name].setdefault(
-                'upstream', [cls._step_task._name])
+                'base_output', cls._step_task._name)
         TaskBase._on_registration(cls)
 
     def overwrite_outputs(self, downstream=None, wildcards=None):
@@ -4885,6 +5067,11 @@ class IterationTaskBase(TaskBase):
         """
         return xlist
 
+    @cached_property
+    def args_overwrite(self):
+        r"""dict: Arguments to overwrite for each step."""
+        return {}
+
     def run_steps(self, output_name='instance'):
         r"""Run the steps.
 
@@ -4900,7 +5087,9 @@ class IterationTaskBase(TaskBase):
         x_prev = None
         for args_overwrite in self.step_args():
             iargs_overwrite = copy.deepcopy(args_overwrite)
-            pprint.pprint(iargs_overwrite)
+            for k, v in self.args_overwrite.items():
+                iargs_overwrite.setdefault(k, v)
+            self.log(f'STEP:\n{pprint.pformat(iargs_overwrite)}')
             while True:
                 try:
                     x = self.run_iteration(
@@ -4965,23 +5154,28 @@ class OptimizationTaskBase(IterationTaskBase):
             'type': float, 'default': 1e-5,
             'help': 'Tolerance for achieving result',
         }),
+        (('--initial-value', ), {
+            'type': str,
+            'help': 'Initial value for the parameter being varied',
+        }),
     ]
 
     @staticmethod
     def _on_registration(cls):
-        for k in cls._final_outputs:
-            kcls = cls.get_output_task(k)
-            cls._output_info.setdefault(
-                k, {
-                    'base_output': cls._name,
-                    'ext': kcls._output_info[k]['ext'],
-                    'description': kcls._output_info[k]['description'],
-                    'optional': True,
-                }
-            )
-        IterationTaskBase._on_registration(cls)
         if cls._step_task is not None:
+            cls._output_info.setdefault(cls._name, {})
+            for k in cls._final_outputs:
+                kcls = cls.get_output_task(k)
+                cls._output_info.setdefault(
+                    k, {
+                        'base_output': cls._name,
+                        'ext': kcls._output_info[k]['ext'],
+                        'description': kcls._output_info[k]['description'],
+                        'optional': True,
+                    }
+                )
             cls._output_info[cls._name].setdefault('ext', '.json')
+        IterationTaskBase._on_registration(cls)
 
     def overwrite_outputs(self, downstream=None, wildcards=None):
         r"""Remove existing files that should be overwritten.
@@ -5025,6 +5219,13 @@ class OptimizationTaskBase(IterationTaskBase):
             return str(x.units)
         return None
 
+    @cached_property
+    def args_overwrite(self):
+        r"""dict: Arguments to overwrite for each step."""
+        # TODO: Does this work?
+        return {f'dont_write_{k}': True
+                for k in self._step_task._outputs_total}
+
     def objective(self, x):
         r"""Objective function for use with scipy.optimize.minimize.
 
@@ -5039,9 +5240,8 @@ class OptimizationTaskBase(IterationTaskBase):
         iargs_overwrite = {
             self.args.vary: parse_quantity(x[0], self.vary_units)
         }
-        # TODO: Does this work?
-        for k in self._step_task._outputs_total:
-            iargs_overwrite[f'dont_write_{k}'] = True
+        for k, v in self.args_overwrite.items():
+            iargs_overwrite.setdefault(k, v)
         repeat = True
         out = None
         while repeat:
@@ -5082,7 +5282,11 @@ class OptimizationTaskBase(IterationTaskBase):
         """
         from scipy.optimize import minimize
         self.goal  # Initialize
-        x0 = np.array([getattr(self.args, self.args.vary)])
+        if self.args.initial_value is not None:
+            v0 = self.args.initial_value
+        else:
+            v0 = getattr(self.args, self.args.vary)
+        x0 = np.array([v0])
         self._prev_instance = None
         res = minimize(
             self.objective, x0, method=self.args.method,

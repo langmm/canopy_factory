@@ -38,6 +38,7 @@ class ParametrizeCropTask(TaskBase):
                 'parameters used to generate 3D '
                 'representations of a canopy'
             ),
+            'composite_param': ['id', 'data_year'],
         },
         'lpy_model': {
             'directory': utils.cfg['directories']['lpy'],
@@ -358,7 +359,8 @@ class LayoutTask(TaskBase):
     }
     _arguments = [
         (('--canopy', ), {
-            'choices': ['single', 'tile', 'unique', 'virtual'],
+            'choices': ['single', 'tile', 'unique', 'virtual',
+                        'virtual_single'],
             'default': 'unique',
             'help': 'Type of canopy to layout',
             'suffix_param': {
@@ -367,20 +369,16 @@ class LayoutTask(TaskBase):
         }),
         arguments.DimensionArgumentDescription([
             (('--plot-length', '--row-length'), {
-                'default': 200, 'units': 'cm',
+                'no_cli': True,
+                'units': 'cm',
                 'units_arg': 'mesh_units',
                 'help': 'Length of plot rows forming canopy (in cm)',
             }),
             (('--plot-width', ), {
+                'no_cli': True,
                 'units': 'cm',
                 'units_arg': 'mesh_units',
-                'help': (
-                    'Width of plot forming canopy (in cm). If provided '
-                    '\'nrows\' will be determined based on the provided '
-                    '\'row_spacing\'. If not provided, \'plot_width\' '
-                    'will be determined from \'nrows\' and '
-                    '\'row_spacing\'.'
-                ),
+                'help': 'Width of plot forming canopy (in cm)',
             }),
         ], name='plot_dimensions'),
         arguments.DimensionArgumentDescription([
@@ -406,7 +404,7 @@ class LayoutTask(TaskBase):
                 'suffix_param': {'noteq': 4},
             }),
             (('--ncols', ), {
-                'type': int,
+                'type': int, 'default': 10,
                 'help': 'Number of plants to generate in each row',
                 'suffix_param': {'noteq': 10},
             }),
@@ -416,7 +414,7 @@ class LayoutTask(TaskBase):
         arguments.ArgumentDescriptionSet([
             (('--periodic-canopy', ), {
                 'nargs': '?', 'const': 'scene', 'default': False,
-                'choices': [False, 'scene', 'rays'],
+                'choices': [False, 'scene', 'plants', 'rays'],
                 'help': (
                     'Make the canopy periodic for ray tracing so '
                     'that is infinitely wide'
@@ -536,12 +534,8 @@ class LayoutTask(TaskBase):
 
         """
         super(LayoutTask, cls).adjust_args_internal(args, **kwargs)
-        if args.plot_width is None:
-            args.plot_width = args.nrows * args.row_spacing
-        if args.plot_length is None:
-            args.plot_length = args.ncols * args.plant_spacing
-        args.nrows = int(args.plot_width / args.row_spacing)
-        args.ncols = int(args.plot_length / args.plant_spacing)
+        args.plot_width = args.nrows * args.row_spacing
+        args.plot_length = args.ncols * args.plant_spacing
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
         if args.periodic_canopy is True:
@@ -555,7 +549,7 @@ class LayoutTask(TaskBase):
             if args.periodic_canopy:
                 args.periodic_canopy_count = 2
             else:
-                args.periodic_canopy_count = 1
+                args.periodic_canopy_count = 0
         args.periodic_period = np.array([
             args.nrows * args.row_spacing,
             args.ncols * args.plant_spacing,
@@ -571,6 +565,14 @@ class LayoutTask(TaskBase):
             args.periodic_canopy_count,
             0,
         ], 'i4')
+        args.virtual_canopy_count_array = np.ones((3, ), 'i4')
+        args.virtual_period = np.array([
+            args.row_spacing, args.plant_spacing, 0.0
+        ], 'f4')
+        args.virtual_direction = args.periodic_direction
+        if args.canopy.startswith('virtual'):
+            args.virtual_canopy_count_array[0] = args.nrows
+            args.virtual_canopy_count_array[1] = args.ncols
 
     @cached_property
     def nplants(self):
@@ -584,24 +586,23 @@ class LayoutTask(TaskBase):
         order."""
         # TODO: Allow multiple crop classes?
         pos0 = self.args.plant_spacing * np.zeros((1, 3), 'f4')
-        plantid = 0
-        x = self.args.x
-        y = self.args.y
-        axis_x = self.args.axis_rows
-        axis_y = self.args.axis_cols
-        out = self.args.plant_spacing * np.zeros((self.nplants, 3), 'f4')
-        for i in range(self.args.nrows):
-            y = self.args.y
-            for j in range(self.args.ncols):
-                out[plantid, :] = pos0 + x * axis_x + y * axis_y
-                y = y + self.args.plant_spacing
-                plantid += 1
-            x = x + self.args.row_spacing
+        out = pos0 + units.QuantityArray(
+            self.get_periodic_shifts(
+                self.args.virtual_period.astype('f4'),
+                self.args.virtual_direction.astype('f4'),
+                np.array([self.args.nrows, self.args.ncols, 0], 'i4'),
+                include_origin=True,
+                dont_reflect=True,
+                dont_center=True,
+            ).astype('f4'),
+            self.args.plant_spacing.units,
+        )
         return out
 
     @classmethod
     def get_periodic_shifts(cls, period, direction, count,
-                            include_origin=False):
+                            include_origin=False,
+                            dont_reflect=False, dont_center=True):
         r"""Get the shifts that should be applied to plants.
 
         Args:
@@ -613,6 +614,10 @@ class LayoutTask(TaskBase):
                 repeated in each direction.
             include_origin (bool, optional): If True, include the origin
                 in the returned shifts.
+            dont_reflect (bool, optional): If True, the shifts will only
+                occur in the positive direction along each axis.
+            dont_center (bool, optional): If True, this shifts will not
+                be centered on the origin.
 
         Returns:
             np.ndarray: Shifts in each coordinate that should be applied.
@@ -625,8 +630,16 @@ class LayoutTask(TaskBase):
             if period[axis] == 0:
                 opts.append([0])
                 continue
+            if dont_reflect:
+                count_lh = -(count[axis] // 2)
+                count_rh = count[axis] + count_lh
             else:
-                opts.append(list(range(-count[axis], count[axis] + 1)))
+                count_lh = -count[axis]
+                count_rh = count[axis] + 1
+            if dont_center:
+                count_rh = count_rh - count_lh
+                count_lh = 0
+            opts.append(list(range(count_lh, count_rh)))
         for buffers in itertools.product(*opts):
             if (not include_origin) and all(ibuffer == 0 for ibuffer
                                             in buffers):
@@ -642,15 +655,20 @@ class LayoutTask(TaskBase):
         return np.vstack(shifts)
 
     @cached_property
+    def nplants_virtual(self):
+        r"""int: Number of plants in the virtual canopy buffer."""
+        if self.args.canopy.startswith('virtual'):
+            return (self.args.ncols * self.args.nrows) - 1
+        return 0
+
+    @cached_property
     def nplants_periodic(self):
         r"""int: Number of plants in the periodic canopy buffer."""
         # TODO: Allow multiple crop classes?
         if not self.args.periodic_canopy:
             return 0
         out = np.prod(2 * self.args.periodic_canopy_count_array + 1) - 1
-        if self.args.canopy != 'single':
-            out *= self.nplants
-        return out
+        return self.nplants * out
 
     @cached_property
     def plant_positions_periodic(self):
@@ -812,7 +830,7 @@ class LayoutTask(TaskBase):
         return out
 
     def _get_color(self, plantid):
-        if plantid == 0 and self.args.canopy == 'virtual':
+        if plantid == 0 and self.args.canopy.startswith('virtual'):
             return self.args.real_plant_color
         if self.isExteriorPlant(plantid):
             return self.args.exterior_plant_color
@@ -996,6 +1014,7 @@ class GenerateTask(TaskBase):
             'description': 'mesh',
             'upstream': ['parametrize', 'lpy_model'],
             'merge_all': 'all_combined',
+            'composite_param': ['id', 'data_year'],
         },
         'geometryids': {
             'ext': '.csv',
@@ -1006,6 +1025,7 @@ class GenerateTask(TaskBase):
                 'belongs to'
             ),
             'merge_all': 'all_combined',
+            'composite_param': ['id', 'data_year'],
         },
     }
     _external_tasks = {
@@ -1032,10 +1052,30 @@ class GenerateTask(TaskBase):
             'modifications': {
                 'canopy': {
                     'default': 'single',
-                    'remove_choices': ['virtual'],
+                    'remove_choices': ['virtual', 'virtual_single'],
+                    'suffix_param': {
+                        'prefix': 'canopy', 'title': True,
+                        'cond': lambda x: (
+                            x.canopy not in ['single', 'virtual',
+                                             'virtual_single']),
+                    },
                 },
                 'plantid': {
                     'suffix_param': {'cond': lambda x: (x.plantid > 0)},
+                },
+                'plot_spacing': {
+                    'suffix_param': {
+                        'cond': lambda x: (
+                            x.canopy not in ['single', 'virtual',
+                                             'virtual_single']),
+                    },
+                },
+                'plant_count': {
+                    'suffix_param': {
+                        'cond': lambda x: (
+                            x.canopy not in ['single', 'virtual',
+                                             'virtual_single']),
+                    },
                 },
             },
             'optional': True,

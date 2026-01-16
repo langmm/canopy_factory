@@ -4,6 +4,7 @@ import numpy as np
 import itertools
 import pprint
 import copy
+import time
 from datetime import datetime
 from collections import OrderedDict
 from yggdrasil_rapidjson import units
@@ -23,22 +24,6 @@ from canopy_factory.cli import (
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
 from canopy_factory import light_sources
-
-
-_query_options_adm = [
-    'plantids', 'componentids',
-]
-_query_options_phy = [
-    'flux_density', 'flux', 'hits', 'areas',
-]
-_query_options = _query_options_phy + _query_options_adm
-_query_options_calc_prefix = [
-    'total_', 'average_', 'scene_average_',
-]
-_query_options_calc = [
-    prefix + q for prefix, q in
-    itertools.product(_query_options_calc_prefix, _query_options_phy)
-]
 
 
 def generate_rays(ray_origins, ray_directions,
@@ -71,7 +56,8 @@ def generate_rays(ray_origins, ray_directions,
         'RAY_LENGTH': ray_length,
         'ARROW_WIDTH': arrow_width,
     }
-    lsys = Lsystem(cfg['directories']['lpy'], param)
+    lsys = Lsystem(os.path.join(cfg['directories']['lpy'], 'rays.lpy'),
+                   param)
     tree = lsys.axiom
     for i in range(2):
         tree = lsys.iterate(tree, 1)
@@ -82,6 +68,7 @@ def generate_rays(ray_origins, ray_directions,
     )
     if verbose:
         print('Finished generating rays')
+    assert mesh.nface > 0
     return mesh
 
 
@@ -147,23 +134,16 @@ class RayTracerBase(RegisteredClassBase):
                  f'north = {self.north}, '
                  f'east = {self.east}, ground = {self.ground}')
 
-    @cached_property
-    def periodic_canopy(self):
-        r"""str: Periodic canopy type."""
-        if self.args.virtual_canopy and not self.args.periodic_canopy:
-            return 'scene'
-        return self.args.periodic_canopy
-
-    @cached_property
-    def periodic_canopy_count_array(self):
-        r"""np.ndarray: Array specifying how many times the canopy
-        should be replicated in each direction."""
-        out = self.args.periodic_canopy_count_array
-        if self.args.virtual_canopy:
-            out = copy.deepcopy(out)
-            out[0] *= self.args.virtual_nrows
-            out[1] *= self.args.virtual_ncols
-        return out
+    @property
+    def plant_triangles(self):
+        r"""Yields tuples of plant ID & arrays of triangles for the
+        faces in that plant."""
+        for plantid, mesh_dict in self.plants.items():
+            triangles = []
+            for face in mesh_dict['face']:
+                triangles.append(mesh_dict['vertex'][face, :])
+            if triangles:
+                yield plantid, np.array(triangles)
 
     @cached_property
     def geometryid_order(self):
@@ -247,16 +227,18 @@ class RayTracerBase(RegisteredClassBase):
         return parse_axis(x)
 
     @classmethod
-    def assign_face_data(cls, idx, dst, src):
-        r"""Assign face values to a destination array based on the
-        supplied index.
+    def finalize_face_index(cls, idx, Nface, shift=0):
+        r"""Convert a face index to a numpy array.
 
         Args:
             idx (dict): Dictionary of indices created when selecting a
                 subset of a mesh.
-            dst (np.ndarray): Array that values should be copied into.
-            src (np.ndarray): Array of face values for the current
-                selection of faces.
+            Nface (int): Number of faces in the mesh.
+            shift (int, optional): Factor that should be added to the
+                final index.
+
+        Returns:
+            np.ndarray: Face indices selected by idx.
 
         """
         idx_chain = []
@@ -264,12 +246,11 @@ class RayTracerBase(RegisteredClassBase):
         while iidx is not None:
             idx_chain.append(iidx['face'])
             iidx = iidx.get('parent', None)
-        idx_dst = np.arange(len(dst), dtype=np.int32)
+        idx_dst = np.arange(Nface, dtype=np.int32)
         for iidx in idx_chain[::-1]:
             assert idx_dst.shape == iidx.shape
             idx_dst = idx_dst[iidx]
-        assert idx_dst.shape == src.shape
-        dst[idx_dst] = src
+        return idx_dst + shift
 
     @classmethod
     def select_vertices(cls, mesh_dict, cond, continuous=False):
@@ -382,20 +363,33 @@ class RayTracerBase(RegisteredClassBase):
         return np.cross(self.north, self.up)
 
     @cached_args_property
+    def nvirtual(self):
+        if not self.args.canopy.startswith('virtual'):
+            return 0
+        return np.prod(self.args.virtual_canopy_count_array) - 1
+
+    @cached_args_property
     def virtual_shifts(self):
         r"""np.ndarray: Shifts for positions of virtual plants."""
-        if not self.args.virtual_canopy:
-            return None
+        if not self.args.canopy.startswith('virtual'):
+            return np.zeros((0, 3), 'f4')
+        return LayoutTask.get_periodic_shifts(
+            self.args.virtual_period,
+            self.args.virtual_direction,
+            self.args.virtual_canopy_count_array,
+            dont_reflect=True,
+        ).astype('f4')
+
+    @cached_args_property
+    def periodic_shifts(self):
+        r"""np.ndarray: Shifts for positions of periodic plants."""
+        if self.args.periodic_canopy not in ['scene', 'plants']:
+            return np.zeros((0, 3), 'f4')
         return LayoutTask.get_periodic_shifts(
             self.args.periodic_period,
             self.args.periodic_direction,
-            np.array([
-                self.args.virtual_nrows,
-                self.args.virtual_ncols,
-                0
-            ], 'i4'),
-            include_origin=True,
-        )
+            self.args.periodic_canopy_count_array,
+        ).astype('f4')
 
     @cached_args_property
     def real_scene_model(self):
@@ -419,23 +413,37 @@ class RayTracerBase(RegisteredClassBase):
     @cached_args_property
     def virtual_scene_model(self):
         r"""SceneModel: Virtual scene properties."""
-        if not self.args.virtual_canopy:
+        if not self.args.canopy.startswith('virtual'):
             return self.real_scene_model
         mins = self.real_scene_model.mins
         maxs = self.real_scene_model.maxs
+        shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+                            self.virtual_shifts])
         if getattr(self.args, 'scene_mins', None) is None:
-            mins = (mins + self.virtual_shifts).min(axis=0)
+            mins = (mins + shifts).min(axis=0)
         if getattr(self.args, 'scene_maxs', None) is None:
-            maxs = (maxs + self.virtual_shifts).max(axis=0)
+            maxs = (maxs + shifts).max(axis=0)
         return SceneModel(mins, maxs)
 
     @cached_args_property
     def ground(self):
         r"""np.ndarray: Coordinates of the scene center on the ground."""
         return (
-            np.dot(self.real_scene_model.dim / 2, self.north) * self.north
-            + np.dot(self.real_scene_model.dim / 2, self.east) * self.east
+            np.dot(self.virtual_scene_model.dim / 2, self.north) * self.north
+            + np.dot(self.virtual_scene_model.dim / 2, self.east) * self.east
             + self.args.ground_height.value * self.up
+        )
+
+    @cached_args_property
+    def zenith(self):
+        r"""np.ndarray: Vector from the ground in the up direction with
+        a length equal to the farthest point in the scene from the
+        ground"""
+        return (
+            self.up * np.sqrt(
+                np.max(np.sum((self.virtual_scene_model.limits
+                               - self.ground)**2, axis=1)))
+            + self.ground
         )
 
     @cached_args_property
@@ -667,10 +675,14 @@ class RayTracerBase(RegisteredClassBase):
 
         """
         faces = self.mesh_dict['face'][self.area_mask, :]
-        face_scalar = face_scalar[self.area_mask]
+        nvert = self.mesh_dict['vertex'].shape[0]
+        area_mask = self.area_mask
+        if self.args.canopy == 'virtual':
+            face_scalar = face_scalar[:len(self.area_mask)]
+        face_scalar = face_scalar[area_mask]
         if method == 'deposit':
             face_scalar /= faces.shape[1]
-        vertex_scalar = np.zeros((self.mesh_dict['vertex'].shape[0], ))
+        vertex_scalar = np.zeros((nvert, ))
         try:
             face_scalar = np.tile(face_scalar, (faces.shape[1], 1)).T
         except units.UnitsError:
@@ -694,32 +706,100 @@ class HothouseRayTracer(RayTracerBase):
     def scene(self):
         r"""hothouse.scene.Scene: Scene containing geometry."""
         from hothouse.plant_model import PlantModel
-        kws = {}
-        if self.periodic_canopy == 'scene':
-            from hothouse.scene import PeriodicScene as Scene
-            kws.update(
-                period=self.args.periodic_period.astype('f4'),
-                direction=self.args.periodic_direction.astype('f4'),
-                count=self.periodic_canopy_count_array,
-            )
-        else:
-            from hothouse.scene import Scene
-        out = Scene(
-            ground=self.ground, up=self.up, north=self.north, **kws
-        )
-        for plantid, mesh_dict in self.plants.items():
-            triangles = []
-            for face in mesh_dict['face']:
-                triangles.append(mesh_dict['vertex'][face, :])
-            if triangles:
-                triangles = np.array(triangles)
-                plant = PlantModel(
-                    vertices=mesh_dict['vertex'].astype('f4'),
-                    indices=mesh_dict['face'].astype('i4'),
-                    attributes=mesh_dict['vertex_colors'].astype('f4'),
-                    triangles=triangles.astype('f4'),
+        from hothouse.scene import Scene, PeriodicScene
+        kws = {'ground': self.ground, 'up': self.up, 'north': self.north}
+        scene_cls = Scene
+        if ((self.args.periodic_canopy == 'scene'
+             or self.args.canopy == 'virtual_single')):
+            scene_cls = PeriodicScene
+            if self.args.canopy == 'virtual_single':
+                virtual_count = self.args.virtual_canopy_count_array
+                if self.args.periodic_canopy == 'scene':
+                    virtual_count = (
+                        virtual_count
+                        * (2 * self.args.periodic_canopy_count_array + 1)
+                    )
+                kws.update(
+                    period=self.args.virtual_period.astype('f4'),
+                    direction=self.args.virtual_direction.astype('f4'),
+                    count=virtual_count,
+                    dont_reflect=True,
                 )
-                out.add_component(plant)
+            else:
+                kws.update(
+                    period=self.args.periodic_period.astype('f4'),
+                    direction=self.args.periodic_direction.astype('f4'),
+                    count=self.args.periodic_canopy_count_array,
+                )
+        out = scene_cls(**kws)
+        self._plantid2geomID = {}
+        self._geomID2primID = {}
+        self._geomID2realID = {}
+        self._currentIDs = {
+            'geomID': 0,
+            'primID': 0,
+            'realID': 0,
+        }
+
+        def add_plant(plant_type, plantid, triangles, baseID=None,
+                      shift=None):
+            mesh_dict = self.plants[plantid]
+            geomID = self._currentIDs['geomID']
+            primID = self._currentIDs['primID']
+            realID = self._currentIDs['realID']
+            kws = dict(
+                vertices=mesh_dict['vertex'].astype('f4'),
+                indices=mesh_dict['face'].astype('i4'),
+                attributes=mesh_dict['vertex_colors'].astype('f4'),
+                triangles=triangles.astype('f4'),
+            )
+            if shift is None:
+                shift = np.zeros((3,), 'f4')
+            else:
+                for k in ['vertices', 'triangles']:
+                    kws[k] = kws[k] + shift
+            plant = PlantModel(**kws)
+            if plant_type == 'real':
+                self._plantid2geomID[plantid] = {
+                    'real': geomID,
+                    'virtual': [],
+                    'periodic': {},
+                }
+            else:
+                if plant_type == 'periodic':
+                    assert baseID is not None
+                    self._plantid2geomID[plantid][plant_type].setdefault(
+                        baseID, [])
+                    self._plantid2geomID[plantid][plant_type][
+                        baseID].append(geomID)
+                elif plant_type == 'virtual':
+                    self._plantid2geomID[plantid][plant_type].append(geomID)
+                else:
+                    raise NotImplementedError(plant_type)
+            self._geomID2primID[geomID] = range(
+                primID, primID + triangles.shape[0])
+            self._geomID2realID[geomID] = range(
+                realID, realID + triangles.shape[0])
+            self._currentIDs['geomID'] += 1
+            self._currentIDs['primID'] += triangles.shape[0]
+            if plant_type in ['real', 'virtual']:
+                self._currentIDs['realID'] += triangles.shape[0]
+            assert geomID == len(out.components)
+            out.add_component(plant)
+            if ((plant_type in ['real', 'virtual']
+                 and self.args.periodic_canopy == 'plants')):
+                for ishift in self.periodic_shifts:
+                    add_plant('periodic', plantid, triangles,
+                              baseID=geomID, shift=(shift + ishift))
+            if ((plant_type == 'real'
+                 and not (self.args.canopy == 'virtual_single'
+                          and isinstance(out, PeriodicScene)))):
+                for ishift in self.virtual_shifts:
+                    add_plant('virtual', plantid, triangles,
+                              shift=(shift + ishift))
+
+        for plantid, triangles in self.plant_triangles:
+            add_plant('real', plantid, triangles)
         return out
 
     @cached_args_property
@@ -760,7 +840,7 @@ class HothouseRayTracer(RayTracerBase):
     def point_source_blaster(self):
         r"""hothouse.blaster.SolarBlaster: Blaster for a point source."""
         from hothouse.blaster import SphericalRayBlaster
-        assert self.periodic_canopy != 'rays'
+        assert self.args.periodic_canopy != 'rays'
         direct_ppfd = self.args.light_intensity_direct
         diffuse_ppfd = self.args.light_intensity_diffuse
         self.log(f"Total PPFD"
@@ -785,6 +865,43 @@ class HothouseRayTracer(RayTracerBase):
             multibounce=self.args.multibounce, **kws
         )
 
+    def get_solar_blaster(self, **kwargs):
+        r"""Create a hothouse SunRayBlaster.
+
+        Args:
+            **kwargs: All keyword arguments are passed to the
+                SunRayBlaster constructor after supplementing missing
+                arguments with scene properties.
+
+        Returns:
+            SunRayBlaster: Blaster instance.
+
+        """
+        from hothouse.blaster import SunRayBlaster
+        kws = dict(
+            latitude=self.solar_model.latitude.value,
+            longitude=self.solar_model.longitude.value,
+            date=self.solar_model.time,
+            diffuse_intensity=self.solar_model.ppfd_diffuse.value[0],
+            ground=self.ground,
+            north=self.north,
+            zenith=self.zenith,
+            scene_limits=self.virtual_scene_model.limits.astype('f4'),
+            solar_altitude=self.solar_model.apparent_elevation,
+            solar_azimuth=self.solar_model.azimuth,
+            nx=self.args.nrays, ny=self.args.nrays,
+            multibounce=self.args.multibounce,
+        )
+        if self.args.periodic_canopy == 'rays':
+            kws.update(
+                period=self.args.periodic_period.astype('f4'),
+                periodic_direction=self.args.periodic_direction.astype('f4'),
+                periodic_count=self.args.periodic_canopy_count_array,
+            )
+        for k, v in kws.items():
+            kwargs.setdefault(k, v)
+        return SunRayBlaster(**kwargs)
+
     @cached_args_property
     def solar_blaster(self):
         r"""hothouse.blaster.SolarBlaster: Blaster for sun."""
@@ -793,24 +910,12 @@ class HothouseRayTracer(RayTracerBase):
                  f"\n   direct = {self.solar_model.ppfd_direct}"
                  f"\n   diffuse = {self.solar_model.ppfd_diffuse}",
                  force=True)
-        kws = {}
-        if self.periodic_canopy == 'rays':
-            kws.update(
-                period=self.args.periodic_period.astype('f4'),
-                periodic_direction=self.args.periodic_direction.astype('f4'),
-                periodic_count=self.periodic_canopy_count_array,
-            )
-        return self.scene.get_sun_blaster(
-            self.solar_model.latitude.value,
-            self.solar_model.longitude.value,
-            self.solar_model.time,
-            direct_ppfd=self.solar_model.ppfd_direct.value[0],
-            diffuse_ppfd=self.solar_model.ppfd_diffuse.value[0],
-            solar_altitude=self.solar_model.apparent_elevation,
-            solar_azimuth=self.solar_model.azimuth,
-            nx=self.args.nrays, ny=self.args.nrays,
-            multibounce=self.args.multibounce, **kws
+        blaster = self.get_solar_blaster()
+        blaster.intensity = (
+            self.solar_model.ppfd_direct.value[0]
+            * blaster.width * blaster.height
         )
+        return blaster
 
     @property
     def ray_origins(self):
@@ -830,13 +935,7 @@ class HothouseRayTracer(RayTracerBase):
     @cached_args_property
     def ray_properties(self):
         r"""tuple: Ray properties."""
-        rb = self.scene.get_sun_blaster(
-            self.solar_model.latitude, self.solar_model.longitude,
-            self.solar_model.time,
-            solar_altitude=self.solar_model.apparent_elevation,
-            solar_azimuth=self.solar_model.azimuth,
-            nx=10, ny=10, multibounce=self.args.multibounce,
-        )
+        rb = self.get_solar_blaster(nx=10, ny=10)
         ray_origins = rb.origins
         ray_directions = rb.directions
         ray_lengths = self.args.ray_length.value
@@ -847,6 +946,60 @@ class HothouseRayTracer(RayTracerBase):
             ray_lengths[idx_max] = ray_length0
         return (ray_origins, ray_directions, ray_lengths)
 
+    def raytrace_sample(self, hits, values, value_miss=np.nan,
+                        method='accumulate'):
+        r"""Sample a set of values for each face in the mesh based on
+        the faces hit by the ray tracer.
+
+        Args:
+            hits (dict): Raytracer result.
+            values (np.ndarray): Array of values at each face.
+            value_miss (np.float64, optional): Value to use when a ray
+                did not hit a face.
+            method (str, optional): How the values should be sampled.
+
+        Returns:
+            np.ndarray: Result for each ray.
+
+        """
+        if method in ['multiply']:
+            out = np.ones(hits['geomID'].shape, "f4")
+        else:
+            out = np.zeros(hits['geomID'].shape, "f4")
+        if isinstance(values, units.QuantityArray):
+            out = units.QuantityArray(out, values.units)
+            value_miss = parse_quantity(value_miss, values.units)
+        any_hits = (hits["primID"] >= 0)
+
+        def assign_geomID(geomID, v):
+            idx_hits = np.logical_and(hits["geomID"] == geomID, any_hits)
+            idx_scene = hits["primID"][idx_hits]
+            if method == 'accumulate':
+                out[idx_hits] += v[idx_scene]
+            elif method == 'multiply':
+                out[idx_hits] *= v[idx_scene]
+            else:
+                raise NotImplementedError(method)
+
+        for plantid, mesh_dict in self.plants.items():
+            for ivirt, geomID in enumerate(self.plantid2geomIDs(plantid)):
+                if self.args.canopy == 'virtual':
+                    shift = (ivirt * self.mesh_dict['face'].shape[0])
+                else:
+                    shift = 0
+                idx_src = self.finalize_face_index(
+                    mesh_dict.get('idx', None),
+                    self.mesh_dict['face'].shape[0],
+                    shift=shift,
+                )
+                v = values[idx_src]
+                assign_geomID(geomID, v)
+                for periodic_geomID in self._plantid2geomID[plantid][
+                        'periodic'].get(geomID, []):
+                    assign_geomID(periodic_geomID, v)
+        out[hits["primID"] < 0] = value_miss
+        return out
+
     def raytrace(self):
         r"""Run the ray tracer and get values for each face.
 
@@ -855,10 +1008,31 @@ class HothouseRayTracer(RayTracerBase):
 
         """
         if self.args.query == 'areas':
-            return self.areas
+            out = self.areas
+            if self.args.canopy == 'virtual':
+                out = np.hstack([out for _ in range(self.nvirtual + 1)])
+            return out
         elif self.geometryids and self.args.query in self.geometryids:
-            return self.geometryids[self.args.query]
-        values = np.zeros((self.mesh_dict['face'].shape[0], ), np.float64)
+            out = self.geometryids[self.args.query]
+            if self.args.canopy == 'virtual':
+                out = [out]
+                if self.args.query == 'plantids':
+                    maxid = out[0].max() + 1
+                    for ivert in range(1, self.nvirtual + 1):
+                        out.append(out[0] + ivert * maxid)
+                elif self.args.query in ['componentids']:
+                    for ivert in range(1, self.nvirtual + 1):
+                        out.append(out[0])
+                else:
+                    print(self.args.query)
+                    pdb.set_trace()
+                    raise NotImplementedError(self.args.query)
+                out = np.hstack(out)
+            return out
+        nfaces = self.mesh_dict['face'].shape[0]
+        if self.args.canopy == 'virtual':
+            nfaces *= (self.nvirtual + 1)
+        values = np.zeros((nfaces, ), np.float64)
         if values.shape[0] == 0:
             return values
         self.log(f'Running ray tracer to get {self.args.query} for '
@@ -881,13 +1055,39 @@ class HothouseRayTracer(RayTracerBase):
         else:
             raise ValueError(f"Unsupported ray tracer query "
                              f"\"{self.args.query}\"")
-        for i, k in enumerate(self.mesh_keys()):
-            v = component_values[i]
-            self.assign_face_data(self.plants[k].get('idx', None),
-                                  values, v)
+        for plantid, mesh_dict in self.plants.items():
+            idx = mesh_dict.get('idx', None)
+            geomIDs = self.plantid2geomIDs(
+                plantid, exclude_virtual=(self.args.canopy != 'virtual'))
+            for ivirt, geomID in enumerate(geomIDs):
+                v = component_values[geomID]
+                idx_dst = self.finalize_face_index(
+                    idx, self.mesh_dict['face'].shape[0],
+                    shift=(ivirt * self.mesh_dict['face'].shape[0]),
+                )
+                assert idx_dst.shape == v.shape
+                values[idx_dst] = v
         if value_units:
             values = parse_quantity(values, value_units)
         return values
+
+    def plantid2geomIDs(self, plantid, exclude_virtual=False):
+        r"""Get the scene geometry IDs for a given plant ID including both
+        real and virtual plant geometries.
+
+        Args:
+            plantid (int): Plant ID to get geometry IDs for.
+            exclude_virtual (bool, optional): If True, don't include
+                virtual plant geometries.
+
+        Returns:
+            list: Geometry IDs.
+
+        """
+        out = [self._plantid2geomID[plantid]['real']]
+        if not exclude_virtual:
+            out += self._plantid2geomID[plantid]['virtual']
+        return out
 
     def render(self, values, value_miss=-1.0):
         r"""Image the scene.
@@ -902,27 +1102,17 @@ class HothouseRayTracer(RayTracerBase):
             np.ndarray: Ray tracer results for each pixel.
 
         """
-        from hothouse.scene import PeriodicScene
-        prev = None
-        if isinstance(self.scene, PeriodicScene):
-            prev = self.scene.buffer_as_primary
+        prev = False
+        try:
+            if hasattr(self.scene, 'buffer_as_primary'):
+                prev = self.scene.buffer_as_primary
             self.scene.buffer_as_primary = True
-        camera_hits = self.camera_blaster.compute_count(self.scene)
-        if prev is not None:
-            self.scene.buffer_as_primary = prev
-        out = np.zeros(self.image_nx * self.image_ny, "f4")
-        if isinstance(values, units.QuantityArray):
-            out = units.QuantityArray(out, values.units)
-            value_miss = parse_quantity(value_miss, values.units)
-        for ci in range(len(self.scene.components)):
-            idx_ci = np.where(camera_hits["geomID"] == ci)[0]
-            hits = camera_hits["primID"][idx_ci]
-            try:
-                out[idx_ci[hits >= 0]] += values[hits[hits >= 0]]
-            except TypeError:
-                pdb.set_trace()
-                raise
-        out[camera_hits["primID"] < 0] = value_miss
+            camera_hits = self.camera_blaster.compute_count(self.scene)
+        finally:
+            if hasattr(self.scene, 'buffer_as_primary'):
+                self.scene.buffer_as_primary = prev
+        out = self.raytrace_sample(
+            camera_hits, values, value_miss=value_miss)
         return out.reshape((self.image_nx, self.image_ny))
 
 
@@ -932,6 +1122,24 @@ class HothouseRayTracer(RayTracerBase):
 
 class RayTraceTask(TaskBase):
     r"""Class for running a ray tracer on a 3D canopy."""
+
+    _query_options_adm = [
+        'plantids', 'componentids',
+    ]
+    _query_options_phy = [
+        'flux_density', 'flux', 'hits', 'areas',
+    ]
+    _query_options = _query_options_phy + _query_options_adm
+    _query_options_calc_prefix = [
+        'total_', 'average_', 'scene_average_',
+    ]
+    _query_options_calc = [
+        prefix + q for prefix, q in
+        itertools.product(_query_options_calc_prefix, _query_options_phy)
+    ]
+    _query_options_other = [
+        'compute_time',
+    ]
 
     _name = 'raytrace'
     _output_info = {
@@ -977,71 +1185,36 @@ class RayTraceTask(TaskBase):
                 },
                 'canopy': {
                     'default': 'unique',
-                    'append_choices': ['virtual'],
+                    'append_choices': ['virtual', 'virtual_single'],
+                    'append_suffix_param': {
+                        'prefix': 'canopy', 'title': True,
+                        'cond': lambda x: (x.canopy != 'single'),
+                    },
                 },
-            }
+                'plot_spacing': {
+                    'append_suffix_param': {
+                        'cond': lambda x: (
+                            x.periodic_canopy or x.canopy != 'single'),
+                    },
+                },
+                'plant_count': {
+                    'append_suffix_param': {
+                        'cond': lambda x: (x.canopy != 'single'),
+                    },
+                },
+            },
+            # Force virtual canopy between generate suffix and layout
+            'increment_suffix_index': -3,
         },
         LayoutTask: {
             'include': [
                 'periodic_canopy', 'periodic_canopy_count',
             ],
             'optional': True,
-            'suffix_index': -1,
+            'increment_suffix_index': -2,
         },
     }
-    _virtual_argument_names = [
-        'canopy', 'row_spacing', 'plant_spacing',
-        'nrows', 'ncols', 'plot_length', 'plot_width',
-    ]
     _arguments = [
-        # GenerateTask._arguments['crop'].copy(remove_class='task'),
-        arguments.ArgumentDescriptionSet([
-            (('--virtual-canopy', ), {
-                'no_cli': True,
-                'suffix_param': {'prefix': 'canopy', 'title': True},
-            }),
-            arguments.ArgumentDescriptionSet([
-                (('--virtual-plot-length', ), {
-                    'no_cli': True,
-                }),
-                (('--virtual-plot-width', ), {
-                    'no_cli': True,
-                }),
-            ], name='virtual_plot_dimensions'),
-            arguments.ArgumentDescriptionSet([
-                (('--virtual-row-spacing', ), {
-                    'no_cli': True,
-                    'suffix_param': {
-                        'noteq': parse_quantity(76.2, 'cm'),
-                    },
-                }),
-                (('--virtual-plant-spacing', ), {
-                    'no_cli': True,
-                    'suffix_param': {
-                        'noteq': parse_quantity(18.3, 'cm'),
-                    },
-                }),
-            ], name='virtual_plant_spacing', suffix_param={
-                'sep': 'x',
-                'require_all': True,
-            }),
-            arguments.ArgumentDescriptionSet([
-                (('--virtual-nrows', ), {
-                    'no_cli': True,
-                    'suffix_param': {'noteq': 4},
-                }),
-                (('--virtual-ncols', ), {
-                    'no_cli': True,
-                    'suffix_param': {'noteq': 10},
-                }),
-            ], name='virtual_plant_count', suffix_param={
-                'sep': 'x',
-                'require_all': True,
-            }),
-        ], name='virtual_canopy_properties', suffix_param={
-            'cond': lambda x: bool(getattr(x, 'virtual_canopy', None)),
-            'index': -1,
-        }),
         arguments.ClassSubparserArgumentDescription(
             'light_source',
             suffix_param={'noteq': 'sun'},
@@ -1205,10 +1378,6 @@ class RayTraceTask(TaskBase):
         r"""units.Quantity: Area that the scene covers."""
         if self.args.canopy != 'single':
             return self.args.plot_width * self.args.plot_length
-        if self.args.virtual_canopy:
-            return (self.args.virtual_plot_width
-                    * self.args.virtual_plot_length)
-        assert self.args.periodic_canopy
         return self.args.row_spacing * self.args.plant_spacing
 
     @cached_property
@@ -1248,17 +1417,7 @@ class RayTraceTask(TaskBase):
         args.include_units = True
         if not GenerateTask.mesh_generated(args):
             args.periodic_canopy = False
-            args.virtual_canopy = False
             args.canopy = 'external'
-        LayoutTask.adjust_args_internal(
-            args, skip=(skip + ['time', 'location']))
-        for k in cls._virtual_argument_names:
-            cls._arguments.getnested(f'virtual_{k}').adjust_args(
-                args, default=getattr(args, k, None))
-        if args.canopy == 'virtual':
-            args.canopy = 'single'
-        elif args.virtual_canopy != 'virtual':
-            args.virtual_canopy = False
         super(RayTraceTask, cls).adjust_args_internal(
             args, skip=skip, **kwargs)
         if not cls.is_limits_base_class(args):
@@ -1299,6 +1458,8 @@ class RayTraceTask(TaskBase):
             return query_values[query]
         elif query == 'flux':
             return query_values['flux_density'] * query_values['areas']
+        elif query in cls._query_options_other:
+            return query_values['HEADER_JSON'][query]
         raise NotImplementedError(query)
 
     @classmethod
@@ -1342,7 +1503,7 @@ class RayTraceTask(TaskBase):
             dict: Mapping between query names and averages.
 
         """
-        query = [k for k in _query_options_phy if k in values]
+        query = [k for k in cls._query_options_phy if k in values]
         if (('flux' not in query
              and all(k in query for k in ['flux_density', 'areas']))):
             query.append('flux')
@@ -1396,6 +1557,9 @@ class RayTraceTask(TaskBase):
                     values[query] = np.zeros((per_plant, ))
                 plantids_unique = range(per_plant)
             else:
+                if len(plantids_unique) != per_plant:
+                    print(len(plantids_unique), per_plant)
+                    pdb.set_trace()
                 assert len(plantids_unique) == per_plant
         for i in plantids_unique:
             idx = (plantids == i)
@@ -1426,7 +1590,7 @@ class RayTraceTask(TaskBase):
                 is True, this is nested as a value for each plant ID.
 
         """
-        query = [k for k in _query_options_phy if k in values]
+        query = [k for k in cls._query_options_phy if k in values]
         if (('flux' not in query
              and all(k in query for k in ['flux_density', 'areas']))):
             query.append('flux')
@@ -1455,7 +1619,7 @@ class RayTraceTask(TaskBase):
         query_sorted = {}
 
         def get_base(x):
-            for prefix in _query_options_calc_prefix:
+            for prefix in self._query_options_calc_prefix:
                 if x.startswith(prefix):
                     out = x.split(prefix, 1)[-1]
                     query_sorted.setdefault(prefix, [])
@@ -1473,13 +1637,21 @@ class RayTraceTask(TaskBase):
         if (not prevent_output) or self.output_exists():
             values = self.get_output('raytrace')
         else:
-            values.raytrace_scene(query=list(query_base))
+            values = self.raytrace_scene(query=list(query_base))
         out = {}
         for prefix, kquery in query_sorted.items():
             if prefix == 'total_':
                 iout = self.extract_query_total(values, kquery,
                                                 per_plant=per_plant,
                                                 include_base=True)
+                if self.args.canopy == 'virtual_single':
+                    nplant = self.args.nrows * self.args.ncols
+                    if per_plant:
+                        for k in kquery:
+                            iout['total'][k] *= nplant
+                    else:
+                        for k in kquery:
+                            iout[k] *= nplant
                 if per_plant:
                     for k in kquery:
                         out.setdefault(f'{prefix}{k}', {})
@@ -1522,7 +1694,7 @@ class RayTraceTask(TaskBase):
                 out = cls.calc_query_limits(x, prev=out)
             return out
         out = {}
-        for query in _query_options:
+        for query in cls._query_options:
             out[query] = {}
             values = cls.extract_query(query_values, query)
             if isinstance(values, units.QuantityArray):
@@ -1624,16 +1796,15 @@ class RayTraceTask(TaskBase):
                                 'output_traced_mesh': True},
             )
             mesh = inst.get_output('traced_mesh')
-            self.raytracer = inst.raytracer
-            mesh.append(
-                generate_rays(inst.raytracer.ray_origins,
-                              inst.raytracer.ray_directions,
-                              ray_length=inst.raytracer.ray_lengths,
-                              geom_format=type(mesh),
-                              ray_color=self.args.ray_color.value,
-                              ray_width=self.args.ray_width.value,
-                              arrow_width=self.args.arrow_width.value)
-            )
+            # self.raytracer = inst.raytracer
+            rays = generate_rays(inst.raytracer.ray_origins,
+                                 inst.raytracer.ray_directions,
+                                 ray_length=inst.raytracer.ray_lengths,
+                                 geom_format=type(mesh),
+                                 ray_color=self.args.ray_color.value,
+                                 ray_width=self.args.ray_width.value,
+                                 arrow_width=self.args.arrow_width.value)
+            mesh.append(rays)
             return mesh
         cmap = self.args.traced_mesh_colormap
         self._adjust_color_limits(self, cmap)
@@ -1681,18 +1852,25 @@ class RayTraceTask(TaskBase):
 
         """
         if query is None:
-            query = _query_options
+            query = self._query_options + self._query_options_other
         if isinstance(query, list):
             values = {}
+            if 'compute_time' in query:
+                t0 = time.time()
             if 'flux' in query:
                 query = query + [k for k in ['flux_density', 'areas']
                                  if k not in query]
             for k in query:
-                if k == 'flux':
+                if k in ['flux'] + self._query_options_other:
                     continue
                 values[k] = self.raytrace_scene(query=k)
             if 'flux' in query:
                 values['flux'] = self.extract_query(values, 'flux')
+            if 'compute_time' in query:
+                t1 = time.time()
+                values['HEADER_JSON'] = {
+                    'compute_time': t1 - t0,
+                }
             return values
         if query == 'flux':
             values = self.raytrace_scene(query=['flux_density', 'areas'])
@@ -1893,9 +2071,6 @@ class RenderTask(TaskBase):
             'modifications': {
                 'query': {
                     'append_suffix_outputs': ['render'],
-                },
-                'virtual_canopy_properties': {
-                    'append_suffix_outputs': ['render_camera'],
                 },
             },
         },
@@ -2180,14 +2355,9 @@ class RenderTask(TaskBase):
                 'age': args.time.args['age'],
                 'scene_age': args.scene_age.args['age'],
             }
-        if args.virtual_canopy:
-            out['canopy'] = 'virtual'
-            out['nrows'] = args.virtual_nrows
-            out['ncols'] = args.virtual_ncols
-        else:
-            out['canopy'] = args.canopy
-            out['nrows'] = args.nrows
-            out['ncols'] = args.ncols
+        out['canopy'] = args.canopy
+        out['nrows'] = args.nrows
+        out['ncols'] = args.ncols
         return out
 
     @classmethod
@@ -2320,6 +2490,8 @@ class TotalsTask(TemporalTaskBase):
             'base_prefix': True,
             'ext': '.json',
             'description': 'raytraced query totals',
+            'composite_param': [
+                'id', 'data_year', 'canopy', 'periodic_canopy'],
         },
         'totals_plot': {
             'ext': '.png',
@@ -2340,9 +2512,18 @@ class TotalsTask(TemporalTaskBase):
             'modifications': {
                 'query': {
                     'default': 'total_flux',
-                    'choices': _query_options_calc,
+                    'choices': (
+                        RayTraceTask._query_options_calc
+                        + RayTraceTask._query_options_other
+                    ),
                     'append_suffix_skip_outputs': ['totals'],
                     'append_suffix_outputs': ['totals_plot'],
+                },
+                'canopy': {
+                    'append_choices': ['all'],
+                },
+                'periodic_canopy': {
+                    'append_choices': ['all'],
                 },
             },
         },
@@ -2352,6 +2533,10 @@ class TotalsTask(TemporalTaskBase):
             'action': 'store_true',
             'help': ('Plot the totals on a per-plant basis (valid for '
                      'totals_plot only'),
+            'suffix_param': {
+                'value': 'perPlant',
+                'outputs': ['totals_plot'],
+            },
         }),
     ]
 
@@ -2402,8 +2587,24 @@ class TotalsTask(TemporalTaskBase):
                 parent class's method.
 
         """
-        if args.canopy in ['single', 'virtual']:
+        if args.canopy == 'single':
             args.per_plant = False
+        iterating = [
+            k for k in cls._output_info['totals']['composite_param']
+            if getattr(args, k) == 'all'
+        ]
+        if args.per_plant:
+            if args.figure_color_by is None:
+                if iterating and args.figure_linestyle_by is None:
+                    args.figure_color_by = 'label'
+                    if len(iterating) == 1:
+                        args.figure_linestyle_by = iterating[0]
+                    else:
+                        args.figure_linestyle_by = 'label'
+                else:
+                    args.figure_color_by = 'location'
+            elif args.figure_linestyle_by is None:
+                args.figure_linestyle_by = 'location'
         super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
 
     @cached_property
@@ -2421,87 +2622,101 @@ class TotalsTask(TemporalTaskBase):
         """
         self.time_marker.set_xdata([time, time])
 
-    def plot_query(self, query, times, values, id=None, plantid=None,
-                   reset=False):
+    def plot_query(self, query, times, values, label=None, plantid=None,
+                   reset=False, line_prop=None):
         r"""Plot the data for a single crop ID.
 
         Args:
             query (str): Name of property contained by values.
             times (np.ndarray): Times.
             values (np.ndarray): Query values for each time step.
-            id (str, optional): ID of the crop that should be used for
-                the label.
+            label (str, optional): Label for lines.
             plantid (int, optional): Plant ID for provided data.
             reset (bool, optional): Reset the figure.
+            line_prop (dict, optional): Parameters to pass to
+                get_line_properties to determine line properties.
 
         """
+        if line_prop is None:
+            line_prop = {}
         ax = self.axes
         first = (reset or not hasattr(self, '_lines'))
         if first:
             self._lines = {}
+            self._linestyles = {}
+            self._linecolors = {}
             ax.cla()
-        if id is None:
-            id = self.args.id
-        iclass = len(self._lines)
-        self._lines.setdefault(id, {'interior': 0, 'exterior': 0})
-        linestyles = ['-', ':', '--', '-.']
-        colors = ['blue', 'orange', 'purple', 'teal']
+        if label is None:
+            label = self.args.id
+        self._lines.setdefault(label, {'interior': 0, 'exterior': 0})
         if first:
+            if self.args.figure_font_weight:
+                from matplotlib import rcParams
+                rcParams['font.weight'] = self.args.figure_font_weight
             ylabel = query.title()
             if isinstance(values, units.QuantityArray):
                 ylabel += f" ({values.units})"
             elif isinstance(values[0], units.Quantity):
                 ylabel += f" ({values[0].units})"
-            ax.set_xlabel('Time')
-            ax.set_ylabel(ylabel)
+            ax.set_xlabel('Time', weight=self.args.figure_font_weight)
+            ax.set_ylabel(ylabel.replace('_', ' '),
+                          weight=self.args.figure_font_weight)
         layout_task = self.output_task('layout')
-        loc = 0
         locStr = None
-        label = None
+        full_label = None
         if plantid is not None:
             if layout_task.isExteriorPlant(int(plantid)):
-                loc = 1
                 locStr = 'exterior'
             else:
-                loc = 0
                 locStr = 'interior'
-            self._lines[id] += 1
-            if self._lines[locStr] == 1:
-                label = f'{locStr.title()} plants ({id})'
+            self._lines[label][locStr] += 1
+            full_label = f'{locStr.title()} plants ({label})'
         else:
-            label = id
-        color = colors[iclass]
-        style = linestyles[loc]
-        ax.plot(times, values, label=label, color=color,
-                linestyle=style)
+            full_label = label
+        line_prop['label'] = full_label
+        line_prop['location'] = locStr
+        line_prop['class'] = label
+        line_kws = self.get_line_properties(self.args, **line_prop)
+        if plantid is None or self._lines[label][locStr] == 1:
+            line_kws['label'] = full_label
+        if isinstance(times, list):
+            times = np.array(times)
+        if isinstance(values, list):
+            values = np.array(values)
+        idxsort = np.argsort(times)
+        times = times[idxsort]
+        values = values[idxsort]
+        ax.plot(times, values, **line_kws)
 
-    def plot_data(self, totals, id=None, reset=False):
+    def plot_data(self, values, label=None, reset=False, **kwargs):
         r"""Plot the data for a single crop ID.
 
         Args:
-            totals (dict): Mapping between query name and dictionaries
-                of totals for each component.
-            id (str, optional): ID of the crop that should be used for
-                the label.
+            values (dict): Mapping between query name and dictionaries
+                of values for each component.
+            label (str, optional): Label that should be used for lines.
             reset (bool, optional): Reset the figure.
+            **kwargs: Additional keyword arguments are passed to calls to
+                plot_query.
 
         """
-        if id is None:
-            id = self.args.id
-        times = totals['times']
-        totals = totals[self.args.query]
+        if label is None:
+            label = self.args.id
+        times = values['times']
+        totals = values[self.args.query]
         if self.args.query.startswith('total_'):
             if self.args.per_plant:
                 for i, v in totals.items():
                     if i == 'total':
                         continue
                     self.plot_query(self.args.query, times, v,
-                                    id=id, plantid=i, reset=reset)
+                                    label=label, plantid=i, reset=reset,
+                                    **kwargs)
                     reset = False
                 return
             totals = totals['total']
-        self.plot_query(self.args.query, times, totals, id=id,
-                        reset=reset)
+        self.plot_query(self.args.query, times, totals, label=label,
+                        reset=reset, **kwargs)
 
     def finalize_step(self, x):
         r"""Finalize the output from a step.
@@ -2513,8 +2728,14 @@ class TotalsTask(TemporalTaskBase):
             object: Finalized step result.
 
         """
-        per_plant = (self.args.nrows * self.args.ncols)
-        query = _query_options_calc
+        if self.args.canopy == 'virtual_single':
+            per_plant = 1
+        else:
+            per_plant = (self.args.nrows * self.args.ncols)
+        query = (
+            RayTraceTask._query_options_calc
+            + RayTraceTask._query_options_other
+        )
         value = x.calculate_query(query, per_plant=per_plant)
         return (x.args.time.time, value)
 
@@ -2581,9 +2802,15 @@ class TotalsTask(TemporalTaskBase):
         """
         if name == 'totals_plot':
             for param, values in output.items():
-                idstr = ', '.join([str(x) for x in param])
-                # kws = {k: v for k, v in zip(merged_param, param)}
-                self.plot_data(values, id=idstr)
+                kws = {k: v for k, v in zip(merged_param, param)}
+                labels = []
+                for k, v in kws.items():
+                    if k in ['id', 'canopy']:
+                        labels.append(str(v))
+                    else:
+                        labels.append(f'{k} = {v}')
+                self.plot_data(values, label=', '.join(labels),
+                               line_prop=kws)
             self.axes.legend()
             return self.figure
         return super(TotalsTask, self)._merge_output(
@@ -2630,7 +2857,7 @@ class AnimateTask(TemporalTaskBase):
         },
         TotalsTask: {
             'optional': True,
-            'suffix_index': 1,
+            'increment_suffix_index': 1,  # After local arguments
         },
     }
     _arguments = [
@@ -2739,16 +2966,10 @@ class MatchQuery(OptimizationTaskBase):
     _name = 'match_query'
     _final_outputs = ['totals_plot']
     _arguments = [
-        (('--goal-id', ), {
-            'help': (
-                'ID that the goal of the optimization should be matched '
-                'to.'),
-            'suffix_param': {'prefix': 'matchTo_'},
-        }),
         (('--goal', ), {
             'help': 'Goal of the optimization.',
             'default': 'scene_average_flux',
-            'choices': _query_options,
+            'choices': RayTraceTask._query_options,
             'suffix_param': {},
         }),
         (('--vary', ), {
@@ -2758,6 +2979,15 @@ class MatchQuery(OptimizationTaskBase):
             'suffix_param': {'prefix': 'vs_'},
         }),
         OptimizationTaskBase._arguments['method'],
+        (('--goal-id', ), {
+            'help': (
+                'ID that the goal of the optimization should be matched '
+                'to.'),
+            'suffix_param': {
+                'prefix': 'matchTo_',
+                'index': -1,
+            },
+        }),
     ]
 
     @classmethod
@@ -2775,9 +3005,12 @@ class MatchQuery(OptimizationTaskBase):
         for k in ['canopy', 'periodic_canopy', 'nrows', 'ncols',
                   'periodic_canopy_count', 'plot_width', 'plot_length']:
             args.final_args[k] = getattr(args, k)
-        if args.canopy not in ['single', 'virtual']:
+        if args.canopy not in ['single', 'virtual', 'virtual_single']:
             # Regenerating unique canopies is very time intensive
-            args.canopy = 'virtual'
+            args.canopy = 'virtual_single'
+            if ((args.periodic_canopy == 'scene'
+                 and args.nrows and args.ncols)):
+                args.periodic_canopy = False
         if args.goal_id is None:
             ids = GenerateTask.all_ids_class(args)
             assert ids
@@ -2835,7 +3068,7 @@ class MatchQuery(OptimizationTaskBase):
         out = copy.deepcopy(self.args.final_args)
         if name == 'totals_plot':
             out['query'] = self.args.goal
-            if ((out['canopy'] not in ['single', 'virtual']
+            if ((out['canopy'] not in ['single', 'virtual_single']
                  and out['query'].startswith('total_'))):
                 out['per_plant'] = True
         return out
@@ -2864,8 +3097,9 @@ class MatchQuery(OptimizationTaskBase):
             out = super(MatchQuery, self)._generate_output(
                 name, output_name='instance')
             match_totals = out.get_output('totals')
-            out.plot_data(goal_totals, id=self.args.goal_id, reset=True)
-            out.plot_data(match_totals, id=self.args.id)
+            out.plot_data(goal_totals, label=self.args.goal_id,
+                          reset=True)
+            out.plot_data(match_totals, label=self.args.id)
             out.axes.legend()
             return out.figure
         return super(MatchQuery, self)._generate_output(name)

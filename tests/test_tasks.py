@@ -98,7 +98,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
     def test_output(self, instance, output, compare_method,
                     fname_actual, fname_expected, approx_nested,
                     create_missing_data, overwrite_existing_data,
-                    assert_equal_approx):
+                    compare_approx, compare_bytes,
+                    compare_approx_csv, compare_bytes_csv):
         r"""Test creating output."""
         if fname_expected.endswith(('.png', '.gif')):
             # Don't compare png binaries
@@ -115,43 +116,31 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
              or overwrite_existing_data)):
             print(f"Creating test file: {fname_expected}")
             shutil.copyfile(fname_actual, fname_expected)
-        if compare_method == 'bytes':
+        if compare_method.startswith('bytes'):
             with open(fname_actual, 'rb') as fd:
                 data_actual = fd.read()
             with open(fname_expected, 'rb') as fd:
                 data_expected = fd.read()
         else:
             data_expected = instance.read_output(output, fname_expected)
-        if compare_method == 'approx':
-            assert_equal_approx(data_actual, data_expected, nan_ok=True)
-        else:
-            getattr(self, f'compare_{compare_method}')(
-                data_actual, data_expected)
+        data_actual, data_expected = self.prepare_comparison_data(
+            output, data_actual, data_expected)
+        eval(f'compare_{compare_method}')(data_actual, data_expected)
 
-    def compare_bytes(self, actual, expected):
-        r"""Compare bytes in chunks.
+    def prepare_comparison_data(self, output, actual, expected):
+        r"""Perform an actions necessary to modify the data prior to
+        comparison.
 
         Args:
-            actual (bytes): Actual bytes.
-            expected (bytes): Expected bytes.
+            output (str): Type of output being compared.
+            actual (object): Actual object.
+            expected (object): Expected object.
+
+        Returns:
+            tuple: Update actual & expected objects for comparison.
 
         """
-        chunk_size = 1000
-        len_actual = len(actual)
-        len_expected = len(expected)
-        pos = 0
-        maxpos = max([len_actual, len_expected])
-        while pos < maxpos:
-            pos_act = min(pos, len_actual)
-            pos_exp = min(pos, len_expected)
-            chunk_act = actual[
-                pos_act:min(pos_act + chunk_size, len_actual)]
-            chunk_exp = expected[
-                pos_exp:min(pos_exp + chunk_size, len_expected)]
-            assert chunk_act == chunk_exp
-            pos += chunk_size
-        assert len_actual == len_expected
-        assert actual == expected
+        return actual, expected
 
 
 class TestLayoutTask(TestTask):
@@ -234,10 +223,13 @@ class TestRayTraceTask(TestTask):
                  'canopy': 'single'},
                 {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
                  'canopy': 'virtual', 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                 'canopy': 'virtual_single'},
             ],
         },
     }
     _compare_methods = {
+        'raytrace': 'bytes_csv',
         'raytrace_limits': 'approx',
         'traced_mesh': False,
     }
@@ -261,7 +253,11 @@ class TestTotalsTask(TestTask):
         'arguments': {
             'values': [
                 {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
-                 'canopy': 'virtual', 'periodic_canopy': True,
+                 'canopy': 'virtual',
+                 'periodic_canopy': True,
+                 'duration': '2 hr'},
+                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                 'canopy': 'virtual_single',
                  'duration': '2 hr'},
             ],
         },
@@ -269,6 +265,29 @@ class TestTotalsTask(TestTask):
     _compare_methods = {
         'totals': 'approx',
     }
+
+    def prepare_comparison_data(self, output, actual, expected):
+        r"""Perform an actions necessary to modify the data prior to
+        comparison.
+
+        Args:
+            output (str): Type of output being compared.
+            actual (object): Actual object.
+            expected (object): Expected object.
+
+        Returns:
+            tuple: Update actual & expected objects for comparison.
+
+        """
+        if output == 'totals':
+            assert 'compute_time' in expected
+            assert 'compute_time' in actual
+            expected = {k: v for k, v in expected.items()
+                        if k != 'compute_time'}
+            actual = {k: v for k, v in actual.items()
+                      if k != 'compute_time'}
+        return super(TestTotalsTask, self).prepare_comparison_data(
+            output, actual, expected)
 
 
 class TestAnimateTask(TestTask):

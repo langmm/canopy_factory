@@ -238,7 +238,7 @@ class SuffixGenerator(object):
                 f'{suffix_value}'
             )
         if self.title:
-            suffix_value = suffix_value.title()
+            suffix_value = suffix_value.title().replace('_', '')
         out = f'{self.prefix}{suffix_value}{self.suffix}'
         if wildcards:
             while '**' in out:
@@ -297,7 +297,7 @@ class ArgumentDescriptionABC(abc.ABC):
         'ignored', 'no_cli',
     ]
     _modifies_name = [
-        'subparser', 'subparser_specific_dest',
+        'name', 'subparser', 'subparser_specific_dest',
         'strip_classes', 'add_class', 'remove_class',
     ]
 
@@ -545,6 +545,9 @@ class ArgumentDescriptionABC(abc.ABC):
     def _set_property(self, name, value, src=None, from_name=False):
         if name in self._properties_attributes:
             setattr(self, name, value)
+            return
+        if name == 'name':
+            setattr(self, '_name', value)
             return
         is_suffix = False
         if name.startswith('suffix_'):
@@ -2094,19 +2097,25 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
     """
 
     def __init__(self, name, composite_type=None, prefix='', suffix='',
-                 **kwargs):
+                 arguments=None, **kwargs):
         if composite_type is None:
             composite_type = name
         name = prefix + name + suffix
-        cls_base = get_class_registry().get('argument', composite_type)
-        kwargs_cls = {
-            k: kwargs.pop(k) for k in [
-                'description', 'ignore', 'registry_name'
-            ] if k in kwargs
-        }
-        cls = cls_base.class_factory(name, **kwargs_cls)
+        if isinstance(composite_type, type):
+            cls = composite_type
+        else:
+            cls_base = get_class_registry().get(
+                'argument', composite_type)
+            kwargs_cls = {
+                k: kwargs.pop(k) for k in [
+                    'description', 'ignore', 'registry_name'
+                ] if k in kwargs
+            }
+            cls = cls_base.class_factory(name, **kwargs_cls)
+        if arguments is None:
+            arguments = cls._arguments
         super(CompositeArgumentDescription, self).__init__(
-            cls._arguments, name=name, no_dest=False, **kwargs)
+            arguments, name=name, no_dest=False, **kwargs)
         self.add_class(cls, overwrite=True)
 
     def from_args_for_suffix(self, args, output, wildcards=None):

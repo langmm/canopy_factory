@@ -953,8 +953,13 @@ def read_csv(fname, select=None, verbose=False, include_units=True):
     """
     if verbose:
         print(f'Reading CSV from \"{fname}\"')
-    df = pd.read_csv(fname, comment='#')
     out = {}
+    with open(fname, 'r') as fd:
+        first_line = fd.readline()
+        if first_line.startswith('# HEADER_JSON: '):
+            out['HEADER_JSON'] = rapidjson.loads(
+                first_line.split('# HEADER_JSON: ')[-1])
+    df = pd.read_csv(fname, comment='#')
     for k in df.columns:
         out[k] = df[k].to_numpy()
     for k in list(out.keys()):
@@ -988,6 +993,12 @@ def write_csv(data, fname, verbose=False, comments=None):
     if verbose:
         print(f"Writing CSV to \"{fname}\"")
     header = True
+    if 'HEADER_JSON' in data:
+        if comments is None:
+            comments = []
+        comments = ['HEADER_JSON: '
+                    + rapidjson.dumps(data['HEADER_JSON'])] + comments
+        data = {k: v for k, v in data.items() if k != 'HEADER_JSON'}
     data_units = [v.units if isinstance(v, units.QuantityArray)
                   else '' for v in data.values()]
     if any(data_units):
@@ -2005,12 +2016,15 @@ class ChoiceArgument:
 
     """
 
-    def __init__(self, parser, named_choices=None):
+    def __init__(self, parser, named_choices=None, type=None):
         self.parser = parser
         self.named_choices = named_choices
+        self.type = type
 
     def __call__(self, x):
         if self.named_choices and x in self.named_choices:
+            return x
+        elif self.type is not None and isinstance(x, self.type):
             return x
         return self.parser(x)
 

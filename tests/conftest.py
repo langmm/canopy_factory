@@ -260,3 +260,96 @@ def approx_nested(apply_nested):
         )
 
     return _approx_nested
+
+
+@pytest.fixture(scope="session")
+def compare_approx_csv(compare_approx):
+    r"""Compare two objects using approximate equality for floats.
+
+    Args:
+        actual (object): Actual object.
+        expected (object): Expected object.
+
+    """
+
+    def _compare_approx_csv(actual, expected):
+        flag = 'HEADER_JSON'
+        if flag in expected:
+            assert flag in actual
+            expected_keys = list(expected[flag].keys())
+            actual_keys = list(actual[flag].keys())
+            assert actual_keys == expected_keys
+            expected = {k: v for k, v in expected.items() if k != flag}
+            actual = {k: v for k, v in actual.items() if k != flag}
+        compare_approx(actual, expected)
+
+    return _compare_approx_csv
+
+
+@pytest.fixture(scope="session")
+def compare_approx(assert_equal_approx):
+    r"""Compare two objects using approximate equality for floats.
+
+    Args:
+        actual (object): Actual object.
+        expected (object): Expected object.
+
+    """
+
+    def _compare_approx(actual, expected):
+        assert_equal_approx(actual, expected, nan_ok=True)
+
+    return _compare_approx
+
+
+@pytest.fixture(scope="session")
+def compare_bytes_csv(compare_bytes):
+    r"""Compare CSV bytes in chunks after removing the JSON header.
+
+    Args:
+        actual (bytes): Actual bytes.
+        expected (bytes): Expected bytes.
+
+    """
+    def _compare_bytes_csv(actual, expected):
+        flag = b'# HEADER_JSON: '
+        if flag in expected:
+            assert flag in actual
+            idx = actual.index(flag)
+            actual = actual[idx:].split(b'\n', maxsplit=1)[-1]
+            idx = expected.index(flag)
+            expected = expected[idx:].split(b'\n', maxsplit=1)[-1]
+        compare_bytes(actual, expected)
+
+    return _compare_bytes_csv
+
+
+@pytest.fixture(scope="session")
+def compare_bytes():
+    r"""Compare bytes in chunks.
+
+    Args:
+        actual (bytes): Actual bytes.
+        expected (bytes): Expected bytes.
+
+    """
+
+    def _compare_bytes(actual, expected):
+        chunk_size = 1000
+        len_actual = len(actual)
+        len_expected = len(expected)
+        pos = 0
+        maxpos = max([len_actual, len_expected])
+        while pos < maxpos:
+            pos_act = min(pos, len_actual)
+            pos_exp = min(pos, len_expected)
+            chunk_act = actual[
+                pos_act:min(pos_act + chunk_size, len_actual)]
+            chunk_exp = expected[
+                pos_exp:min(pos_exp + chunk_size, len_expected)]
+            assert chunk_act == chunk_exp
+            pos += chunk_size
+        assert len_actual == len_expected
+        assert actual == expected
+
+    return _compare_bytes
