@@ -5,6 +5,7 @@ from canopy_factory.utils import get_class_registry, DataProcessor, units
 
 
 _param_args = ['crop', 'id', 'data_year']
+_step_outputs = []
 
 
 def pytest_addoption(parser):
@@ -31,6 +32,11 @@ def pytest_addoption(parser):
     parser.addoption(
         "--overwrite-existing-data",
         help="Overwrite the existing test data.",
+        action='store_true',
+    )
+    parser.addoption(
+        "--preserve-step-output",
+        help="Preserve step output to speed up consequent runs.",
         action='store_true',
     )
     for k in _param_args:
@@ -162,6 +168,37 @@ def create_missing_data(request):
 @pytest.fixture(scope="session")
 def overwrite_existing_data(request):
     return request.config.getoption("--overwrite-existing-data")
+
+
+@pytest.fixture(scope="session")
+def add_step_output():
+    r"""Add a step output that should be cleaned up at the end of the
+    session.
+
+    Args:
+        x (str, list): One or more step outputs to cleanup.
+
+    """
+
+    def _add_step_output(x):
+        if not isinstance(x, list):
+            x = [x]
+        for xx in x:
+            if os.path.isfile(xx):  # Prevent removing existing files
+                continue
+            _step_outputs.append(xx)
+
+    return _add_step_output
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_step_files(request):
+    r"""Cleanup any step outputs that could be reused between tests."""
+    yield
+    if not request.config.getoption("--preserve-step-output"):
+        for x in _step_outputs:
+            if os.path.isfile(x):
+                os.remove(x)
 
 
 @pytest.fixture(scope="session")

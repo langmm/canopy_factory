@@ -270,12 +270,12 @@ Need multiple time points for age dependence, probably 3 or more. Movies along t
 - Add to model repo
 - Add mass dependency for limiting growth
 - integrate with BioCro
-- options for labeling crop class & plant id
-- allow for other crops
-- allow for inputs to be specified for input parameters and data
 - gravitropism
-- add tests
+- phototropism
 - publish to PyPI
 - publish to conda_forge
 - build docs
-- canopy closer measurement
+- Calculate leaf area directly from the generator?
+- Allow leaf reflectance/transmittance to be provided as spectra
+- More realistic age dependency for color change & senesence
+- Only include green leaves in LAI calculation

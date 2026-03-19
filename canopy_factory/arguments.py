@@ -168,7 +168,7 @@ class SuffixGenerator(object):
     def __call__(self, *args, **kwargs):
         return self.generate(*args, **kwargs)
 
-    def generate(self, args, output, wildcards=None,
+    def generate(self, args, output, wildcards=None, skipped=None,
                  value=NoDefault, **kwargs):
         r"""Generate the suffix.
 
@@ -177,6 +177,8 @@ class SuffixGenerator(object):
             output (str): Name of output to generate suffix for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
             value (object, optional): Value that should be used instead
                 of the args attribute.
             **kwargs: Additional keyword arguments are passed to the
@@ -186,7 +188,9 @@ class SuffixGenerator(object):
             str: Generated suffix.
 
         """
-        if not self.is_valid(output):
+        if skipped is None:
+            skipped = []
+        if (not self.is_valid(output)) or self.arg.dest in skipped:
             return ''
         if wildcards is None:
             wildcards = []
@@ -194,7 +198,7 @@ class SuffixGenerator(object):
             return '*'
         if value is NoDefault:
             value = self.arg.from_args_for_suffix(
-                args, output, wildcards=wildcards,
+                args, output, wildcards=wildcards, skipped=skipped,
             )
         return self.value2suffix(
             value, args, wildcards=wildcards, **kwargs)
@@ -525,6 +529,24 @@ class ArgumentDescriptionABC(abc.ABC):
             if v.any_arguments_set(args):
                 return True
         return False
+
+    def arguments_set(self, args):
+        r"""Check which arguments are set.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+
+        Returns:
+            list: Set of arguments that are set.
+
+        """
+        out = []
+        if ((self.dest and (not self.ignored)
+             and getattr(args, self.dest, None) is not None)):
+            out += [self.dest]
+        for v in self.members:
+            out += v.arguments_set(args)
+        return out
 
     def _get_property(self, name, src=None, from_name=False):
         if name in self._properties_attributes:
@@ -906,7 +928,8 @@ class ArgumentDescriptionABC(abc.ABC):
         """
         return self.suffix_generator.generate(*args, **kwargs)
 
-    def from_args_for_suffix(self, args, output, wildcards=None):
+    def from_args_for_suffix(self, args, output, wildcards=None,
+                             skipped=None):
         r"""Get the argument in a form for generating the suffix.
 
         Args:
@@ -914,6 +937,8 @@ class ArgumentDescriptionABC(abc.ABC):
             output (str): Name of output to generate suffix for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             object: Argument value.
@@ -1350,7 +1375,11 @@ class ArgumentDescription(ArgumentDescriptionABC):
 
         """
         if 'type' in self.properties and x is not None:
-            x = self.properties['type'](x)
+            if self.properties.get('action', None) in ['append', 'extend']:
+                assert isinstance(x, list)
+                x = [self.properties['type'](xx) for xx in x]
+            else:
+                x = self.properties['type'](x)
         if args is not None:
             if self.units_arg and getattr(args, self.units_arg, None):
                 x = utils.parse_quantity(x, getattr(args, self.units_arg))
@@ -1493,14 +1522,15 @@ class SubparserArgumentDescription(ArgumentDescription):
         super(SubparserArgumentDescription, self).adjust_args(
             args, members=members, **kwargs)
 
-    def from_args_for_suffix(self, args, output, wildcards=None):
+    def from_args_for_suffix(self, args, output, **kwargs):
         r"""Get the argument in a form for generating the suffix.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
             output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
+            **kwargs: Additional keyword arguments are passed to the
+                base class and calls to suffix generate for the selected
+                subparser.
 
         Returns:
             object: Argument value.
@@ -1510,16 +1540,16 @@ class SubparserArgumentDescription(ArgumentDescription):
         #     args)
         subparser = super(
             SubparserArgumentDescription, self).from_args_for_suffix(
-                args, output, wildcards=wildcards)
+                args, output, **kwargs)
         assert isinstance(subparser, str)
         assert subparser in self.subparser_arguments
         value = [
             self.suffix_generator.generate(
-                args, output, wildcards=wildcards, value=subparser)
+                args, output, value=subparser, **kwargs)
         ]
         value_sub = (
             self.subparser_arguments[subparser].generate_suffix(
-                args, output, wildcards=wildcards)
+                args, output, **kwargs)
         )
         if isinstance(value_sub, list):
             value += value_sub
@@ -1757,14 +1787,14 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         if any(k in kwargs for k in self._modifies_name):
             self.reset_keys()
 
-    def from_args_for_suffix(self, args, output, wildcards=None):
+    def from_args_for_suffix(self, args, output, **kwargs):
         r"""Get the argument in a form for generating the suffix.
 
         Args:
             args (argparse.Namespace): Parsed arguments.
             output (str): Name of output to generate suffix for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
+            **kwargs: Additional keyword arguments are passed to the
+                suffix generators for members.
 
         Returns:
             object: Argument value.
@@ -1774,8 +1804,7 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         for k, v in self.items():
             if not v.generates_suffix:
                 continue
-            values[k] = v.generate_suffix(args, output,
-                                          wildcards=wildcards)
+            values[k] = v.generate_suffix(args, output, **kwargs)
         if not any(values.values()):
             return ''
         if not self.suffix_param.get('require_all', False):
@@ -1785,7 +1814,7 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
                 if values[k]:
                     continue
                 values[k] = v.generate_suffix(
-                    args, output, wildcards=wildcards, force=True)
+                    args, output, force=True, **kwargs)
         return list(values.values())
 
     def from_args(self, args, cls=None, **kwargs):
@@ -2118,7 +2147,8 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
             arguments, name=name, no_dest=False, **kwargs)
         self.add_class(cls, overwrite=True)
 
-    def from_args_for_suffix(self, args, output, wildcards=None):
+    def from_args_for_suffix(self, args, output, wildcards=None,
+                             skipped=None):
         r"""Get the argument in a form for generating the suffix.
 
         Args:
@@ -2126,11 +2156,15 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
             output (str): Name of output to generate suffix for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             object: Argument value.
 
         """
+        if skipped and any(v.dest in skipped for v in self.values()):
+            return ''
         if wildcards and any(v.dest in wildcards for v in self.values()):
             return '*'
         value = self.from_args(args)

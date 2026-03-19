@@ -287,7 +287,8 @@ class ParameterValues(DictSet):
         r"""str: Current parameter being generated."""
         return self.instance.current_param
 
-    def get(self, k, default=NoDefault, return_other=None, **kwargs):
+    def get(self, k, default=NoDefault, return_other=None,
+            return_container=False, **kwargs):
         r"""Get a parameter value.
 
         Args:
@@ -296,6 +297,8 @@ class ParameterValues(DictSet):
                 parameter is not set.
             return_other (str, optional): Name of what should be
                 returned instead of the parameter value.
+            return_container (bool, optional): If True, return the
+                parameter that contains k.
             **kwargs: Additional keyword arguments are passed to any
                 nested calls to get or generate.
 
@@ -304,6 +307,8 @@ class ParameterValues(DictSet):
 
         """
         if k in ParameterIndex.parameter_names:
+            assert return_other is None
+            assert not return_container
             v = self.index[k]
             if v is None:
                 if default is NoDefault:
@@ -313,20 +318,27 @@ class ParameterValues(DictSet):
         v = NoDefault
         if return_other not in [None, 'instance']:
             v = self.get(k, default=default, return_other='instance',
-                         **kwargs)
+                         return_container=return_container, **kwargs)
             if isinstance(v, PlantParameterBase):
                 v = getattr(v, return_other)
             return v
         try:
             if k == '' and self.current_param != self.instance.fullname:
                 v = self.instance
+                if return_container:
+                    v = v.parent
             else:
                 v = self[k]
+                if return_container:
+                    v = self.instance
         except KeyError:
             if v is NoDefault and k in self.instance.component_parameters:
                 try:
                     v = self.instance.component.get(
-                        k, return_other=return_other, **kwargs)
+                        k, return_other=return_other,
+                        return_container=return_container,
+                        **kwargs
+                    )
                 except KeyError:
                     pass
             if v is NoDefault and k in self.instance.external_parameters:
@@ -335,14 +347,16 @@ class ParameterValues(DictSet):
                 else:
                     src = self.instance.root
                 try:
-                    v = src.get(k, return_other='instance')
+                    v = src.get(k, return_other='instance',
+                                return_container=return_container)
                 except KeyError:
                     pass
             if v is NoDefault:
                 for kk, vv in self.nested.items():
                     if vv.prefixes(k):
                         v = vv.get(
-                            vv.remove_prefix(k), return_other='instance')
+                            vv.remove_prefix(k), return_other='instance',
+                            return_container=return_container)
                         break
             if v is NoDefault:
                 if default is NoDefault:
@@ -2290,6 +2304,39 @@ class FunctionPlantParameter(OptionPlantParameter):
         the function applies."""
         return self.get('VarMin', None)
 
+    def normalize(self, v, func=None):
+        r"""Normalize the independent variable for this function.
+
+        Args:
+            v (object): Independent variable value to normalize.
+
+        Returns:
+            object: Normalized object.
+
+        """
+        # func = self.parameters['']
+        if func in ['one', 'zero', 'expression', 'alias']:
+            return v
+        vmin = None
+        vmax = None
+        vnorm = None
+        if self.maxvar is not None:
+            vmax = self.get(self.maxvar)
+            if v > vmax:
+                v = vmax
+        if self.minvar is not None:
+            vmin = self.get(self.minvar)
+            if v < vmin:
+                v = vmin
+        if self.normvar is not None:
+            vnorm = self.get(self.normvar)
+        elif vmin is not None and vmax is not None:
+            v = v - vmin
+            vnorm = vmax - vmin
+        if vnorm is not None:
+            v = v / vnorm
+        return v
+
     def _generate(self, **kwargs):
         r"""Generate this parameter.
 
@@ -2316,24 +2363,7 @@ class FunctionPlantParameter(OptionPlantParameter):
         if func == 'alias':
             return v
         v0 = v
-        vmin = None
-        vmax = None
-        vnorm = None
-        if self.maxvar is not None:
-            vmax = self.get(self.maxvar)
-            if v > vmax:
-                v = vmax
-        if self.minvar is not None:
-            vmin = self.get(self.minvar)
-            if v < vmin:
-                v = vmin
-        if self.normvar is not None:
-            vnorm = self.get(self.normvar)
-        elif vmin is not None and vmax is not None:
-            v = v - vmin
-            vnorm = vmax - vmin
-        if vnorm is not None:
-            v = v / vnorm
+        v = self.normalize(v, func=func)
         if callable(func):
             out = func(v)
         elif func == 'linear':
@@ -2386,10 +2416,7 @@ class FunctionPlantParameter(OptionPlantParameter):
             out = function(v)
         else:
             raise ValueError(f"Unsupported function name \"{func}\"")
-        self.log(f'{self.fullname}[{self.namevar}={v0} (v={v})] = {out} '
-                 f'(MIN: {self.minvar} = {vmin}, '
-                 f'MAX: {self.maxvar} = {vmax}, '
-                 f'NORM: {self.normvar} = {vnorm})')
+        self.log(f'{self.fullname}[{self.namevar}={v0} (v={v})] = {out}')
         return out
 
     @classmethod
@@ -4264,21 +4291,6 @@ class PlantGenerator(ParameterCollection):
             if kname.startswith(k):
                 return k
         return None
-
-    @classmethod
-    def ids_from_file(cls, fname):
-        r"""Determine all of the available ids from the provided file.
-
-        Args:
-            fname (str): Data file.
-
-        Returns:
-            list: Crop IDs.
-
-        """
-        if fname is None:
-            return []
-        return DataProcessor.from_file(fname).ids
 
     @classmethod
     def parameters_from_file(cls, args, parameters):

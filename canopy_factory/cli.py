@@ -1462,19 +1462,23 @@ class OutputArgument(CompositeArgument):
         'ext', 'base_output', 'base_prefix', 'base_suffix', 'directory',
         'upstream', 'downstream',
         'composite_param', 'merge_all', 'merge_all_output',
+        'exclude_dynamic_suffix_param', 'parts_generators',
     ]
 
     def __init__(self, args, ext=None,
                  base_output=None, base_prefix=None, base_suffix=None,
                  directory=None, upstream=None, downstream=None,
                  composite_param=None, merge_all=None,
-                 merge_all_output=None, **kwargs):
+                 merge_all_output=None, exclude_dynamic_suffix_param=None,
+                 parts_generators=None, **kwargs):
         if upstream is None:
             upstream = []
         if downstream is None:
             downstream = {}
         if merge_all_output is None:
             merge_all_output = None
+        if parts_generators is None:
+            parts_generators = {}
         self.ext = ext
         self.base_output = base_output
         self.base_prefix = base_prefix
@@ -1486,6 +1490,8 @@ class OutputArgument(CompositeArgument):
         self.composite_param = composite_param
         self.merge_all = merge_all
         self.merge_all_output = merge_all_output
+        self.exclude_dynamic_suffix_param = exclude_dynamic_suffix_param
+        self._parts_generators = parts_generators
         self._uncached_args = {}
         self.output_name = self.suffix.strip('_')
         if self.base_prefix is True:
@@ -1731,11 +1737,12 @@ class OutputArgument(CompositeArgument):
     def parts_generators(self):
         r"""dict: Generator methods for file name parts."""
         task = self.task_class
-        out = {
-            k: getattr(task, f'_output_{k}')
-            for k in ['directory', 'base', 'suffix', 'ext']
-            if hasattr(task, f'_output_{k}')
-        }
+        out = self._parts_generators
+        for k in ['directory', 'base', 'suffix', 'ext']:
+            if k in out:
+                continue
+            if hasattr(task, f'_output_{k}'):
+                out[k] = getattr(task, f'_output_{k}')
         # TODO: Handle case of using non-generated file name
         # if 'base' not in out and self.base_output is not None:
         #     out['base'] = self._base_generator
@@ -1931,7 +1938,7 @@ class OutputArgument(CompositeArgument):
                     args_copied=args_copied, **kwargs
                 )
 
-    def remove(self, args=None, wildcards=None,
+    def remove(self, args=None, wildcards=None, skipped=None,
                force=False, skip_test_output=False):
         r"""Remove the output file.
 
@@ -1941,6 +1948,8 @@ class OutputArgument(CompositeArgument):
                 are provided.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
             force (bool, optional): If True, remove without asking for
                 user input.
             skip_test_output (bool, optional): If True, don't include
@@ -1950,9 +1959,10 @@ class OutputArgument(CompositeArgument):
         if wildcards is None:
             wildcards = []
         wildcards = wildcards + self.iterating_param
-        if wildcards or self.path is None:
+        if wildcards or skipped or self.path is None:
             assert args is not None
-            fname = self.generate(args, wildcards=wildcards)
+            fname = self.generate(args, wildcards=wildcards,
+                                  skipped=skipped)
         else:
             fname = self.path
         if not fname:
@@ -1983,13 +1993,13 @@ class OutputArgument(CompositeArgument):
         for x in files:
             os.remove(x)
 
-    def _base_generator(self, args, name, wildcards=None):
+    def _base_generator(self, args, name, **kwargs):
         assert name == self.output_name
         base = self.base_output
         assert base is not None
-        return base.generate(args, wildcards=wildcards)
+        return base.generate(args, **kwargs)
 
-    def generate(self, args, reset=False, wildcards=None):
+    def generate(self, args, reset=False, wildcards=None, skipped=None):
         r"""Generate the file name.
 
         Args:
@@ -1999,6 +2009,8 @@ class OutputArgument(CompositeArgument):
                 on the instance.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             str: Generated file name.
@@ -2009,7 +2021,8 @@ class OutputArgument(CompositeArgument):
         assert self.generated
         assert self.output_name in task._outputs_local
         try:
-            fname = self._generate(args, wildcards=wildcards)
+            fname = self._generate(args, wildcards=wildcards,
+                                   skipped=skipped)
         except FilenameGenerationError as e:
             task.log_class(f"FILENAME GENERATION ERROR: {task} {e}")
             self.args['dont_write'] = True
@@ -2021,13 +2034,20 @@ class OutputArgument(CompositeArgument):
             #                f'path: {self.path}')
         return fname
 
-    def _generate(self, args, wildcards=None):
+    def _generate(self, args, wildcards=None, skipped=None):
         from canopy_factory.utils import FilenameGenerationError
+        if self.exclude_dynamic_suffix_param:
+            var = getattr(args, self.exclude_dynamic_suffix_param)
+            assert isinstance(var, str)
+            if skipped is None:
+                skipped = []
+            skipped = skipped + [var]
         iparts = {}
         for k, v in self.parts_generators.items():
             if k in iparts:
                 continue
-            iparts[k] = v(args, self.output_name, wildcards=wildcards)
+            iparts[k] = v(args, self.output_name, wildcards=wildcards,
+                          skipped=skipped)
             if iparts[k] is None:
                 del iparts[k]
         for k, v in self.parts_defaults.items():
@@ -2483,7 +2503,8 @@ class TimeArgument(AgeArgument):
             ),
         }),
         (('--date', ), {
-            'type': utils.parse_datetime,
+            'type': utils.DatetimeArgument(
+                ["now"] + utils.SolarModel._solar_dates),
             'help': (
                 'Date that should be used with '
                 '\"--{prefix_arg}hour{suffix_arg}\" or '
@@ -2585,7 +2606,11 @@ class TimeArgument(AgeArgument):
             assert self.args['date'] is None
             self.args['date'] = self.args['time']
             self.args['time'] = None
-        if self.args['date'] == 'now':
+        if self.is_solar_date(self.args['date']):
+            assert self.args['doy'] is None
+            self.args['doy'] = self.args['date']
+            self.args['date'] = None
+        elif self.args['date'] == 'now':
             self.args['date'] = utils.to_date(datetime.datetime.now())
         elif self.is_crop_age(self.args['date']):
             assert not self.ignored('age')
@@ -2745,8 +2770,15 @@ class TimeArgument(AgeArgument):
         if self.solar_time_string and (dt_null or dt_days):
             out.update(
                 time=self.solar_time_string,
-                date=(self.date + utils.quantity2timedelta(dt)),
             )
+            if self.solar_date_string and dt_null:
+                out.update(
+                    date=self.solar_date_string,
+                )
+            else:
+                out.update(
+                    date=(self.date + utils.quantity2timedelta(dt)),
+                )
         if self.crop_age_string and (dt_null or dont_age):
             out.update(
                 age=self.crop_age_string,
@@ -2810,7 +2842,9 @@ class TimeArgument(AgeArgument):
         r"""str: Solar date string."""
         if ((self.args['time'] is None
              and self.args['date'] is None
-             and not self.setdefaults(['doy']))):
+             and ((self.args['planting_date'] is not None
+                   and self.args['age'] is not None)
+                  or (not self.setdefaults(['doy']))))):
             return None
         if self.is_solar_date(self.args.get('doy', None)):
             return self.args['doy']
@@ -3816,6 +3850,12 @@ class TaskBase(SubparserBase):
                 xsrc._output_info[x]['downstream'].setdefault(cls, [])
                 if k not in xsrc._output_info[x]['downstream'][cls]:
                     xsrc._output_info[x]['downstream'][cls].append(k)
+                if xsrc._output_info[x].get('composite_param', []):
+                    v.setdefault('composite_param', [])
+                    for kcomp in xsrc._output_info[x]['composite_param']:
+                        if ((kcomp not in v['composite_param']
+                             and cls._arguments.hasnested(kcomp))):
+                            v['composite_param'].append(kcomp)
             koutput = f'output_{k}'
             if koutput not in cls._arguments:
                 karg = arguments.CompositeArgumentDescription(
@@ -3828,7 +3868,7 @@ class TaskBase(SubparserBase):
     @staticmethod
     def _copy_external_arguments(dst, src, include=None, exclude=None,
                                  modifications=None, optional=False,
-                                 increment_suffix_index=None):
+                                 increment_suffix_index=None, **kwargs):
         if modifications is None:
             modifications = {}
         modifications = copy.deepcopy(modifications)
@@ -3846,6 +3886,7 @@ class TaskBase(SubparserBase):
             exclude=exclude,
             strip_classes=True,
             increment_suffix_index=increment_suffix_index,
+            **kwargs
         )
         new_args = arguments.ArgumentDescriptionSet([])
         for i, v in enumerate(src_arguments.values()):
@@ -4328,7 +4369,8 @@ class TaskBase(SubparserBase):
 
     @classmethod
     def _output_file(cls, args, name=None, return_disabled=False,
-                     regenerate=False, wildcards=None, copy_args=False):
+                     regenerate=False, wildcards=None, skipped=None,
+                     copy_args=False):
         r"""Get the filename for an output.
 
         Args:
@@ -4341,6 +4383,8 @@ class TaskBase(SubparserBase):
                 file names.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
             copy_args (bool, optional): If True, the args should be
                 copied and initialized.
 
@@ -4367,17 +4411,20 @@ class TaskBase(SubparserBase):
                               f'was not generated: {output.path}')
                 assert output.generated
                 return output.path
-            if output.path and not (regenerate or wildcards):
+            if output.path and not (regenerate or wildcards or skipped):
                 return output.path
             if (not return_disabled) and (not output.enabled):
                 return False
-            # return output.generate(args_local, wildcards=wildcards)
-            return output.generate(args, wildcards=wildcards)
+            # return output.generate(args_local, wildcards=wildcards,
+            #                        skipped=skipped)
+            return output.generate(args, wildcards=wildcards,
+                                   skipped=skipped)
 
         return cls._call_output_task(cls, _output_file, name)
 
     def output_file(self, name=None, return_disabled=False,
-                    regenerate=False, wildcards=None, copy_args=False):
+                    regenerate=False, wildcards=None, skipped=None,
+                    copy_args=False):
         r"""Get the filename for an output.
 
         Args:
@@ -4389,6 +4436,8 @@ class TaskBase(SubparserBase):
                 file names.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
             copy_args (bool, optional): If True, the args should be
                 copied and initialized.
 
@@ -4401,8 +4450,8 @@ class TaskBase(SubparserBase):
         def _output_file(task, name):
             return task._output_file(
                 task.args, name, return_disabled=return_disabled,
-                wildcards=wildcards, regenerate=regenerate,
-                copy_args=copy_args,
+                wildcards=wildcards, skipped=skipped,
+                regenerate=regenerate, copy_args=copy_args,
             )
 
         return self._call_output_task(self, _output_file, name)
@@ -4449,7 +4498,7 @@ class TaskBase(SubparserBase):
 
     @classmethod
     def _remove_output(cls, args, name=None, wildcards=None,
-                       copy_args=False, force=False,
+                       skipped=None, copy_args=False, force=False,
                        skip_test_output=False,
                        skip_downstream=False):
         r"""Remove existing output file.
@@ -4460,6 +4509,8 @@ class TaskBase(SubparserBase):
                 to remove.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
             copy_args (bool, optional): If True, the args should be
                 copied and initialized.
             force (bool, optional): If True, remove without asking for
@@ -4474,12 +4525,12 @@ class TaskBase(SubparserBase):
 
         def _remove_output(task, name):
             output = task._output_argument(args, name)
-            output.remove(args=args, wildcards=wildcards,
+            output.remove(args=args, wildcards=wildcards, skipped=skipped,
                           force=force, skip_test_output=skip_test_output)
             if not skip_downstream:
                 output.remove_downstream(
                     args, removed=[output.output_name],
-                    wildcards=wildcards, force=force,
+                    wildcards=wildcards, skipped=skipped, force=force,
                     skip_test_output=skip_test_output,
                 )
         cls._call_output_task(cls, _remove_output, name)
@@ -4517,7 +4568,8 @@ class TaskBase(SubparserBase):
 
         self._call_output_task(self, _cache_output, name)
 
-    def overwrite_outputs(self, downstream=None, wildcards=None):
+    def overwrite_outputs(self, downstream=None, wildcards=None,
+                          skipped=None):
         r"""Remove existing files that should be overwritten.
 
         Args:
@@ -4526,30 +4578,35 @@ class TaskBase(SubparserBase):
                 removed for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file names.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         """
         skip_downstream = (downstream is not None)
         if downstream is None:
             downstream = []
         for name in self._outputs_local:
-            if self.overwrite_output(name, wildcards=wildcards):
+            if self.overwrite_output(name, wildcards=wildcards,
+                                     skipped=skipped):
                 downstream.append(name)
         for task in self.external_tasks.values():
             task.overwrite_outputs(downstream=downstream,
-                                   wildcards=wildcards)
+                                   wildcards=wildcards,
+                                   skipped=skipped)
         if (not skip_downstream) and downstream:
             removed = []
             for k in downstream:
                 koutput = self.output_argument(k)
                 koutput.remove_downstream(
                     self.args, removed=removed, wildcards=wildcards,
+                    skipped=skipped,
                 )
         if self.is_root:
             for k in list(self._cached_outputs.keys()):
                 if not os.path.isfile(k):
                     self._cached_outputs.pop(k)
 
-    def overwrite_output(self, name=None, wildcards=None):
+    def overwrite_output(self, name=None, wildcards=None, skipped=None):
         r"""Prepare an output for a run. If overwrite specified, any
         existing data/files for the output will be removed. If the
         output file is not fully specified on the args, it will be set.
@@ -4559,6 +4616,8 @@ class TaskBase(SubparserBase):
                 to handle overwrite for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file names.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             bool: True if downstream outputs should be removed.
@@ -4572,7 +4631,8 @@ class TaskBase(SubparserBase):
         remove_downstream = False
         if output.overwrite:
             task._outputs.pop(name, None)
-            output.remove(task.args, wildcards=wildcards)
+            output.remove(task.args, wildcards=wildcards,
+                          skipped=skipped)
             remove_downstream = output.overwrite_downstream
         # elif fname and not (name in task._outputs or output.exists
         #                     or output.dont_write
@@ -4667,6 +4727,16 @@ class TaskBase(SubparserBase):
             list: Iteration values.
 
         """
+        if isinstance(k, list):
+            out = {kk: self.get_iteration_values(kk) for kk in k}
+            if 'id' in k and 'data_year' in k:
+                for i in range(len(out['id'])):
+                    out['id'][i] = utils.DependentIterationParam(
+                        'id', out['id'][i],
+                        data_year=utils.DataProcessor.available_years(
+                            self.args.crop, id=out['id'][i]),
+                    )
+            return out
         if k in ['id', 'data_year']:
             out = getattr(self, f'all_{k}s')
             if not out:
@@ -4676,7 +4746,8 @@ class TaskBase(SubparserBase):
         elif k == 'periodic_canopy':
             out = [False, 'scene']  # , 'plants', 'rays']
         else:
-            raise NotImplementedError(k)
+            out = [kk for kk in self._arguments[k].properties['choices']
+                   if not kk.startswith('all')]
         return out
 
     def generate_output(self, name):
@@ -4691,8 +4762,7 @@ class TaskBase(SubparserBase):
         """
         output = getattr(self.args, f'output_{name}')
         if output.iterating_param:
-            over = {k: self.get_iteration_values(k)
-                    for k in output.iterating_param}
+            over = self.get_iteration_values(output.iterating_param)
             merged_param = output.merged_param
             merge_all_output = output.merge_all_output
             if merge_all_output is None:
@@ -4922,10 +4992,12 @@ class TaskBase(SubparserBase):
         if not hasattr(args, '_iteration_param'):
             args._iteration_param = []
         for x in itertools.product(*[over[k] for k in keys]):
+            xparam = {k: v for k, v in zip(keys, x)}
+            if not utils.DependentIterationParam.check_param(xparam):
+                continue
             iargs_overwrite = dict(args_overwrite, **per_iter)
             iargs_overwrite[f'output_{cls._name}'] = True
-            for k, v in zip(keys, x):
-                iargs_overwrite[k] = v
+            iargs_overwrite.update(**xparam)
             cls.log_class(
                 f'ITERATION:\n{pprint.pformat(iargs_overwrite)}')
             try:
@@ -4966,8 +5038,8 @@ class TaskBase(SubparserBase):
         r"""np.ndarray: Raw pixel data for the current figure."""
         fig = self.figure
         fig.canvas.draw()
-        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        data_buffer = fig.canvas.get_renderer().buffer_rgba()
+        data = np.asarray(data_buffer)
         return data
 
 
@@ -4999,7 +5071,8 @@ class IterationTaskBase(TaskBase):
                 'base_output', cls._step_task._name)
         TaskBase._on_registration(cls)
 
-    def overwrite_outputs(self, downstream=None, wildcards=None):
+    def overwrite_outputs(self, downstream=None, wildcards=None,
+                          skipped=None):
         r"""Remove existing files that should be overwritten.
 
         Args:
@@ -5008,6 +5081,8 @@ class IterationTaskBase(TaskBase):
                 removed for.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file names.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         """
         if wildcards is None:
@@ -5030,8 +5105,22 @@ class IterationTaskBase(TaskBase):
         #         wildcards += [x for x in vary if x not in wildcards]
         #     self.remove_output(k, wildcards=wildcards)
         super(IterationTaskBase, self).overwrite_outputs(
-            downstream=downstream, wildcards=wildcards,
+            downstream=downstream, wildcards=wildcards, skipped=skipped,
         )
+
+    def step_args_full(self):
+        r"""Yield the full updates that will be made to the arguments for
+        each step including class level updates.
+
+        Yields:
+            dict: Step arguments.
+
+        """
+        for args_overwrite in self.step_args():
+            iargs_overwrite = copy.deepcopy(args_overwrite)
+            for k, v in self.args_overwrite.items():
+                iargs_overwrite.setdefault(k, v)
+            yield iargs_overwrite
 
     def step_args(self):
         r"""Yield the updates that should be made to the arguments for
@@ -5070,6 +5159,9 @@ class IterationTaskBase(TaskBase):
     @cached_property
     def args_overwrite(self):
         r"""dict: Arguments to overwrite for each step."""
+        # if getattr(self.args, f'dont_write_{self._name}'):
+        #     return {f'dont_write_{k}': True
+        #             for k in self._step_task._outputs_total}
         return {}
 
     def run_steps(self, output_name='instance'):
@@ -5085,10 +5177,7 @@ class IterationTaskBase(TaskBase):
         """
         self._step_results = []
         x_prev = None
-        for args_overwrite in self.step_args():
-            iargs_overwrite = copy.deepcopy(args_overwrite)
-            for k, v in self.args_overwrite.items():
-                iargs_overwrite.setdefault(k, v)
+        for iargs_overwrite in self.step_args_full():
             self.log(f'STEP:\n{pprint.pformat(iargs_overwrite)}')
             while True:
                 try:
@@ -5153,6 +5242,9 @@ class OptimizationTaskBase(IterationTaskBase):
         (('--tolerance', ), {
             'type': float, 'default': 1e-5,
             'help': 'Tolerance for achieving result',
+            'suffix_param': {
+                'prefix': 'tol', 'noteq': 1e-5,
+            },
         }),
         (('--initial-value', ), {
             'type': str,
@@ -5163,6 +5255,7 @@ class OptimizationTaskBase(IterationTaskBase):
     @staticmethod
     def _on_registration(cls):
         if cls._step_task is not None:
+            cls._output_info = copy.deepcopy(cls._output_info)
             cls._output_info.setdefault(cls._name, {})
             for k in cls._final_outputs:
                 kcls = cls.get_output_task(k)
@@ -5172,29 +5265,21 @@ class OptimizationTaskBase(IterationTaskBase):
                         'ext': kcls._output_info[k]['ext'],
                         'description': kcls._output_info[k]['description'],
                         'optional': True,
+                        'parts_generators': {
+                            'suffix': cls._delayed_suffix_generator,
+                        },
+                        'exclude_dynamic_suffix_param': 'vary',
                     }
                 )
             cls._output_info[cls._name].setdefault('ext', '.json')
+            cls._output_info[cls._name].setdefault(
+                'exclude_dynamic_suffix_param', 'vary'
+            )
         IterationTaskBase._on_registration(cls)
 
-    def overwrite_outputs(self, downstream=None, wildcards=None):
-        r"""Remove existing files that should be overwritten.
-
-        Args:
-            downstream (list, optional): Existing list that output names
-                should be added to that downstream files need to be
-                removed for.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file names.
-
-        """
-        if wildcards is None:
-            wildcards = []
-        if self.args.vary not in wildcards:
-            wildcards = wildcards + [self.args.vary]
-        super(OptimizationTaskBase, self).overwrite_outputs(
-            downstream=downstream, wildcards=wildcards,
-        )
+    @classmethod
+    def _delayed_suffix_generator(cls, *args, **kwargs):
+        return cls._arguments.suffix_generator(*args, **kwargs)
 
     @cached_property
     def goal(self):
@@ -5269,6 +5354,16 @@ class OptimizationTaskBase(IterationTaskBase):
                 iargs_overwrite.update(e.args_overwrite)
         return out
 
+    def step_args(self):
+        r"""Yield the updates that should be made to the arguments for
+        each step.
+
+        Yields:
+            dict: Step arguments.
+
+        """
+        return []
+
     def run_steps(self, output_name='instance'):
         r"""Run the steps.
 
@@ -5314,7 +5409,8 @@ class OptimizationTaskBase(IterationTaskBase):
         """
         return {}
 
-    def _generate_output(self, name, output_name=None):
+    def _generate_output(self, name, output_name=None,
+                         args_overwrite=None):
         r"""Generate the specified output value.
 
         Args:
@@ -5328,10 +5424,13 @@ class OptimizationTaskBase(IterationTaskBase):
             if output_name is None:
                 output_name = name
             cls = self.get_output_task(name)
-            args_overwrite = dict(
-                self.get_output(self._name),
-                **self.final_output_args(name)
-            )
+            if args_overwrite is None:
+                args_overwrite = dict(
+                    self.get_output(self._name),
+                    **self.final_output_args(name)
+                )
+            for k in cls._outputs_local:
+                args_overwrite.setdefault(f'dont_write_{k}', True)
             return self.run_iteration(
                 cls=cls,
                 args_overwrite=args_overwrite,
@@ -5429,6 +5528,8 @@ class TemporalTaskBase(IterationTaskBase):
                 assert not args.dont_age
                 args.stop_age = 'maturity'
                 args.planting_date = args.start_time.date
+                args.stop_doy = None
+                args.stop_date = None
                 if args.start_time.solar_time_string:
                     args.stop_hour = (
                         args.start_time.solar_time_string
@@ -5442,6 +5543,11 @@ class TemporalTaskBase(IterationTaskBase):
                     )
             else:
                 args.duration = units.Quantity(24.0, 'hours')
+        if start_set:
+            # Ensure that planting date is set
+            cls._arguments['start_time'].adjust_args(args)
+            if args.start_time.crop_age_string == 'planting':
+                args.planting_date = args.start_time.date
         super(TemporalTaskBase, cls).adjust_args_internal(args, **kwargs)
         if args.stop_time.time == args.start_time.time:
             args.stop_time = args.stop_time.time.replace(
@@ -5493,6 +5599,7 @@ class TemporalTaskBase(IterationTaskBase):
             iargs = self.args.start_time.iteration_args(
                 i * dt, dont_age=self.args.dont_age)
             yield iargs
+        iargs.setdefault('location', self.args.location)
         time = TimeArgument.from_kwargs(iargs)
         if time.time < self.args.stop_time.time:
             yield self.args.stop_time.iteration_args()

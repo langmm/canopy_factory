@@ -89,8 +89,8 @@ class SceneModel(RegisteredClassBase):
     def limits(self):
         r"""np.ndarray: Corners of a box containing the scene."""
         limits = np.vstack([self.mins, self.maxs])
-        xx, yy, zz = np.meshgrid(limits[:, 0], limits[:, 1], limits[:, 2])
-        out = np.vstack([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        xx = np.meshgrid(*[limits[:, i] for i in range(limits.shape[1])])
+        out = np.vstack([ixx.flatten() for ixx in xx]).T
         return out
 
     @cached_args_property
@@ -378,6 +378,7 @@ class RayTracerBase(RegisteredClassBase):
             self.args.virtual_direction,
             self.args.virtual_canopy_count_array,
             dont_reflect=True,
+            dont_center=(self.args.canopy != 'virtual_single'),
         ).astype('f4')
 
     @cached_args_property
@@ -426,11 +427,58 @@ class RayTracerBase(RegisteredClassBase):
         return SceneModel(mins, maxs)
 
     @cached_args_property
+    def field_scene_model(self):
+        r"""SceneModel: Field scene properties."""
+        mins = self.geometryids['HEADER_JSON']['field_mins']
+        maxs = self.geometryids['HEADER_JSON']['field_maxs']
+        if self.args.canopy.startswith('virtual'):
+            shifts = LayoutTask.project_onto_ground(
+                np.vstack([
+                    np.zeros((self.virtual_shifts.shape[1]), 'f4'),
+                    self.virtual_shifts]),
+                self.args.axis_rows, self.args.axis_cols,
+            )
+            scene_units = mins.units
+            mins = parse_quantity(
+                (mins.value + shifts).min(axis=0), scene_units)
+            maxs = parse_quantity(
+                (maxs.value + shifts).max(axis=0), scene_units)
+        return SceneModel(mins, maxs)
+
+    @cached_args_property
+    def layout_scene_model(self):
+        r"""SceneModel: Field scene properties."""
+        mins = (
+            self.args.x * self.args.axis_rows
+            + self.args.y * self.args.axis_cols
+        )
+        maxs = (
+            mins
+            + self.args.plot_width * self.args.axis_rows
+            + self.args.plot_length * self.args.axis_cols
+        )
+        if self.args.canopy.startswith('virtual'):
+            shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+                                self.virtual_shifts])
+            mins = (mins + shifts).min(axis=0)
+            maxs = (maxs + shifts).max(axis=0)
+        return SceneModel(mins, maxs)
+
+    @cached_args_property
     def ground(self):
         r"""np.ndarray: Coordinates of the scene center on the ground."""
         return (
             np.dot(self.virtual_scene_model.dim / 2, self.north) * self.north
             + np.dot(self.virtual_scene_model.dim / 2, self.east) * self.east
+            + self.args.ground_height.value * self.up
+        )
+
+    @cached_args_property
+    def ground_origin(self):
+        r"""np.ndarray: Coordinates of the scene center on the ground."""
+        return (
+            np.dot(self.virtual_scene_model.center, self.north) * self.north
+            + np.dot(self.virtual_scene_model.center, self.east) * self.east
             + self.args.ground_height.value * self.up
         )
 
@@ -444,6 +492,18 @@ class RayTracerBase(RegisteredClassBase):
                 np.max(np.sum((self.virtual_scene_model.limits
                                - self.ground)**2, axis=1)))
             + self.ground
+        )
+
+    @cached_args_property
+    def zenith_origin(self):
+        r"""np.ndarray: Vector from the ground in the up direction with
+        a length equal to the farthest point in the scene from the
+        ground"""
+        return (
+            self.up * np.sqrt(
+                np.max(np.sum((self.virtual_scene_model.limits
+                               - self.ground_origin)**2, axis=1)))
+            + self.ground_origin
         )
 
     @cached_args_property
@@ -635,8 +695,12 @@ class RayTracerBase(RegisteredClassBase):
         r"""np.ndarray: Ray lengths."""
         raise NotImplementedError
 
-    def raytrace(self):
+    def raytrace(self, query):
         r"""Run the ray tracer and get values for each face.
+
+        Args:
+            query (str): Type of raytrace operation that should be
+                performed.
 
         Returns:
             np.ndarray: Ray tracer results for each face.
@@ -653,6 +717,15 @@ class RayTracerBase(RegisteredClassBase):
 
         Returns:
             np.ndarray: Ray tracer results for each pixel.
+
+        """
+        raise NotImplementedError
+
+    def coverage(self):
+        r"""Compute the scene coverage.
+
+        Returns:
+            float: Percent of rays that hit the plants.
 
         """
         raise NotImplementedError
@@ -701,6 +774,7 @@ class RayTracerBase(RegisteredClassBase):
 class HothouseRayTracer(RayTracerBase):
 
     _name = 'hothouse'
+    RTC_INVALID_GEOMETRY_ID = np.iinfo(np.uint32).max
 
     @cached_args_property
     def scene(self):
@@ -803,8 +877,24 @@ class HothouseRayTracer(RayTracerBase):
         return out
 
     @cached_args_property
+    def coverage_blaster(self):
+        r"""hothouse.blaster.OrthographicRayBlaster: Blaster for coverage."""
+        from hothouse.blaster import OrthographicRayBlaster
+        out = OrthographicRayBlaster(
+            center=self.zenith_origin.astype("f4"),
+            forward=-self.up.astype("f4"),
+            up=self.args.axis_cols.astype("f4"),
+            width=self.args.plot_width,
+            height=self.args.plot_length,
+            nx=self.args.nrays,
+            ny=self.args.nrays,
+            multibounce=False,
+        )
+        return out
+
+    @cached_args_property
     def camera_blaster(self):
-        r"""hothouse.blaster.OrthographicRayBlaster: Blaster for camera."""
+        r"""hothouse.blaster.RayBlaster: Blaster for camera."""
         from hothouse.blaster import (
             ProjectionRayBlaster, OrthographicRayBlaster,
             SphericalRayBlaster)
@@ -969,7 +1059,7 @@ class HothouseRayTracer(RayTracerBase):
         if isinstance(values, units.QuantityArray):
             out = units.QuantityArray(out, values.units)
             value_miss = parse_quantity(value_miss, values.units)
-        any_hits = (hits["primID"] >= 0)
+        any_hits = (hits["primID"] != self.RTC_INVALID_GEOMETRY_ID)
 
         def assign_geomID(geomID, v):
             idx_hits = np.logical_and(hits["geomID"] == geomID, any_hits)
@@ -997,64 +1087,64 @@ class HothouseRayTracer(RayTracerBase):
                 for periodic_geomID in self._plantid2geomID[plantid][
                         'periodic'].get(geomID, []):
                     assign_geomID(periodic_geomID, v)
-        out[hits["primID"] < 0] = value_miss
+        out[hits["primID"] == self.RTC_INVALID_GEOMETRY_ID] = value_miss
         return out
 
-    def raytrace(self):
+    def raytrace(self, query):
         r"""Run the ray tracer and get values for each face.
+
+        Args:
+            query (str): Type of raytrace operation that should be
+                performed.
 
         Returns:
             np.ndarray: Ray tracer results for each face.
 
         """
-        if self.args.query == 'areas':
-            out = self.areas
-            if self.args.canopy == 'virtual':
-                out = np.hstack([out for _ in range(self.nvirtual + 1)])
-            return out
-        elif self.geometryids and self.args.query in self.geometryids:
-            out = self.geometryids[self.args.query]
+        if self.geometryids and query in self.geometryids:
+            out = self.geometryids[query]
             if self.args.canopy == 'virtual':
                 out = [out]
-                if self.args.query == 'plantids':
+                if query == 'plantids':
                     maxid = out[0].max() + 1
                     for ivert in range(1, self.nvirtual + 1):
                         out.append(out[0] + ivert * maxid)
-                elif self.args.query in ['componentids']:
+                elif query in ['componentids', 'areas', 'height']:
                     for ivert in range(1, self.nvirtual + 1):
                         out.append(out[0])
                 else:
-                    print(self.args.query)
-                    pdb.set_trace()
-                    raise NotImplementedError(self.args.query)
+                    raise NotImplementedError(query)
                 out = np.hstack(out)
             return out
         nfaces = self.mesh_dict['face'].shape[0]
         if self.args.canopy == 'virtual':
             nfaces *= (self.nvirtual + 1)
+        value_units = None
+        if self.args.include_units:
+            if query == 'flux_density':
+                value_units = self.solar_model.ppfd_direct.units
         values = np.zeros((nfaces, ), np.float64)
         if values.shape[0] == 0:
+            if value_units:
+                values = parse_quantity(values, value_units)
             return values
-        self.log(f'Running ray tracer to get {self.args.query} for '
+        self.log(f'Running ray tracer to get {query} for '
                  f't = {self.args.time.time}, age = {self.args.time.age} '
                  f'({self.args.age.value}) with '
                  f'light direction: {self.solar_blaster.forward}',
                  border=True, force=True)
         component_values = None
-        value_units = None
-        if self.args.query == 'flux_density':
+        if query == 'flux_density':
             component_values = self.scene.compute_flux_density(
                 self.solar_blaster,
                 any_direction=self.args.any_direction,
             )
-            if self.args.include_units:
-                value_units = self.solar_model.ppfd_direct.units
-        elif self.args.query == 'hits':
+        elif query == 'hits':
             component_values = self.scene.compute_hit_count(
                 self.solar_blaster)
         else:
             raise ValueError(f"Unsupported ray tracer query "
-                             f"\"{self.args.query}\"")
+                             f"\"{query}\"")
         for plantid, mesh_dict in self.plants.items():
             idx = mesh_dict.get('idx', None)
             geomIDs = self.plantid2geomIDs(
@@ -1089,7 +1179,28 @@ class HothouseRayTracer(RayTracerBase):
             out += self._plantid2geomID[plantid]['virtual']
         return out
 
-    def render(self, values, value_miss=-1.0):
+    def coverage(self):
+        r"""Compute the scene coverage.
+
+        Returns:
+            float: Percent of rays that hit the plants.
+
+        """
+        prev = False
+        try:
+            if hasattr(self.scene, 'buffer_as_primary'):
+                prev = self.scene.buffer_as_primary
+                self.scene.buffer_as_primary = True
+            hits = self.coverage_blaster.compute_count(self.scene)
+        finally:
+            if hasattr(self.scene, 'buffer_as_primary'):
+                self.scene.buffer_as_primary = prev
+        return (
+            sum(hits["primID"] != self.RTC_INVALID_GEOMETRY_ID)
+            / len(hits["primID"])
+        )
+
+    def render(self, values, value_miss=-1.0, blaster=None):
         r"""Image the scene.
 
         Args:
@@ -1102,43 +1213,74 @@ class HothouseRayTracer(RayTracerBase):
             np.ndarray: Ray tracer results for each pixel.
 
         """
+        if blaster is None:
+            blaster = self.camera_blaster
         prev = False
         try:
             if hasattr(self.scene, 'buffer_as_primary'):
                 prev = self.scene.buffer_as_primary
-            self.scene.buffer_as_primary = True
-            camera_hits = self.camera_blaster.compute_count(self.scene)
+                self.scene.buffer_as_primary = True
+            hits = blaster.compute_count(self.scene)
         finally:
             if hasattr(self.scene, 'buffer_as_primary'):
                 self.scene.buffer_as_primary = prev
         out = self.raytrace_sample(
-            camera_hits, values, value_miss=value_miss)
-        return out.reshape((self.image_nx, self.image_ny))
+            hits, values, value_miss=value_miss)
+        return out.reshape((blaster.nx, blaster.ny))
 
 
 ###################################################################
 # TASKS
 ###################################################################
 
+
+def unique(x):
+    out = []
+    for xx in x:
+        if xx not in out:
+            out.append(xx)
+    return out
+
+
 class RayTraceTask(TaskBase):
     r"""Class for running a ray tracer on a 3D canopy."""
 
     _query_options_adm = [
-        'plantids', 'componentids',
+        'plantids', 'componentids', 'areas', 'height',
     ]
     _query_options_phy = [
-        'flux_density', 'flux', 'hits', 'areas',
+        'flux_density', 'flux', 'hits', 'areas', 'height',
     ]
-    _query_options = _query_options_phy + _query_options_adm
+    _query_options = unique(_query_options_phy + _query_options_adm)
+    _query_options_calc_prefix_per_plant = [
+        'total_', 'average_', 'scene_average_', 'field_average_',
+        'profile_density_', 'profile_', 'limits_',
+    ]
     _query_options_calc_prefix = [
-        'total_', 'average_', 'scene_average_',
+        'total_', 'average_', 'plant_average_', 'scene_average_',
+        'field_average_',
+        'profile_density_', 'profile_', 'limits_',
     ]
+    _query_options_calc_prefix_depends = {
+        'average_': ['total_'],
+        'plant_average_': ['total_'],
+        'scene_average_': ['total_'],
+        'field_average_': ['total_'],
+    }
+    _query_options_depends = {
+        'flux': ['flux_density', 'areas'],
+    }
     _query_options_calc = [
         prefix + q for prefix, q in
         itertools.product(_query_options_calc_prefix, _query_options_phy)
     ]
     _query_options_other = [
         'compute_time',
+    ]
+    _query_options_stats = (
+        _query_options_calc + _query_options_other
+    ) + [
+        'coverage', 'LAI',
     ]
 
     _name = 'raytrace'
@@ -1149,18 +1291,22 @@ class RayTraceTask(TaskBase):
             'description': (
                 'the query values for each face in the mesh'
             ),
-        },
-        'raytrace_limits': {
-            'ext': '.json',
-            'description': 'limits on raytrace query values',
-            'optional': True,
+            'composite_param': ['periodic_canopy'],
         },
         'traced_mesh': {
+            'upstream': ['raytrace'],
             'description': (
                 'the mesh with faces colored by a ray tracer result'
             ),
             'optional': True,
             'merge_all': True,
+        },
+        'raytrace_stats': {
+            'upstream': ['raytrace'],
+            'ext': '.json',
+            'description': (
+                'the top level statistics calculated from the ray trace'
+            ),
         },
     }
     _external_tasks = {
@@ -1289,7 +1435,7 @@ class RayTraceTask(TaskBase):
                      'of the plant architecture component.'),
             'suffix_param': {
                 'cond': True,
-                'skip_outputs': ['raytrace', 'raytrace_limits'],
+                'skip_outputs': ['raytrace', 'raytrace_stats'],
             },
         }),
         (('--show-rays', ), {
@@ -1298,7 +1444,7 @@ class RayTraceTask(TaskBase):
                      '"--output-traced-mesh" is passed.'),
             'suffix_param': {
                 'value': 'rays',
-                'skip_outputs': ['raytrace', 'raytrace_limits'],
+                'skip_outputs': ['raytrace', 'raytrace_stats'],
             },
         }),
         (('--highlight', ), {
@@ -1309,7 +1455,7 @@ class RayTraceTask(TaskBase):
             'suffix_param': {
                 'prefix': 'highlight',
                 'title': True,
-                'skip_outputs': ['raytrace', 'raytrace_limits'],
+                'skip_outputs': ['raytrace', 'raytrace_stats'],
             },
         }),
         (('--ray-width', ), {
@@ -1373,12 +1519,36 @@ class RayTraceTask(TaskBase):
                 self.args, self.mesh,
                 geometryids=self.geometryids)
 
+    @cached_args_property
+    def nvirtual(self):
+        if not self.args.canopy.startswith('virtual'):
+            return 0
+        return np.prod(self.args.virtual_canopy_count_array) - 1
+
     @cached_property
     def scene_area(self):
         r"""units.Quantity: Area that the scene covers."""
         if self.args.canopy != 'single':
             return self.args.plot_width * self.args.plot_length
+        return self.plant_area
+
+    @cached_property
+    def planting_density(self):
+        r"""units.Quantity: Planting density."""
+        return (self.args.ncols * self.args.nrows) / self.scene_area
+
+    @cached_property
+    def plant_area(self):
+        r"""units.Quantity: Area that the scene covers."""
         return self.args.row_spacing * self.args.plant_spacing
+
+    @cached_property
+    def field_area(self):
+        r"""units.Quantity: Area that the scene covers."""
+        assert len(self.raytracer.field_scene_model.dim) == 2
+        return utils.safe_op(
+            np.prod, self.raytracer.field_scene_model.dim
+        )
 
     @cached_property
     def mesh(self):
@@ -1388,7 +1558,11 @@ class RayTraceTask(TaskBase):
 
     @cached_property
     def geometryids(self):
-        return self.get_output('geometryids')[1]
+        return self.get_output('geometryids')
+
+    @cached_property
+    def component_order(self):
+        return self.geometryids['HEADER_JSON']['component_order']
 
     @cached_property
     def componentids(self):
@@ -1418,13 +1592,13 @@ class RayTraceTask(TaskBase):
         if not GenerateTask.mesh_generated(args):
             args.periodic_canopy = False
             args.canopy = 'external'
+        if args.overwrite_raytrace:
+            args.overwrite_raytrace_stats = True
         super(RayTraceTask, cls).adjust_args_internal(
             args, skip=skip, **kwargs)
-        if not cls.is_limits_base_class(args):
-            args.dont_write_raytrace_limits = True
 
     @classmethod
-    def _output_ext(cls, args, name, wildcards=None):
+    def _output_ext(cls, args, name, wildcards=None, skipped=None):
         r"""Determine the extension that should be used for output files.
 
         Args:
@@ -1432,6 +1606,8 @@ class RayTraceTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             str: Output file extension.
@@ -1439,7 +1615,7 @@ class RayTraceTask(TaskBase):
         """
         if name == 'traced_mesh':
             return cls._outputs_external['generate']._output_ext(
-                args, 'generate', wildcards=wildcards)
+                args, 'generate', wildcards=wildcards, skipped=skipped)
         return None
 
     @classmethod
@@ -1462,8 +1638,170 @@ class RayTraceTask(TaskBase):
             return query_values['HEADER_JSON'][query]
         raise NotImplementedError(query)
 
+    def _fill_in_admin_queries(self, values):
+        values = {k: v for k, v in values.items()}
+        for k in self._query_options_adm:
+            if k in values:
+                continue
+            out = self.geometryids[k]
+            if self.args.canopy == 'virtual':
+                out = [out]
+                if k == 'plantids':
+                    maxid = out[0].max() + 1
+                    for ivert in range(1, self.nvirtual + 1):
+                        out.append(out[0] + ivert * maxid)
+                else:
+                    for ivert in range(1, self.nvirtual + 1):
+                        out.append(out[0])
+                out = np.hstack(out)
+            values[k] = out
+        return values
+
     @classmethod
-    def extract_query_average(cls, values, query):
+    def _fill_in_calculated_queries(cls, values, query):
+        for k in cls._query_options_depends.keys():
+            if k in values:
+                continue
+            if (((isinstance(query, list) and k in query)
+                 or query == k)):
+                values[k] = cls.extract_query(values, k)
+
+    @classmethod
+    def _check_plantids(cls, values, per_plant):
+        plantids_unique = np.unique(values['plantids'])
+        if not isinstance(per_plant, bool):
+            if ((len(plantids_unique) != per_plant
+                 and len(plantids_unique) == 0)):
+                plantids_unique = range(per_plant)
+            else:
+                if len(plantids_unique) != per_plant:
+                    print(len(plantids_unique), per_plant)
+                    pdb.set_trace()
+                assert len(plantids_unique) == per_plant
+        return plantids_unique
+
+    @classmethod
+    def join_query_stats(cls, values, query=None, per_plant=False):
+        r"""Concatenate query statistics as an array.
+
+        Args:
+            values (list): Set of query results.
+            query (str, optional): Query statistic in values. If not
+                set, values must be a list of stats dictionaries and
+                the result will be a dictionary of the concatenated
+                values for each stat.
+            per_plant (bool, optional): If True and query supports per-
+                plant statistics, the values are dictionaries of per-
+                plant stats.
+
+        Returns:
+            np.ndarray: Concatenated stats.
+
+        """
+        if query is None:
+            assert isinstance(values[0], dict)
+            out = {}
+            for k in values[0].keys():
+                out[k] = cls.join_query_stats(
+                    [v[k] for v in values], k, per_plant=per_plant,
+                )
+            return out
+        if not query.startswith(
+                tuple(cls._query_options_calc_prefix_per_plant)):
+            per_plant = False
+
+        def create_dst(v):
+            if isinstance(v, dict):
+                return {
+                    k: create_dst(vv) for k, vv in v.items()
+                }
+            return []
+
+        if isinstance(values[0], dict):
+            out = {
+                k: np.vstack([
+                    x[k] if not (isinstance(x[k], np.ndarray)
+                                 and x[k].shape)
+                    else x[k].T
+                    for x in values
+                ]) for k in values[0].keys()
+            }
+            for k, v in values[0].items():
+                if isinstance(v, units.QuantityArray):
+                    out[k] = units.QuantityArray(out[k], v.units)
+        else:
+            out = np.vstack([
+                x if not (isinstance(x, np.ndarray) and x.shape)
+                else x.T
+                for x in values
+            ])
+            if isinstance(values[0], units.QuantityArray):
+                out = units.QuantityArray(out, values[0].units)
+        return out
+
+    @classmethod
+    def extract_query_stat(cls, method, values, query, per_plant=False,
+                           include_base=False, plantid=None,
+                           scale_total=None, **kwargs):
+        r"""Calculate a statistic of the query.
+
+        Args:
+            method (callable): Function to call to calculate stats.
+            values (dict): Query values for each face.
+            query (str, list): Query value(s) to return stat(s) for.
+                If a list is provided, a dictionary mapping from query
+                name to value will be returned.
+            per_plant (bool, optional): If True, the query values should
+                be profiled for each plant. If an int is provided,
+                the number of unique plant IDs should match the provided
+                value.
+            include_base (bool, optional): If True, include the stats
+                for the whole scene when per_plant is True.
+            plantid (int, optional): Plant ID to extract the profile for.
+                None indicates the entire canopy.
+            scale_total (float, optional): Scale factor to apply to the
+                total for all plants.
+            **kwargs: Additional keyword arguments are passed to the
+                provided method.
+
+        Returns:
+            dict: Stats for the specified query(s).
+
+        """
+        cls._fill_in_calculated_queries(values, query)
+        if isinstance(query, list):
+            return {
+                k: cls.extract_query_stat(
+                    method, values, k, per_plant=per_plant,
+                    include_base=include_base, plantid=plantid,
+                    scale_total=scale_total, **kwargs
+                )
+                for k in query
+            }
+        if per_plant:
+            assert plantid is None
+            plantids_unique = cls._check_plantids(values, per_plant)
+            out = {}
+            for i in plantids_unique:
+                out[str(i)] = cls.extract_query_stat(
+                    method, values, query, plantid=i,
+                    scale_total=scale_total, **kwargs)
+            if include_base:
+                out['total'] = cls.extract_query_stat(
+                    method, values, query,
+                    scale_total=scale_total, **kwargs)
+            return out
+        if plantid is not None:
+            idx = (values['plantids'] == plantid)
+            values = {k: values[k][idx] for k in values.keys()
+                      if k != 'HEADER_JSON'}
+        out = method(values, query, **kwargs)
+        if plantid is None and scale_total is not None:
+            out *= scale_total
+        return out
+
+    @classmethod
+    def extract_query_average(cls, values, query, **kwargs):
         r"""Calculate average of total per plant.
 
         Args:
@@ -1471,47 +1809,21 @@ class RayTraceTask(TaskBase):
             query (str, list): Query value(s) to return total(s) for. If
                 a list is provided, a dictionary mapping from query name
                 to value will be returned.
+            **kwargs: Additional keyword arguments are passed to
+                extract_query_stat.
 
         Returns:
             units.Quantity: Average for the specified query across plants.
 
         """
-        def mean(x):
-            if len(x) == 0:
-                return 0.0
-            if isinstance(x[0], units.Quantity):
-                return units.Quantity(np.mean([xx.value for xx in x]),
-                                      x[0].units)
-            return np.mean(x)
+        def func(values, query):
+            return utils.safe_op(np.mean, values[query],
+                                 value_on_empty=0.0)
 
-        totals = cls.extract_query_total(values, query, per_plant=True)
-        if isinstance(query, list):
-            out = {k: mean([v[k] for v in totals.values()])
-                   for k in query}
-        else:
-            out = mean(list(totals.values()))
-        return out
+        return cls.extract_query_stat(func, values, query, **kwargs)
 
     @classmethod
-    def extract_query_averages(cls, values):
-        r"""Calculate average of total per plant.
-
-        Args:
-            values (dict): Query values for each face.
-
-        Returns:
-            dict: Mapping between query names and averages.
-
-        """
-        query = [k for k in cls._query_options_phy if k in values]
-        if (('flux' not in query
-             and all(k in query for k in ['flux_density', 'areas']))):
-            query.append('flux')
-        return cls.extract_query_average(values, query)
-
-    @classmethod
-    def extract_query_total(cls, values, query, per_plant=False,
-                            include_base=False):
+    def extract_query_total(cls, values, query, **kwargs):
         r"""Calculate sums over one query options.
 
         Args:
@@ -1519,85 +1831,109 @@ class RayTraceTask(TaskBase):
             query (str, list): Query value(s) to return total(s) for. If
                 a list is provided, a dictionary mapping from query name
                 to value will be returned.
-            per_plant (bool, optional): If True, the query values should
-                be totaled for each plant. If an int is provided,
-                the number of unique plant IDs should match the provided
-                value.
-            include_base (bool, optional): If True, include the total
-                for the whole scene when per_plant is True.
+            **kwargs: Additional keyword arguments are passed to
+                extract_query_stat.
 
         Returns:
             units.Quantity: Total for the specified query.
 
         """
-        def sum(x):
-            if isinstance(x, units.QuantityArray):
-                return units.Quantity(x.value.sum(), x.units)
-            return x.sum()
+        def func(values, query):
+            return utils.safe_op(np.sum, values[query],
+                                 value_on_empty=0.0)
 
-        if 'flux' not in values and ((isinstance(query, list)
-                                      and 'flux' in query)
-                                     or query == 'flux'):
-            values['flux'] = cls.extract_query(values, 'flux')
-
-        if not per_plant:
-            if isinstance(query, list):
-                return {k: sum(values[k]) for k in query}
-            return sum(values[query])
-        out = {}
-        plantids = values['plantids']
-        plantids_unique = np.unique(plantids)
-        if not isinstance(per_plant, bool):
-            if ((len(plantids_unique) != per_plant
-                 and len(plantids_unique) == 0)):
-                if isinstance(query, list):
-                    for k in query:
-                        values[k] = np.zeros((per_plant, ))
-                else:
-                    values[query] = np.zeros((per_plant, ))
-                plantids_unique = range(per_plant)
-            else:
-                if len(plantids_unique) != per_plant:
-                    print(len(plantids_unique), per_plant)
-                    pdb.set_trace()
-                assert len(plantids_unique) == per_plant
-        for i in plantids_unique:
-            idx = (plantids == i)
-            if isinstance(query, list):
-                out[str(i)] = {k: sum(values[k][idx]) for k in query}
-            else:
-                out[str(i)] = sum(values[query][idx])
-        if include_base:
-            if isinstance(query, list):
-                out['total'] = {k: sum(values[k]) for k in query}
-            else:
-                out['total'] = sum(values[query])
-        return out
+        return cls.extract_query_stat(func, values, query, **kwargs)
 
     @classmethod
-    def extract_query_totals(cls, values, per_plant=False):
-        r"""Calculate sums over all query options.
+    def extract_query_profile(cls, values, query, **kwargs):
+        r"""Calculate the profile of the query over canopy height.
 
         Args:
             values (dict): Query values for each face.
-            per_plant (bool, optional): If True, the query values should
-                also be totaled for each plant. If an int is provided,
-                the number of unique plant IDs should match the provided
-                value.
+            query (str, list): Query value(s) to return profile(s) for.
+                If a list is provided, a dictionary mapping from query
+                name to value will be returned.
+            nbins (int, optional): Number of bins to use in the profile.
+            density (bool, optional): If True, the profile will be a
+                density normalized by the number of values in each bin.
+            **kwargs: Additional keyword arguments are passed to
+                extract_query_stat.
 
         Returns:
-            dict: Mapping between query names and totals. If per_plant
-                is True, this is nested as a value for each plant ID.
+            units.QuantityArray: Profile for the specified query.
 
         """
-        query = [k for k in cls._query_options_phy if k in values]
-        if (('flux' not in query
-             and all(k in query for k in ['flux_density', 'areas']))):
-            query.append('flux')
-        out = cls.extract_query_total(values, query, per_plant=per_plant)
-        if per_plant:
-            out['total'] = cls.extract_query_total(values, query)
-        return out
+
+        def func(values, query, nbins=20, density=False):
+            x = values[query]
+            x_units = None
+            if isinstance(x, units.QuantityArray):
+                x_units = x.units
+                x = x.value
+            heights = values['height']
+            heights_units = None
+            if isinstance(heights, units.QuantityArray):
+                heights_units = heights.units
+                heights = heights.value
+            if len(heights) == 0:
+                hist = np.zeros((nbins, ), dtype=x.dtype)
+                bins = np.linspace(0, 1, nbins, dtype=heights.dtype)
+            else:
+                hist, bins = np.histogram(heights, weights=x,
+                                          bins=nbins, density=density)
+                bins = (bins[:-1] + bins[1:]) / 2
+            if heights_units is not None:
+                bins = parse_quantity(bins, heights_units)
+            if x_units is not None:
+                hist = parse_quantity(hist, x_units)
+            return {'bins': bins, 'hist': hist}
+
+        return cls.extract_query_stat(func, values, query, **kwargs)
+
+    @classmethod
+    def extract_query_limits(cls, values, query, **kwargs):
+        r"""Calculate the limits of the query.
+
+        Args:
+            values (dict): Query values for each face.
+            query (str, list): Query value(s) to return limit(s) for.
+                If a list is provided, a dictionary mapping from query
+                name to value will be returned.
+            **kwargs: Additional keyword arguments are passed to
+                extract_query_stat.
+
+        Returns:
+            dict: Limits for the specified query.
+
+        """
+
+        def func(values, query):
+            x = values[query]
+            x_units = None
+            if isinstance(x, units.QuantityArray):
+                x_units = x.units
+                x = x.value
+            if len(x) == 0:
+                out = {
+                    'linear': np.array([np.nan, np.nan]),
+                    'log': np.array([np.nan, np.nan]),
+                }
+            elif (x == 0).all():
+                out = {
+                    'linear': np.array([x[x >= 0].min(), x.max()]),
+                    'log': np.array([np.nan, np.nan]),
+                }
+            else:
+                out = {
+                    'linear': np.array([x[x >= 0].min(), x.max()]),
+                    'log': np.array([x[x > 0].min(), x.max()]),
+                }
+            if x_units is not None:
+                out = {k: parse_quantity(v, x_units)
+                       for k, v in out.items()}
+            return out
+
+        return cls.extract_query_stat(func, values, query, **kwargs)
 
     def calculate_query(self, query, prevent_output=False,
                         per_plant=False):
@@ -1616,14 +1952,21 @@ class RayTraceTask(TaskBase):
             units.Quantity: Calculated query value.
 
         """
-        query_sorted = {}
+        query_sorted = {
+            k: [] for k in self._query_options_calc_prefix + ['']
+        }
 
         def get_base(x):
             for prefix in self._query_options_calc_prefix:
                 if x.startswith(prefix):
                     out = x.split(prefix, 1)[-1]
-                    query_sorted.setdefault(prefix, [])
                     query_sorted[prefix].append(out)
+                    prefix_req = (
+                        self._query_options_calc_prefix_depends.get(
+                            prefix, [])
+                    )
+                    for iprefix_req in prefix_req:
+                        query_sorted[iprefix_req].append(out)
                     return out
             else:
                 query_sorted.setdefault('', [])
@@ -1638,157 +1981,146 @@ class RayTraceTask(TaskBase):
             values = self.get_output('raytrace')
         else:
             values = self.raytrace_scene(query=list(query_base))
+        values = self._fill_in_admin_queries(values)
         out = {}
+        if query_sorted['plant_average_'] and per_plant is False:
+            per_plant = True
         for prefix, kquery in query_sorted.items():
+            if not kquery:
+                continue
+            multiple_values = False
             if prefix == 'total_':
-                iout = self.extract_query_total(values, kquery,
-                                                per_plant=per_plant,
-                                                include_base=True)
+                scale_total = 1
                 if self.args.canopy == 'virtual_single':
-                    nplant = self.args.nrows * self.args.ncols
-                    if per_plant:
-                        for k in kquery:
-                            iout['total'][k] *= nplant
-                    else:
-                        for k in kquery:
-                            iout[k] *= nplant
-                if per_plant:
-                    for k in kquery:
-                        out.setdefault(f'{prefix}{k}', {})
-                    for i in iout.keys():
-                        for k in kquery:
-                            out[f'{prefix}{k}'][i] = iout[i][k]
-                    continue
+                    scale_total = self.args.nrows * self.args.ncols
+                iout = self.extract_query_total(
+                    values, kquery,
+                    per_plant=per_plant, include_base=True,
+                    scale_total=scale_total,
+                )
             elif prefix == 'average_':
-                iout = self.extract_query_average(values, kquery)
+                iout = self.extract_query_average(
+                    values, kquery,
+                    per_plant=per_plant, include_base=True,
+                )
+            elif prefix == 'plant_average_':
+                iout = {}
+                for k in kquery:
+                    ktotal = f'total_{k}'
+                    assert ktotal in out and per_plant
+                    iout[k] = utils.safe_op(
+                        np.mean,
+                        [
+                            vv for kk, vv in out[ktotal].items()
+                            if kk != 'total'
+                        ],
+                        value_on_empty=0.0,
+                    )
             elif prefix == 'scene_average_':
-                iout = {
-                    k: v / self.scene_area for k, v in
-                    self.extract_query_total(values, kquery).items()
-                }
+                iout = {}
+                for k in kquery:
+                    ktotal = f'total_{k}'
+                    assert ktotal in out
+                    if per_plant:
+                        iout[k] = {
+                            kk: vv / (self.scene_area if kk == 'total'
+                                      else self.plant_area)
+                            for kk, vv in out[ktotal].items()
+                        }
+                    else:
+                        iout[k] = out[ktotal] / self.scene_area
+            elif prefix == 'field_average_':
+                iout = {}
+                for k in kquery:
+                    ktotal = f'total_{k}'
+                    assert ktotal in out
+                    if per_plant:
+                        # TODO: Get the actual bounds for the plant
+                        iout[k] = {
+                            kk: vv / (self.field_area if kk == 'total'
+                                      else self.plant_area)
+                            for kk, vv in out[ktotal].items()
+                        }
+                    else:
+                        iout[k] = out[ktotal] / self.field_area
+            elif prefix.startswith('profile_'):
+                iout = self.extract_query_profile(
+                    values, kquery,
+                    density=(prefix == 'profile_density_'),
+                    per_plant=per_plant, include_base=True,
+                )
+                multiple_values = 'hist'
+            elif prefix == 'limits_':
+                iout = self.extract_query_limits(
+                    values, kquery,
+                    per_plant=per_plant, include_base=True,
+                )
+                multiple_values = True
             elif prefix == '':
                 iout = {k: self.extract_query(values, k)
                         for k in kquery}
             else:
                 raise NotImplementedError(prefix)
-            for k, v in iout.items():
-                out[f'{prefix}{k}'] = v
+            if multiple_values:
+                for k, v in iout.items():
+                    if per_plant:
+                        for ksrc in v['0'].keys():
+                            kdst = (
+                                f'{prefix}{k}' if ksrc == multiple_values
+                                else f'{prefix}{k}_{ksrc}'
+                            )
+                            out[kdst] = {
+                                kk: vv[ksrc] for kk, vv in v.items()
+                            }
+                    else:
+                        for ksrc in v.keys():
+                            kdst = (
+                                f'{prefix}{k}' if ksrc == multiple_values
+                                else f'{prefix}{k}_{ksrc}'
+                            )
+                            out[kdst] = v[ksrc]
+            else:
+                for k, v in iout.items():
+                    out[f'{prefix}{k}'] = v
         if singular:
             return out[query[0]]
         return out
 
     @classmethod
-    def calc_query_limits(cls, query_values, prev=None):
-        r"""Compute limits from the query values.
-
-        Args:
-            query_values (dict): Query values for each face.
-
-        Returns:
-            dict: Limits on each query.
-
-        """
-        if isinstance(query_values, list):
-            out = prev
-            for x in query_values:
-                out = cls.calc_query_limits(x, prev=out)
-            return out
-        out = {}
-        for query in cls._query_options:
-            out[query] = {}
-            values = cls.extract_query(query_values, query)
-            if isinstance(values, units.QuantityArray):
-                values = values.value
-            if len(values) == 0:
-                out[query].update(
-                    vmin_linear=np.nan,
-                    vmin_log=np.nan,
-                    vmax_linear=np.nan,
-                    vmax_log=np.nan,
-                )
-            elif (values == 0).all():
-                out[query].update(
-                    vmin_linear=values[values >= 0].min(),
-                    vmin_log=np.nan,
-                    vmax_linear=values.max(),
-                    vmax_log=np.nan,
-                )
-            else:
-                out[query].update(
-                    vmin_linear=values[values >= 0].min(),
-                    vmin_log=values[values > 0].min(),
-                    vmax_linear=values.max(),
-                    vmax_log=values.max(),
-                )
-            if prev is not None:
-                for k in ['vmin_linear', 'vmin_log']:
-                    if ((out[query][k] == np.nan
-                         or prev[query][k] < out[query][k])):
-                        out[query][k] = prev[query][k]
-                for k in ['vmax_linear', 'vmax_log']:
-                    if ((out[query][k] == np.nan
-                         or prev[query][k] > out[query][k])):
-                        out[query][k] = prev[query][k]
-        return out
-
-    @classmethod
-    def _adjust_color_limits(cls, self, cmap):
+    def update_color_limits(cls, query, cmap, limits, force=False):
         r"""Set the minimum and maximum for color mapping.
 
         Args:
-            self (TaskBase): Task that colormap limits are being set for.
+            query (str): Raytrace target that limits should be taken
+                from.
             cmap (ColorMapArgument): Colormap argument information.
-
-        """
-        if cmap.limits_defined:
-            return
-        limits = self.get_output('raytrace_limits')
-        cls.update_color_limits(self.args, cmap, limits=limits)
-
-    @classmethod
-    def update_color_limits(cls, args, cmap=None, limits=None,
-                            name=None, force=False, **kwargs):
-        r"""Set the minimum and maximum for color mapping.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            cmap (ColorMapArgument): Colormap argument information.
-            limits (dict, optional): Set of calculated limits. If not
-                provided, limits will be calculated via
-                _generate_limits_class.
-            name (str, optional): Name for limits to set if different
-                than raytrace.
+            limits (dict): Set of calculated limits for the query.
             force (bool, optional): If True, overwrite any existing
                 arguments for the color limits.
-            **kwargs: Additional keyword arguments are passed to
-                _generate_limits_class if limits is not provided.
 
         Returns:
             bool: True if the limits were generated.
 
         """
-        if name is None:
-            name = cls._name
-        if cmap is None:
-            cmap = getattr(args, f'{name}_colormap')
         if (not force) and cmap.limits_defined:
             return False
         out = False
-        if limits is None:
-            limits = RayTraceTask._generate_limits_class(args, **kwargs)
-            out = True
-        vscaling = cmap.scaling
-        limits = limits[args.query]
         if force or cmap.vmin is None:
-            cmap.vmin = limits[f'vmin_{vscaling}']
+            cmap.vmin = limits[0]
         if force or cmap.vmax is None:
-            cmap.vmax = limits[f'vmax_{vscaling}']
+            cmap.vmax = limits[1]
         cls.log_class(f'LIMITS[{cls._name}, {cmap.name}]: '
                       f'{cmap.vmin}, {cmap.vmax}')
         return out
 
-    def _color_scene(self):
-        r"""Color the geometry based on the raytracer results."""
+    def _color_scene(self, query):
+        r"""Color the geometry based on the raytracer results.
+
+        Args:
+            query (str): Raytrace target that should be used to color
+                the scene.
+
+        """
         query_values = self.get_output('raytrace')
         if self.args.show_rays:
             inst = self.run_iteration(
@@ -1796,7 +2128,6 @@ class RayTraceTask(TaskBase):
                                 'output_traced_mesh': True},
             )
             mesh = inst.get_output('traced_mesh')
-            # self.raytracer = inst.raytracer
             rays = generate_rays(inst.raytracer.ray_origins,
                                  inst.raytracer.ray_directions,
                                  ray_length=inst.raytracer.ray_lengths,
@@ -1807,9 +2138,12 @@ class RayTraceTask(TaskBase):
             mesh.append(rays)
             return mesh
         cmap = self.args.traced_mesh_colormap
-        self._adjust_color_limits(self, cmap)
+        if not cmap.limits_defined:
+            self.update_color_limits(
+                query, cmap, self.limits[query][cmap.scaling],
+            )
         mesh = self.mesh
-        face_values = self.extract_query(query_values, self.args.query)
+        face_values = self.extract_query(query_values, query)
         if isinstance(face_values, units.QuantityArray):
             face_values = np.array(face_values)
         vertex_values = self.raytracer.face2vertex(
@@ -1825,20 +2159,6 @@ class RayTraceTask(TaskBase):
         )
         mesh.add_colors('vertex', vertex_colors)
         return mesh
-
-    @classmethod
-    def _check_for_plantids(cls, self, values):
-        if not self.args.output_generate.generated:
-            return True
-        plantids = values['plantids']
-        if len(plantids) == 0:
-            return True
-        plantids_unique = np.unique(plantids)
-        if len(plantids_unique) != self.args.nrows * self.args.ncols:
-            print(len(plantids), len(plantids_unique),
-                  self.args.nrows * self.args.ncols)
-            pdb.set_trace()
-        return len(plantids_unique) == self.args.nrows * self.args.ncols
 
     def raytrace_scene(self, query=None):
         r"""Run the ray tracer on the selected geometry.
@@ -1857,11 +2177,13 @@ class RayTraceTask(TaskBase):
             values = {}
             if 'compute_time' in query:
                 t0 = time.time()
-            if 'flux' in query:
-                query = query + [k for k in ['flux_density', 'areas']
-                                 if k not in query]
+            for k, kreq in self._query_options_depends.items():
+                if k in query:
+                    query = query + [kkreq for kkreq in kreq
+                                     if kkreq not in query]
             for k in query:
-                if k in ['flux'] + self._query_options_other:
+                if k in (list(self._query_options_depends.keys())
+                         + self._query_options_other):
                     continue
                 values[k] = self.raytrace_scene(query=k)
             if 'flux' in query:
@@ -1872,16 +2194,44 @@ class RayTraceTask(TaskBase):
                     'compute_time': t1 - t0,
                 }
             return values
-        if query == 'flux':
-            values = self.raytrace_scene(query=['flux_density', 'areas'])
+        if query in self._query_options_depends:
+            values = self.raytrace_scene(
+                query=self._query_options_depends[query])
             return self.extract_query(values, query)
-        query0 = self.args.query
-        self.raytracer.args.query = query
-        try:
-            out = self.raytracer.raytrace()
-        finally:
-            self.raytracer.args.query = query0
-        return out
+        return self.raytracer.raytrace(query)
+
+    def _canopy_profile(self, query):
+        r"""Calculate the profile of a query value at different positions
+        in the canopy.
+
+        Args:
+            query (str, list): Query value(s) to compute the profile for.
+
+        """
+        raise NotImplementedError
+
+    def _generate_stats(self):
+        r"""Generate top level raytrace stats.
+
+        Returns:
+            dict: Top level statistics.
+
+        """
+        if self.args.canopy == 'virtual_single':
+            per_plant = 1
+        else:
+            per_plant = (self.args.nrows * self.args.ncols)
+        query = (
+            self._query_options_calc
+            + self._query_options_other
+        )
+        output = self.calculate_query(query, per_plant=per_plant)
+        output['coverage'] = self.raytracer.coverage()
+        leaf_area = self.geometryids['HEADER_JSON']['leaf_area']
+        if not self.args.canopy.startswith('virtual'):
+            leaf_area = leaf_area / (self.args.nrows * self.args.ncols)
+        output['LAI'] = leaf_area * self.planting_density
+        return output
 
     @classmethod
     def _generate_limits_class(cls, args, limits_args_base=None,
@@ -1906,14 +2256,14 @@ class RayTraceTask(TaskBase):
             **{
                 'query': None,
                 'planting_date': None,
-                'output_raytrace_limits': True,
-                'dont_write_raytrace_limits': False,
+                'output_raytrace_stats': True,
+                'dont_write_raytrace_stats': False,
             }
         )
         optional_output = cls._output_names(
             args, include_external=True, exclude_required=True)
         for k in optional_output:
-            if k == 'raytrace_limits':
+            if k == 'raytrace_stats':
                 continue
             args_overwrite[f'output_{k}'] = False
         print(80 * '-')
@@ -1921,14 +2271,15 @@ class RayTraceTask(TaskBase):
         pprint.pprint(args_overwrite)
         out = cls.run_iteration_class(
             args, args_overwrite=args_overwrite,
-            output_name='raytrace_limits',
+            output_name='raytrace_stats',
             **kwargs
         )
         print("END GENERATING LIMITS FOR BASE")
         print(80 * '-')
         return out
 
-    def _generate_limits(self):
+    @cached_property
+    def limits(self):
         r"""Generate limits for the date in question.
 
         Returns:
@@ -1938,12 +2289,20 @@ class RayTraceTask(TaskBase):
         limits_args = self.limits_args_class(self.args)
         limits_args_base = self.limits_args_class(self.args, base=True)
         if limits_args != limits_args_base:
-            return self._generate_limits_class(
+            stats = self._generate_limits_class(
                 self.args, limits_args_base=limits_args_base,
-                cached_outputs=self._cached_outputs,
-                cache_outputs=['raytrace_limits'],
             )
-        return self.calc_query_limits(self.get_output('raytrace'))
+        else:
+            stats = self.get_output('raytrace_stats')
+        out = {}
+        for k, v in stats.items():
+            if not k.startswith('limits_'):
+                continue
+            k = k.split('limits_', 1)[-1]
+            query, scaling = k.rsplit('_', 1)
+            out.setdefault(query, {})
+            out[query][scaling] = v['total']
+        return out
 
     @classmethod
     def is_limits_base_class(cls, args):
@@ -2035,11 +2394,15 @@ class RayTraceTask(TaskBase):
         """
         assert self.args.id != 'all'
         if name == 'raytrace':
-            return self.raytrace_scene()
-        elif name == 'raytrace_limits':
-            return self._generate_limits()
+            out = self.raytrace_scene()
+            # Prevent saving redundant info store in geometryids
+            for k in self._query_options_adm:
+                out.pop(k, None)
+            return out
         elif name == 'traced_mesh':
-            return self._color_scene()
+            return self._color_scene(self.args.query)
+        elif name == 'raytrace_stats':
+            return self._generate_stats()
         super(RayTraceTask, self)._generate_output(name)
 
 
@@ -2279,8 +2642,12 @@ class RenderTask(TaskBase):
         r"""RayTracerBase: Ray tracer."""
         return self.external_tasks['raytrace'].raytracer
 
-    def _render_scene(self):
+    def _render_scene(self, query):
         r"""Render the scene using a ray tracer.
+
+        Args:
+            query (str): Raytrace target that should be used to color
+                the scene.
 
         Returns:
             np.ndarray: Pixel color data.
@@ -2288,9 +2655,12 @@ class RenderTask(TaskBase):
         """
         query_values = self.get_output('raytrace')
         cmap = self.args.render_colormap
-        RayTraceTask._adjust_color_limits(self, cmap)
-        face_values = RayTraceTask.extract_query(
-            query_values, self.args.query)
+        if not cmap.limits_defined:
+            RayTraceTask.update_color_limits(
+                query, cmap,
+                self.external_tasks['raytrace'].limits[query][cmap.scaling],
+            )
+        face_values = RayTraceTask.extract_query(query_values, query)
         if isinstance(face_values, units.QuantityArray):
             face_values = np.array(face_values)
         pixel_values = self.raytracer.render(face_values)
@@ -2477,7 +2847,7 @@ class RenderTask(TaskBase):
                     setattr(self.args, k, v)
                 after = self.args.output_render.path
                 assert after == before
-            return self._render_scene()
+            return self._render_scene(self.args.query)
         return super(RenderTask, self)._generate_output(name)
 
 
@@ -2490,14 +2860,13 @@ class TotalsTask(TemporalTaskBase):
             'base_prefix': True,
             'ext': '.json',
             'description': 'raytraced query totals',
-            'composite_param': [
-                'id', 'data_year', 'canopy', 'periodic_canopy'],
+            'composite_param': RayTraceTask._output_info[
+                'raytrace']['composite_param'],
         },
         'totals_plot': {
             'ext': '.png',
             'base_output': 'totals',
             'description': 'a plot of raytraced query totals',
-            'optional': True,
             'merge_all': True,
             'merge_all_output': 'totals',
         },
@@ -2507,18 +2876,9 @@ class TotalsTask(TemporalTaskBase):
             'exclude': [
                 'show_rays', 'ray_color', 'ray_width', 'ray_length',
                 'arrow_width', 'highlight', 'highlight_color',
-                'traced_mesh_colormap',
+                'traced_mesh_colormap', 'query',
             ],
             'modifications': {
-                'query': {
-                    'default': 'total_flux',
-                    'choices': (
-                        RayTraceTask._query_options_calc
-                        + RayTraceTask._query_options_other
-                    ),
-                    'append_suffix_skip_outputs': ['totals'],
-                    'append_suffix_outputs': ['totals_plot'],
-                },
                 'canopy': {
                     'append_choices': ['all'],
                 },
@@ -2529,6 +2889,17 @@ class TotalsTask(TemporalTaskBase):
         },
     }
     _arguments = [
+        (('--totals-query', ), {
+            'type': str, 'choices': RayTraceTask._query_options_stats,
+            'default': 'total_flux',
+            'help': ('Name of the raytracer query result that should '
+                     'be plot as a function of time. '),
+            'suffix_param': {
+                'cond': True,
+                'skip_outputs': ['totals'],
+                'outputs': ['totals_plot'],
+            },
+        }),
         (('--per-plant', ), {
             'action': 'store_true',
             'help': ('Plot the totals on a per-plant basis (valid for '
@@ -2593,6 +2964,9 @@ class TotalsTask(TemporalTaskBase):
             k for k in cls._output_info['totals']['composite_param']
             if getattr(args, k) == 'all'
         ]
+        if ((args.figure_color_by is None
+             and args.totals_query.startswith('profile_'))):
+            args.figure_color_by = 'time'
         if args.per_plant:
             if args.figure_color_by is None:
                 if iterating and args.figure_linestyle_by is None:
@@ -2605,12 +2979,15 @@ class TotalsTask(TemporalTaskBase):
                     args.figure_color_by = 'location'
             elif args.figure_linestyle_by is None:
                 args.figure_linestyle_by = 'location'
+        if args.overwrite_totals:
+            args.overwrite_totals_plot = True
         super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
 
     @cached_property
     def time_marker(self):
         r"""matplotlib.lines.line2D: Vertical line marking a time."""
-        return self.axes.axvline(x=self.start_time, color=(1, 1, 1),
+        return self.axes.axvline(x=self.args.start_time.time,
+                                 color=(0, 0, 0),
                                  alpha=0.5, linewidth=10)
 
     def mark_time(self, time):
@@ -2622,14 +2999,14 @@ class TotalsTask(TemporalTaskBase):
         """
         self.time_marker.set_xdata([time, time])
 
-    def plot_query(self, query, times, values, label=None, plantid=None,
+    def plot_query(self, query, x, y, label=None, plantid=None,
                    reset=False, line_prop=None):
         r"""Plot the data for a single crop ID.
 
         Args:
-            query (str): Name of property contained by values.
-            times (np.ndarray): Times.
-            values (np.ndarray): Query values for each time step.
+            query (str): Name of property contained by y.
+            x (np.ndarray): X values.
+            y (np.ndarray): Query values for each x value.
             label (str, optional): Label for lines.
             plantid (int, optional): Plant ID for provided data.
             reset (bool, optional): Reset the figure.
@@ -2637,6 +3014,7 @@ class TotalsTask(TemporalTaskBase):
                 get_line_properties to determine line properties.
 
         """
+        profile = query.startswith('profile_')
         if line_prop is None:
             line_prop = {}
         ax = self.axes
@@ -2653,12 +3031,27 @@ class TotalsTask(TemporalTaskBase):
             if self.args.figure_font_weight:
                 from matplotlib import rcParams
                 rcParams['font.weight'] = self.args.figure_font_weight
-            ylabel = query.title()
-            if isinstance(values, units.QuantityArray):
-                ylabel += f" ({values.units})"
-            elif isinstance(values[0], units.Quantity):
-                ylabel += f" ({values[0].units})"
-            ax.set_xlabel('Time', weight=self.args.figure_font_weight)
+            if profile:
+                xlabel = 'Height'
+            else:
+                xlabel = 'Time'
+            ylabel = query if query in ['LAI'] else query.title()
+
+            def add_units_label(v):
+                v_units = ''
+                if isinstance(v, units.QuantityArray):
+                    if v.units:
+                        v_units = str(v.units)
+                elif isinstance(v[0], units.Quantity):
+                    if v[0].units:
+                        v_units = str(v[0].units)
+                if not v_units:
+                    return ''
+                return f" ({v_units})"
+
+            xlabel += add_units_label(x)
+            ylabel += add_units_label(y)
+            ax.set_xlabel(xlabel, weight=self.args.figure_font_weight)
             ax.set_ylabel(ylabel.replace('_', ' '),
                           weight=self.args.figure_font_weight)
         layout_task = self.output_task('layout')
@@ -2679,16 +3072,20 @@ class TotalsTask(TemporalTaskBase):
         line_kws = self.get_line_properties(self.args, **line_prop)
         if plantid is None or self._lines[label][locStr] == 1:
             line_kws['label'] = full_label
-        if isinstance(times, list):
-            times = np.array(times)
-        if isinstance(values, list):
-            values = np.array(values)
-        idxsort = np.argsort(times)
-        times = times[idxsort]
-        values = values[idxsort]
-        ax.plot(times, values, **line_kws)
+        if isinstance(x, list):
+            x = np.array(x)
+        if isinstance(y, list):
+            y = np.array(y)
+        # if isinstance(x, units.QuantityArray):
+        #     idxsort = np.argsort(x.value)
+        # else:
+        #     idxsort = np.argsort(x)
+        # x = x[idxsort]
+        # y = y[idxsort]
+        ax.plot(x, y, **line_kws)
 
-    def plot_data(self, values, label=None, reset=False, **kwargs):
+    def plot_data(self, values, label=None, reset=False, tprofile=None,
+                  **kwargs):
         r"""Plot the data for a single crop ID.
 
         Args:
@@ -2703,19 +3100,63 @@ class TotalsTask(TemporalTaskBase):
         if label is None:
             label = self.args.id
         times = values['times']
-        totals = values[self.args.query]
-        if self.args.query.startswith('total_'):
+        query = self.args.totals_query
+        if query in RayTraceTask._query_options_phy:
+            query = f'total_{query}'
+        profile = query.startswith('profile_')
+        tidx = None
+        if profile:
+            cmap = None
+            norm = None
+            if self.args.figure_color_by == 'time':
+                import matplotlib as mpl
+                norm = mpl.colors.Normalize(
+                    vmin=0,
+                    vmax=(times[-1] - times[0]).total_seconds(),
+                )
+                cmap = mpl.colormaps['viridis']
+                kwargs.setdefault('line_prop', {})
+            if tprofile is None:
+                for tprofile in times:
+                    if cmap is not None:
+                        color = cmap(norm(
+                            (tprofile - times[0]).total_seconds()))
+                        kwargs['line_prop']['color'] = color
+                    self.plot_data(values, label=f'{label} {tprofile}',
+                                   reset=reset, tprofile=tprofile,
+                                   **kwargs)
+                    reset = False
+                return
+            if isinstance(times, np.ndarray):
+                tidx = np.where(times == tprofile)[0][0]
+            else:
+                tidx = times.index(tprofile)
+            x = values[f'{query}_bins']
+        else:
+            x = times
+        y = values[query]
+        if query.startswith(tuple(
+                RayTraceTask._query_options_calc_prefix_per_plant)):
             if self.args.per_plant:
-                for i, v in totals.items():
+                for i, iy in y.items():
                     if i == 'total':
                         continue
-                    self.plot_query(self.args.query, times, v,
+                    ix = x
+                    if profile:
+                        ix = x[i][tidx, :]
+                        iy = iy[tidx, :]
+                    self.plot_query(query, ix, iy,
                                     label=label, plantid=i, reset=reset,
                                     **kwargs)
                     reset = False
                 return
-            totals = totals['total']
-        self.plot_query(self.args.query, times, totals, label=label,
+            y = y['total']
+            if profile:
+                x = x['total']
+        if profile:
+            x = x[tidx, :]
+            y = y[tidx, :]
+        self.plot_query(query, x, y, label=label,
                         reset=reset, **kwargs)
 
     def finalize_step(self, x):
@@ -2728,15 +3169,7 @@ class TotalsTask(TemporalTaskBase):
             object: Finalized step result.
 
         """
-        if self.args.canopy == 'virtual_single':
-            per_plant = 1
-        else:
-            per_plant = (self.args.nrows * self.args.ncols)
-        query = (
-            RayTraceTask._query_options_calc
-            + RayTraceTask._query_options_other
-        )
-        value = x.calculate_query(query, per_plant=per_plant)
+        value = x.get_output('raytrace_stats')
         return (x.args.time.time, value)
 
     def join_steps(self, xlist):
@@ -2752,36 +3185,7 @@ class TotalsTask(TemporalTaskBase):
         assert self.args.id != 'all'
         times = [x[0] for x in xlist]
         values = [x[1] for x in xlist]
-        N = len(values)
-        out = {}
-        for k, v in values[0].items():
-            if k.startswith('total_'):
-                out[k] = {i: np.zeros(N, dtype='float64')
-                          for i in v.keys()}
-            else:
-                out[k] = np.zeros(N, dtype='float64')
-        field_units = {}
-
-        def get_value(k, x):
-            if not isinstance(x, units.Quantity):
-                return x
-            if k not in field_units:
-                field_units[k] = str(x.units)
-            return float(x.value)
-
-        for idx, value in enumerate(values):
-            for k, v in value.items():
-                if k.startswith('total_'):
-                    for i, x in v.items():
-                        out[k][i][idx] = get_value(k, x)
-                else:
-                    out[k][idx] = get_value(k, v)
-        for k, unit in field_units.items():
-            if k.startswith('total_'):
-                for i in list(out[k].keys()):
-                    out[k][i] = parse_quantity(out[k][i], unit)
-            else:
-                out[k] = parse_quantity(out[k], unit)
+        out = RayTraceTask.join_query_stats(values, per_plant=True)
         out['times'] = times
         return out
 
@@ -2858,6 +3262,14 @@ class AnimateTask(TemporalTaskBase):
         TotalsTask: {
             'optional': True,
             'increment_suffix_index': 1,  # After local arguments
+            'modifications': {
+                'totals_query': {
+                    'default': None,
+                    'append_suffix_param': {
+                        'cond': False,
+                    },
+                },
+            },
         },
     }
     _arguments = [
@@ -2877,9 +3289,35 @@ class AnimateTask(TemporalTaskBase):
             'action': 'store_true',
             'help': ('Inset a plot of the query total below the '
                      'image.'),
-            'suffix_param': {'value': 'totals'},
+            'suffix_param': {
+                'value': lambda x: (
+                    'totals' + (
+                        x.totals_query.title().replace('_', '')
+                        if x.totals_query.split('total_', 1)[-1] != x.query
+                        else ''
+                    )
+                ),
+            },
         }),
     ]
+
+    @classmethod
+    def adjust_args_internal(cls, args, **kwargs):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
+
+        """
+        if args.totals_query is None:
+            if args.query in RayTraceTask._query_options_phy:
+                args.totals_query = f'total_{args.query}'
+            else:
+                args.totals_query = args.query
+        super(AnimateTask, cls).adjust_args_internal(args, **kwargs)
 
     def __init__(self, *args, **kwargs):
         self._inset_figure = None
@@ -2900,7 +3338,7 @@ class AnimateTask(TemporalTaskBase):
                           verbose=args.verbose)
 
     @classmethod
-    def _output_ext(cls, args, name, wildcards=None):
+    def _output_ext(cls, args, name, wildcards=None, skipped=None):
         r"""Determine the extension that should be used for output files.
 
         Args:
@@ -2908,13 +3346,16 @@ class AnimateTask(TemporalTaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             str: Output file extension.
 
         """
         return cls._arguments['movie_format'].generate_suffix(
-            args, name, wildcards=wildcards, force=True,
+            args, name, wildcards=wildcards, skipped=skipped,
+            force=True,
         )
 
     @property
@@ -2936,25 +3377,22 @@ class AnimateTask(TemporalTaskBase):
         if not self.args.inset_totals:
             return x.output_file('render')
         old_frame = x.output_file('render')
-        new_frame = '_totals'.join(os.path.splitext(old_frame))
-        if os.path.isfile(new_frame) and not self.args.overwrite_render:
-            return new_frame
+        new_suffix = self._arguments['inset_totals'].generate_suffix(
+            self.args, 'animate')
+        new_frame = f'_{new_suffix}'.join(os.path.splitext(old_frame))
         old_data = x.get_output('render')
         if self._inset_figure is None:
-            self._inset_figure = self.totals_task.figure
-            print('OLD_IMAGE', old_data.shape)
-            pdb.set_trace()
-            width_px = old_data.shape[0]
+            self._inset_figure = self.totals_task.generate_output(
+                'totals_plot')
+            width_px = old_data.shape[1]
             height_px = int(0.2 * width_px)
             dpi = self._inset_figure.get_dpi()
-            self._inset_figure.set_size_inches(width_px / dpi,
-                                               height_px / dpi)
+            figsize = ((width_px + 1) / dpi, (height_px + 1) / dpi)
+            self._inset_figure.set_size_inches(*figsize)
         self.totals_task.mark_time(x.args.time.time)
         add_data = self.totals_task.raw_figure_data
-        print('NEW_IMAGE', add_data.shape)
-        pdb.set_trace()
-        new_data = np.concatenate([old_data, add_data])
-        print('CONCAT', new_data)
+        add_data = add_data[:, :old_data.shape[1], :]
+        new_data = np.concatenate([old_data, add_data], axis=0)
         utils.write_png(new_data, new_frame, verbose=self.args.verbose)
         return new_frame
 
@@ -3002,14 +3440,13 @@ class MatchQuery(OptimizationTaskBase):
 
         """
         args.final_args = {}
-        for k in ['canopy', 'periodic_canopy', 'nrows', 'ncols',
-                  'periodic_canopy_count', 'plot_width', 'plot_length']:
-            args.final_args[k] = getattr(args, k)
         if args.canopy not in ['single', 'virtual', 'virtual_single']:
             # Regenerating unique canopies is very time intensive
+            args.final_args['canopy'] = args.canopy
             args.canopy = 'virtual_single'
             if ((args.periodic_canopy == 'scene'
                  and args.nrows and args.ncols)):
+                args.final_args['periodic_canopy'] = args.periodic_canopy
                 args.periodic_canopy = False
         if args.goal_id is None:
             ids = GenerateTask.all_ids_class(args)
@@ -3066,11 +3503,8 @@ class MatchQuery(OptimizationTaskBase):
 
         """
         out = copy.deepcopy(self.args.final_args)
-        if name == 'totals_plot':
-            out['query'] = self.args.goal
-            if ((out['canopy'] not in ['single', 'virtual_single']
-                 and out['query'].startswith('total_'))):
-                out['per_plant'] = True
+        if name in ['totals_plot']:
+            out['totals_query'] = self.args.goal
         return out
 
     def _generate_output(self, name):
@@ -3083,16 +3517,13 @@ class MatchQuery(OptimizationTaskBase):
             object: Generated output.
 
         """
-        out = super(MatchQuery, self)._generate_output(name)
         if name == 'totals_plot':
-            args_overwrite = dict(
-                self.final_output_args(name),
-                id=self.args.goal_id,
-            )
-            goal_totals = self.run_iteration(
-                cls=TotalsTask,
-                args_overwrite=args_overwrite,
-                output_name='totals',
+            goal_totals = super(MatchQuery, self)._generate_output(
+                name, output_name='totals',
+                args_overwrite=dict(
+                    self.final_output_args(name),
+                    id=self.args.goal_id,
+                ),
             )
             out = super(MatchQuery, self)._generate_output(
                 name, output_name='instance')

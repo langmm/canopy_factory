@@ -7,7 +7,7 @@ from canopy_factory import utils, arguments
 from canopy_factory.utils import (
     parse_units, parse_quantity, parse_axis, parse_color,
     get_class_registry, UnitSet,
-    cached_property, readonly_cached_property,
+    cached_property,
 )
 from canopy_factory.cli import (
     TaskBase, TimeArgument, OutputArgument,
@@ -69,6 +69,45 @@ class ParametrizeCropTask(TaskBase):
                 'cond': True,
             },
         ),
+        arguments.ArgumentDescriptionSet([
+            (('--piecewise-param', ), {
+                'type': str, 'nargs': '?', 'const': 'N',
+                'help': (
+                    'Independent variable that should be used to '
+                    'determine when different parameters should be used'
+                ),
+                'suffix_param': {},
+            }),
+            (('--piecewise-param-values', ), {
+                'type': float, 'nargs': '+',
+                'help': (
+                    'Independent variable values at which parameters sets '
+                    'should be changed'
+                ),
+                'suffix_param': {'sep': '-'},
+            }),
+            (('--piecewise-files', ), {
+                'type': str, 'nargs': '+', 'action': 'extend',
+                'help': (
+                    'Names of parameter files that should be used '
+                    'conditionally in the order they should be used'
+                ),
+                'suffix_param': {'sep': '-'},
+            }),
+            (('--piecewise-ids', ), {
+                'type': str, 'nargs': '+', 'action': 'extend',
+                'help': (
+                    'IDs for parameters that should be used '
+                    'conditionally in the order they should be '
+                    'used (if parameter files not provided)'
+                ),
+                'suffix_param': {'sep': '-'},
+            }),
+        ], name='piecewise_properties', suffix_param={
+            'cond': lambda x: bool(x.piecewise_param),
+            'outputs': ['parametrize'],
+            'skip_outputs': ['lpy_model'],
+        }),
         (('--debug-param', ), {
             'action': 'append',
             'help': ('Parameter(s) that debug mode should be enabled '
@@ -117,7 +156,7 @@ class ParametrizeCropTask(TaskBase):
 
     def __init__(self, *args, **kwargs):
         super(ParametrizeCropTask, self).__init__(*args, **kwargs)
-        if ((isinstance(self.args.id, str)
+        if ((isinstance(getattr(self.args, 'id', None), str)
              and self.args.id.startswith('all') and not self.is_root)):
             self.ensure_initialized()
 
@@ -132,8 +171,9 @@ class ParametrizeCropTask(TaskBase):
              and self.args.id.startswith('all'))):
             self.args = copy.deepcopy(self.args)
             self.args.id = utils.DataProcessor.base_id_from_file(
-                self.args.data, crop=self.args.crop,
-                year=self.args.data_year,
+                getattr(self.args, 'data', None), crop=self.args.crop,
+                year=(None if self.args.data_year.startswith('all')
+                      else self.args.data_year),
             )
         self.finalize()
 
@@ -175,6 +215,22 @@ class ParametrizeCropTask(TaskBase):
                 args.data_year = years[0]
                 args.data = utils.DataProcessor.output_name(
                     args.crop, args.data_year)
+        if idstr is not None:
+            if args.piecewise_param:
+                if args.piecewise_files:
+                    args.piecewise_ids = None
+                elif not args.piecewise_ids:
+                    id_base = idstr.split('_')[0]
+                    ids = utils.DataProcessor.available_ids(
+                        args.crop, year=args.data_year)
+                    args.piecewise_ids = [
+                        x for x in ids
+                        if x.startswith(id_base) and x != idstr
+                    ]
+            else:
+                args.piecewise_ids = []
+                args.piecewise_files = []
+                args.piecewise_values = []
 
     @cached_property
     def generator_class(self):
@@ -329,6 +385,95 @@ class ParametrizeCropTask(TaskBase):
         with open(self.output_file('lpy_model'), 'w') as fd:
             fd.write('\n'.join(contents))
 
+    def generate_piecewise_merge(self):
+        r"""Generate a table of piecewise parameters."""
+        out = copy.deepcopy(
+            self.run_iteration(
+                args_overwrite={
+                    'piecewise_param': None,
+                    'output_parametrize': True,
+                },
+                output_name='parametrize',
+            )
+        )
+        merge = []
+        if self.args.piecewise_files:
+            for x in self.args.piecewise_files:
+                merge.append(self.read_output('parametrize', x))
+        else:
+            for iid in self.args.piecewise_ids:
+                merge.append(self.run_iteration(
+                    args_overwrite={
+                        'id': iid,
+                        'piecewise_param': None,
+                        'output_parametrize': True,
+                    },
+                    output_name='parametrize',
+                ))
+        merged = {}
+        for iout in merge:
+            for k in list(iout.keys()):
+                kequal = (iout[k] == out.get(k, None))
+                if isinstance(kequal, np.ndarray):
+                    kequal = kequal.all()
+                if kequal:
+                    del iout[k]
+                elif k == 'id':
+                    out[k] += '_' + iout[k]
+                    del iout[k]
+                else:
+                    merged.setdefault(k, [out[k]])
+        for iout in merge:
+            for k in merged.keys():
+                merged[k].append(iout.get(k, out[k]))
+        if not self.args.piecewise_param_values:
+            xmax = out[f'{self.args.piecewise_param.title()}Max']
+            self.args.piecewise_param_values = list(
+                np.linspace(0, xmax, len(merge) + 2,
+                            dtype=type(xmax))[1:-1])
+        assert len(self.args.piecewise_param_values) == len(merge)
+        generator = self.generator_class(**out)
+        for k, v in merged.items():
+            if k.endswith("XVals"):
+                assert k.replace("XVals", "YVals") in merged
+                continue
+            elif k.endswith("YVals"):
+                kx = k.replace("YVals", "XVals")
+                assert k.endswith("YVals")
+                # TODO: Fix this
+                parent = generator.get(k, return_container=True,
+                                       return_other='instance')
+                xstep = [None] + [
+                    parent.normalize(xx) for xx in
+                    self.args.piecewise_param_values
+                ]
+                xout = []
+                yout = []
+                for i, (xmin, yvalues) in enumerate(zip(xstep, v)):
+                    xvalues = merged[kx][i] if kx in merged else out[kx]
+                    if i < (len(v) - 1):
+                        xmax = xstep[i + 1]
+                    else:
+                        xmax = None
+                    if xmin is None:
+                        idx = (xvalues < xmax)
+                    elif xmax is None:
+                        idx = (xvalues >= xmin)
+                    else:
+                        idx = np.logical_and(
+                            xvalues < xmax,
+                            xvalues >= xmin
+                        )
+                    xout.append(xvalues[idx])
+                    yout.append(yvalues[idx])
+                xout = np.hstack(xout)
+                yout = np.hstack(yout)
+                out[k] = yout
+                out[kx] = xout
+            else:
+                raise NotImplementedError(k)
+        return out
+
     def _generate_output(self, name):
         r"""Generate the specified output value.
 
@@ -342,6 +487,8 @@ class ParametrizeCropTask(TaskBase):
         if name == 'lpy_model':
             return self.generator.lsystem
         elif name == 'parametrize':
+            if self.args.piecewise_param:
+                return self.generate_piecewise_merge()
             return self.generate_parameters()
         super(ParametrizeCropTask, self)._generate_output(name)
 
@@ -355,11 +502,12 @@ class LayoutTask(TaskBase):
             'base_prefix': True,
             'ext': '.png',
             'description': 'a plot of the layout',
+            'composite_param': ['canopy', 'periodic_canopy']
         },
     }
     _arguments = [
         (('--canopy', ), {
-            'choices': ['single', 'tile', 'unique', 'virtual',
+            'choices': ['all', 'single', 'tile', 'unique', 'virtual',
                         'virtual_single'],
             'default': 'unique',
             'help': 'Type of canopy to layout',
@@ -602,7 +750,7 @@ class LayoutTask(TaskBase):
     @classmethod
     def get_periodic_shifts(cls, period, direction, count,
                             include_origin=False,
-                            dont_reflect=False, dont_center=True):
+                            dont_reflect=False, dont_center=False):
         r"""Get the shifts that should be applied to plants.
 
         Args:
@@ -775,13 +923,22 @@ class LayoutTask(TaskBase):
     def scene_layout(self):
         r"""dict: Parameters describing the scene layout."""
         out = {
-            'plants': self.project_onto_ground(self.plant_positions),
+            'plants': self.project_onto_ground(
+                self.plant_positions,
+                self.args.axis_rows, self.args.axis_cols,
+            ),
             'periodic_plants': self.project_onto_ground(
-                self.plant_positions_periodic),
+                self.plant_positions_periodic,
+                self.args.axis_rows, self.args.axis_cols,
+            ),
             'north': self.project_onto_ground(
-                self.args.axis_north, ray=True),
+                self.args.axis_north,
+                self.args.axis_rows, self.args.axis_cols, ray=True,
+            ),
             'east': self.project_onto_ground(
-                self.args.axis_east, ray=True),
+                self.args.axis_east,
+                self.args.axis_rows, self.args.axis_cols, ray=True,
+            ),
         }
         return out
 
@@ -836,11 +993,14 @@ class LayoutTask(TaskBase):
             return self.args.exterior_plant_color
         return self.args.interior_plant_color
 
-    def project_onto_ground(self, pos, ray=False):
+    @classmethod
+    def project_onto_ground(cls, pos, xaxis, yaxis, ray=False):
         r"""Project a 3D point onto the ground.
 
         Args:
             pos (np.ndarray): Set of one or more 3D positions.
+            xaxis (np.ndarray): Unit vector for the x axis.
+            yaxis (np.ndarray): Unit vector for the y axis.
             ray (bool, optional): If True, treat pos as a ray and
                 normalize the returned projection.
 
@@ -853,8 +1013,8 @@ class LayoutTask(TaskBase):
         if isinstance(pos, (units.Quantity, units.QuantityArray)):
             pos_units = pos.units
             pos = pos.data
-        x = np.dot(pos, self.args.axis_rows)
-        y = np.dot(pos, self.args.axis_cols)
+        x = np.dot(pos, xaxis)
+        y = np.dot(pos, yaxis)
         out = np.vstack([x, y]).T
         if pos.ndim == 1:
             out = out[0]
@@ -888,7 +1048,9 @@ class LayoutTask(TaskBase):
         plant_max = plant_max + plant_pad
         plant_mid = (plant_min + plant_max) / 2
         raysun = self.project_onto_ground(
-            -self.get_solar_direction(time=time), ray=True)
+            -self.get_solar_direction(time=time),
+            self.args.axis_rows, self.args.axis_cols, ray=True,
+        )
         raysun *= arrow_length * (plant_max[0] - plant_min[0])
         rotsun = np.array([-raysun[1], raysun[0]])
         anglesun = np.arcsin(raysun[1] / np.linalg.norm(raysun))
@@ -1014,7 +1176,7 @@ class GenerateTask(TaskBase):
             'description': 'mesh',
             'upstream': ['parametrize', 'lpy_model'],
             'merge_all': 'all_combined',
-            'composite_param': ['id', 'data_year'],
+            'composite_param': ['canopy'],
         },
         'geometryids': {
             'ext': '.csv',
@@ -1025,7 +1187,6 @@ class GenerateTask(TaskBase):
                 'belongs to'
             ),
             'merge_all': 'all_combined',
-            'composite_param': ['id', 'data_year'],
         },
     }
     _external_tasks = {
@@ -1033,6 +1194,8 @@ class GenerateTask(TaskBase):
             'include': [
                 'crop', 'id', 'data', 'data_year',
                 'debug_param', 'debug_param_prefix',
+                'piecewise_param', 'piecewise_param_values',
+                'piecewise_files', 'piecewise_ids',
             ],
             'modifications': {
                 'id': {
@@ -1195,12 +1358,7 @@ class GenerateTask(TaskBase):
             import pdb
             pdb.set_trace()
             raise AssertionError('Reading the wrong file')
-        out = super(GenerateTask, cls)._read_output(args, name, fname)
-        if name == 'geometryids':
-            with open(fname, 'r') as fd:
-                components = rapidjson.loads(fd.readline().lstrip('#'))
-            return components, out
-        return out
+        return super(GenerateTask, cls)._read_output(args, name, fname)
 
     @classmethod
     def _write_output(cls, args, name, fname, output):
@@ -1215,9 +1373,6 @@ class GenerateTask(TaskBase):
         """
         if args.id == 'all':
             return
-        if name == 'geometryids':
-            return utils.write_csv(output[1], fname,
-                                   comments=[rapidjson.dumps(output[0])])
         super(GenerateTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
@@ -1238,9 +1393,11 @@ class GenerateTask(TaskBase):
             args.dont_write_generate = True
             args.dont_write_geometryids = True
         super(GenerateTask, cls).adjust_args_internal(args, **kwargs)
+        if args.overwrite_generate:
+            args.overwrite_geometryids = True
 
     @classmethod
-    def _output_ext(cls, args, name, wildcards=None):
+    def _output_ext(cls, args, name, wildcards=None, skipped=None):
         r"""Determine the extension that should be used for output files.
 
         Args:
@@ -1248,6 +1405,8 @@ class GenerateTask(TaskBase):
             name (str): Base name for variable to set.
             wildcards (list, optional): List of arguments that wildcards
                 should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
 
         Returns:
             str: Output file extension.
@@ -1297,13 +1456,8 @@ class GenerateTask(TaskBase):
         r"""UnitSet: Unit system used by parameters."""
         return UnitSet.from_kwargs(self.parameters, suffix='_units')
 
-    @readonly_cached_property
-    def all_ids(self):
-        r"""list: All crop classes for current data."""
-        return self.generator_class.ids_from_file(self.args.data)
-
     @classmethod
-    def shift_mesh(cls, args, mesh, x, y, plantid=None):
+    def shift_mesh(cls, args, mesh, x, y, plantid=None, geometryids=None):
         r"""Shift a mesh.
 
         Args:
@@ -1320,6 +1474,12 @@ class GenerateTask(TaskBase):
         """
         xo = x.to(args.mesh_units).value
         yo = y.to(args.mesh_units).value
+        if geometryids is not None:
+            xy = units.QuantityArray([x.value, y.value], x.units)
+            geometryids['HEADER_JSON']['field_mins'] += xy
+            geometryids['HEADER_JSON']['field_maxs'] += xy
+            if plantid is not None:
+                geometryids['plantids'] += plantid
         return utils.shift_mesh(mesh, xo, yo, plantid=plantid,
                                 axis_up=args.axis_up,
                                 axis_x=args.axis_rows)
@@ -1371,18 +1531,15 @@ class GenerateTask(TaskBase):
             return self.merge_mesh(self.args, list(output.values()))
         elif name == 'geometryids':
             values = list(output.values())
-            components = values[0][0]
             geometryids = []
             plantid = self.args.plantid
             assert plantid == 0
             for x in values:
-                assert x[0] == components
-                x[1]['plantids'] += plantid
-                geometryids.append(x[1])
+                x['plantids'] += plantid
+                geometryids.append(x)
                 plantid += (self.args.nrows * self.args.ncols)
-            geometryids = {k: np.hstack([x[k] for x in geometryids])
-                           for k in geometryids[0].keys()}
-            return (components, geometryids)
+            geometryids = self.stack_geometryids(geometryids)
+            return geometryids
 
     def _generate_output(self, name):
         r"""Generate the specified output value.
@@ -1396,7 +1553,7 @@ class GenerateTask(TaskBase):
         """
         assert self.args.id not in ['all', 'all_combined']
         if name in ['generate', 'geometryids']:
-            if self.args.canopy == 'single':
+            if self.args.canopy in ['single', 'virtual', 'virtual_single']:
                 mesh, geometryids = self._generate_single_plant()
             else:
                 mesh, geometryids = self._generate_field()
@@ -1441,10 +1598,13 @@ class GenerateTask(TaskBase):
             inst = self.run_iteration(
                 args_overwrite={'x': 0.0, 'y': 0.0},
             )
+            geometryids = copy.deepcopy(inst.get_output('geometryids'))
             mesh = self.shift_mesh(
                 self.args, inst.get_output('generate'), x, y, plantid,
+                geometryids=geometryids,
             )
-            return (mesh, inst.get_output('geometryids'))
+            self.finalize_geometryids(geometryids)
+            return (mesh, geometryids)
         assert 'RUNTIME_PARAM' not in self.parameters
         assert self.args.age is not None
         if isinstance(self.args.age.crop_age_string, str):
@@ -1506,15 +1666,78 @@ class GenerateTask(TaskBase):
         componentids = np.zeros(
             (mesh.count_elements('face'), ), dtype=np.uint32)
         component_order = sorted(list(components.keys()))
+        face_areas = parse_quantity(mesh.areas, self.args.mesh_units**2)
+        mesh_dict = utils.get_mesh_dict(mesh)
+        vert_heights = (
+            np.dot(mesh_dict['vertex'], self.args.axis_up)
+            - self.args.ground_height.value
+        )
+        vert_ground = LayoutTask.project_onto_ground(
+            mesh_dict['vertex'],
+            self.args.axis_rows, self.args.axis_cols,
+        )
+        if len(mesh_dict['face']) == 0:
+            face_heights = parse_quantity(
+                np.zeros((0, ), dtype=vert_heights.dtype),
+                self.args.mesh_units)
+        else:
+            face_heights = parse_quantity(
+                vert_heights[mesh_dict['face']].mean(axis=1),
+                self.args.mesh_units)
         for i, k in enumerate(component_order):
             for prev, count in components[k]:
                 componentids[prev:(prev + count)] = i
-        geometryids = (
-            component_order, {
-                'plantids': plantids, 'componentids': componentids,
-            }
-        )
+        geometryids = {
+            'HEADER_JSON': {
+                'component_order': component_order,
+                'field_mins': parse_quantity(
+                    vert_ground.min(axis=0) if len(vert_ground)
+                    else np.zeros((2, ), vert_ground.dtype),
+                    self.args.mesh_units),
+                'field_maxs': parse_quantity(
+                    vert_ground.max(axis=0) if len(vert_ground)
+                    else np.zeros((2, ), vert_ground.dtype),
+                    self.args.mesh_units),
+                'planting_density': 1.0 / (
+                    self.args.plant_spacing * self.args.row_spacing),
+            },
+            'plantids': plantids, 'componentids': componentids,
+            'areas': face_areas,
+            'height': face_heights,
+        }
+        self.finalize_geometryids(geometryids)
         return (mesh, geometryids)
+
+    @classmethod
+    def finalize_geometryids(cls, dst):
+        r"""Finalize the data in the JSON header, calculating derived
+        values.
+
+        Args:
+            dst (dict): Geometry ID data to finalize.
+
+        """
+        header = dst['HEADER_JSON']
+        field_area = utils.safe_op(
+            np.prod, (
+                header['field_maxs']
+                - header['field_mins']
+            ),
+        )
+        if 'Leaf' in header['component_order']:
+            idx = (dst['componentids']
+                   == header['component_order'].index('Leaf'))
+            # TODO: Calculate leaf area directly from the generator?
+            leaf_area = utils.safe_op(np.sum, dst['areas'][idx]) / 2
+        else:
+            leaf_area = units.Quantity(0.0, dst['areas'].units)
+        planting_density = header['planting_density']
+        LAI = leaf_area * planting_density
+        header.update(
+            field_area=field_area,
+            leaf_area=leaf_area,
+            LAI=LAI,
+        )
 
     def generate_field(self, **kwargs):
         r"""Generate a 3D mesh for a field of plants.
@@ -1530,6 +1753,57 @@ class GenerateTask(TaskBase):
         kwargs.setdefault('canopy', 'unique')
         return self.run_iteration(args_overwrite=kwargs,
                                   output_name='generate')
+
+    @classmethod
+    def stack_geometryids(cls, geometryids):
+        r"""Combine geometry IDs during field creation.
+
+        Args:
+            geometryids (list): Set of geometry IDs for individual
+                plants/fields.
+
+        Returns:
+            dict: Geometry IDs.
+
+        """
+        out = {}
+        order = geometryids[0]['HEADER_JSON']['component_order']
+        for x in geometryids[1:]:
+            if len(x['HEADER_JSON']['component_order']) > len(order):
+                order = x['HEADER_JSON']['component_order']
+        for x in geometryids:
+            xorder = x['HEADER_JSON']['component_order']
+            if xorder == order:
+                continue
+            for i, name in enumerate(xorder):
+                assert name in order
+                x['componentids'][x['componentids'] == i] = (
+                    order.index(name) + len(order)
+                )
+            x['componentids'] -= len(order)
+            x['HEADER_JSON']['component_order'] = order
+        for k in geometryids[0].keys():
+            if k == 'HEADER_JSON':
+                out[k] = geometryids[0][k]
+                assert all(
+                    x['HEADER_JSON']['component_order']
+                    == out[k]['component_order']
+                    for x in geometryids[1:]
+                )
+            else:
+                out[k] = np.hstack([x[k] for x in geometryids])
+        out['HEADER_JSON']['field_mins'] = utils.safe_op(
+            np.min, np.vstack([
+                x['HEADER_JSON']['field_mins'] for x in geometryids
+            ]), axis=0,
+        )
+        out['HEADER_JSON']['field_maxs'] = utils.safe_op(
+            np.max, np.vstack([
+                x['HEADER_JSON']['field_mins'] for x in geometryids
+            ]), axis=0,
+        )
+        cls.finalize_geometryids(out)
+        return out
 
     def _generate_field(self):
         r"""Generate a 3D mesh for a field of plants.
@@ -1550,17 +1824,15 @@ class GenerateTask(TaskBase):
             inst = self.run_iteration(
                 args_overwrite={'x': 0.0, 'y': 0.0, 'plantid': 0},
             )
+            igeometryids = copy.deepcopy(inst.get_output('geometryids'))
             mesh = self.shift_mesh(
                 self.args, inst.get_output('generate'), x, y, plantid,
+                geometryids=igeometryids,
             )
-            icomponents, igeometryids = inst.get_output('geometryids')
             if components is None:
-                components = icomponents
-            igeometryids['plantids'] += plantid
+                components = igeometryids['HEADER_JSON']['component_order']
             geometryids.append(igeometryids)
-            geometryids = {k: np.hstack([x[k] for x in geometryids])
-                           for k in geometryids[0].keys()}
-            geometryids = (components, geometryids)
+            geometryids = self.stack_geometryids(geometryids)
             return (mesh, geometryids)
 
         generator = np.random.default_rng(seed=plantid)
@@ -1580,9 +1852,9 @@ class GenerateTask(TaskBase):
             },
         )
         mesh = inst.get_output('generate')
-        icomponents, igeometryids = inst.get_output('geometryids')
+        igeometryids = inst.get_output('geometryids')
         if components is None:
-            components = icomponents
+            components = igeometryids['HEADER_JSON']['component_order']
         geometryids.append(igeometryids)
         plantid += 1
 
@@ -1604,7 +1876,7 @@ class GenerateTask(TaskBase):
                         copy_outputs_from=inst_prev,
                     )
                     mesh.append(inst.get_output('generate'))
-                    geometryids.append(inst.get_output('geometryids')[-1])
+                    geometryids.append(inst.get_output('geometryids'))
                     plantid += 1
                     inst_prev = inst
         elif self.args.canopy == 'tile':
@@ -1615,23 +1887,21 @@ class GenerateTask(TaskBase):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
+                    igeometryids = copy.deepcopy(geometryids[0])
                     mesh.append(
                         self.shift_mesh(
                             self.args, mesh_single,
                             ix + posdev(), iy + posdev(),
                             plantid=plantid,
+                            geometryids=igeometryids,
                         )
                     )
-                    igeometryids = copy.deepcopy(geometryids[0])
-                    igeometryids['plantids'][:] = plantid
                     geometryids.append(igeometryids)
                     plantid += 1
         else:
             raise ValueError(
                 f"Unsupported canopy type: {self.args.canopy}")
-        geometryids = {k: np.hstack([x[k] for x in geometryids])
-                       for k in geometryids[0].keys()}
-        geometryids = (components, geometryids)
+        geometryids = self.stack_geometryids(geometryids)
         return (mesh, geometryids)
 
 

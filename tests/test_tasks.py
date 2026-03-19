@@ -3,6 +3,7 @@ import os
 import uuid
 import shutil
 from canopy_factory import utils
+from canopy_factory.cli import IterationTaskBase
 # TODO
 # - test for id='all'
 # - check tests/data location for output within package to prevent
@@ -61,7 +62,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         return out
 
     @pytest.fixture(scope="class")
-    def instance(self, task_class, instance_kwargs, test_output_dir):
+    def instance(self, task_class, instance_kwargs, test_output_dir,
+                 add_step_output):
         r"""TaskBase: Task instance for testing."""
         out = task_class.from_kwargs(instance_kwargs)
         out._testing_default_files = {}
@@ -77,6 +79,15 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
             if k in outputs_remove:
                 kout._generated_path = testid.join(os.path.splitext(
                     kpath))
+        if isinstance(out, IterationTaskBase):
+            for iargs_overwrite in out.step_args_full():
+                iargs = out._step_task.copy_external_args(
+                    out.args, initialize=True,
+                    args_overwrite=iargs_overwrite,
+                )
+                for k in out._step_task._outputs_local:
+                    getattr(iargs, f'output_{k}')._copied_args = iargs
+                    add_step_output(getattr(iargs, f'output_{k}').path)
         try:
             yield out
         finally:
@@ -127,7 +138,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
             output, data_actual, data_expected)
         eval(f'compare_{compare_method}')(data_actual, data_expected)
 
-    def prepare_comparison_data(self, output, actual, expected):
+    @classmethod
+    def prepare_comparison_data(cls, output, actual, expected):
         r"""Perform an actions necessary to modify the data prior to
         comparison.
 
@@ -186,7 +198,14 @@ class TestParametrizeCropTask(TestTask):
     r"""Class for testing parametrization."""
 
     _registry_name = 'parametrize'
-    _params = {}  # Perform for all crops/ids
+    _params = {  # Perform for all crops/ids
+        'arguments': {
+            'values': [
+                {},
+                {'crop': 'maize', 'piecewise_param': 'N'},
+            ],
+        },
+    }
 
 
 class TestGenerateTask(TestTask):
@@ -200,6 +219,8 @@ class TestGenerateTask(TestTask):
                 {'canopy': 'single'},
                 {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'unique'},
                 {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'tile'},
+                {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'single',
+                 'piecewise_param': 'N'},
             ],
         },
     }
@@ -231,8 +252,33 @@ class TestRayTraceTask(TestTask):
     _compare_methods = {
         'raytrace': 'bytes_csv',
         'raytrace_limits': 'approx',
+        'raytrace_stats': 'approx',
         'traced_mesh': False,
     }
+
+    @classmethod
+    def prepare_comparison_data(cls, output, actual, expected):
+        r"""Perform an actions necessary to modify the data prior to
+        comparison.
+
+        Args:
+            output (str): Type of output being compared.
+            actual (object): Actual object.
+            expected (object): Expected object.
+
+        Returns:
+            tuple: Update actual & expected objects for comparison.
+
+        """
+        if output == 'raytrace_stats':
+            assert 'compute_time' in expected
+            assert 'compute_time' in actual
+            expected = {k: v for k, v in expected.items()
+                        if k != 'compute_time'}
+            actual = {k: v for k, v in actual.items()
+                      if k != 'compute_time'}
+        return super(TestRayTraceTask, cls).prepare_comparison_data(
+            output, actual, expected)
 
 
 class TestRenderTask(TestTask):
@@ -252,13 +298,8 @@ class TestTotalsTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
-                 'canopy': 'virtual',
-                 'periodic_canopy': True,
-                 'duration': '2 hr'},
-                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
-                 'canopy': 'virtual_single',
-                 'duration': '2 hr'},
+                dict(x, start_time='noon', duration='1 hr')
+                for x in TestRayTraceTask._params['arguments']['values'][1:]
             ],
         },
     }
@@ -266,7 +307,8 @@ class TestTotalsTask(TestTask):
         'totals': 'approx',
     }
 
-    def prepare_comparison_data(self, output, actual, expected):
+    @classmethod
+    def prepare_comparison_data(cls, output, actual, expected):
         r"""Perform an actions necessary to modify the data prior to
         comparison.
 
@@ -280,13 +322,9 @@ class TestTotalsTask(TestTask):
 
         """
         if output == 'totals':
-            assert 'compute_time' in expected
-            assert 'compute_time' in actual
-            expected = {k: v for k, v in expected.items()
-                        if k != 'compute_time'}
-            actual = {k: v for k, v in actual.items()
-                      if k != 'compute_time'}
-        return super(TestTotalsTask, self).prepare_comparison_data(
+            return TestRayTraceTask.prepare_comparison_data(
+                'raytrace_stats', actual, expected)
+        return super(TestTotalsTask, cls).prepare_comparison_data(
             output, actual, expected)
 
 
@@ -294,23 +332,41 @@ class TestAnimateTask(TestTask):
     r"""Class for testing animate."""
 
     _registry_name = 'animate'
-    _params = TestTotalsTask._params
+    _params = {
+        'arguments': {
+            'values': [
+                TestTotalsTask._params['arguments']['values'][0],
+                dict(
+                    inset_totals=True,
+                    **TestTotalsTask._params['arguments']['values'][0]
+                ),
+            ],
+        },
+    }
 
 
-# class TestMatchQueryTask(TestTask):
-#     r"""Class for testing match query."""
+class TestMatchQueryTask(TestTask):
+    r"""Class for testing match query."""
 
-#     _registry_name = 'match_query'
-#     _params = {
-#         'crop': ['maize'],
-#         'id': ['rdla'],
-#         'data_year': ['2024'],
-#         'arguments': {
-#             'values': [
-#                 {'canopy': 'virtual', 'periodic_canopy': True},
-#             ],
-#         },
-#     }
+    _registry_name = 'match_query'
+    _params = {
+        'crop': ['maize'],
+        'id': ['B73_rdla'],
+        'data_year': ['2024'],
+        'arguments': {
+            'values': [
+                {'canopy': 'virtual_single',
+                 'vary': 'row_spacing',
+                 'tolerance': 0.1,
+                 'initial_value': 63.510483327203126,
+                 'dont_write_raytrace': True,
+                 'dont_write_raytrace_stats': True},
+            ],
+        },
+    }
+    _compare_methods = {
+        'match_query': 'approx',
+    }
 
 
 # class TestPhotosynthesisTask(TestTask):

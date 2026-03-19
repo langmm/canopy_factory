@@ -962,6 +962,8 @@ def read_csv(fname, select=None, verbose=False, include_units=True):
     df = pd.read_csv(fname, comment='#')
     for k in df.columns:
         out[k] = df[k].to_numpy()
+        if len(out[k]) == 0 and out[k].dtype == object:
+            out[k] = np.zeros((0, ), dtype='float64')
     for k in list(out.keys()):
         if ' (' in k:
             k_name, k_units = k.split(' (', 1)
@@ -2219,6 +2221,50 @@ def to_date(x):
            ['year', 'month', 'day', 'tzinfo']}
     out = datetime(**kws)
     assert is_date(out)
+    return out
+
+
+def safe_op(method, x, value_on_empty=NoDefault, **kwargs):
+    r"""Compute an operation, safely taking units and empty lists/arrays
+    into account.
+
+    Args:
+        method (callable): Operation to apply.
+        x (list, np.array, units.QuantityArray): Values to perform
+            operation on.
+        value_on_empty (float, optional): Value to return if x is empty.
+        **kwargs: Additional keyword arguments are passed to the method.
+
+    Returns:
+        object: Result w/ units if x has units.
+
+    """
+    x_units = None
+    if isinstance(x, units.QuantityArray):
+        x_units = x.units
+        x = x.value
+    elif len(x) > 0 and isinstance(x[0], units.Quantity):
+        x_units = x[0].units
+        x = [xx.value for xx in x]
+    if method == np.prod and x_units is not None:
+        if 'axis' in kwargs:
+            N = x.shape[kwargs['axis']]
+        else:
+            N = len(x)
+        x_units0 = copy.deepcopy(x_units)
+        for _ in range(1, N):
+            x_units = x_units * x_units0
+    if len(x) == 0:
+        if value_on_empty is NoDefault:
+            raise ValueError("Empty array")
+        out = value_on_empty
+    else:
+        out = method(x, **kwargs)
+    if x_units is not None:
+        if isinstance(out, (list, np.ndarray)):
+            out = units.QuantityArray(out, x_units)
+        else:
+            out = units.Quantity(out, x_units)
     return out
 
 
@@ -3641,6 +3687,64 @@ class DictSet(DictWrapper):
 
         """
         self.members.append(self.coerce_member(member, **kwargs))
+
+
+class DependentIterationParam:
+    r"""Class for managing interdependency of iteration parameters.
+
+    Args:
+        name (str): Parameter name.
+        value (object): Parameter value.
+        **depends: Additional keyword arguments should be parameters
+            name/value pairs that this parameter is valid for.
+
+    """
+
+    def __init__(self, name, value, **depends):
+        self.name = name
+        self.value = value
+        self.depends = depends
+
+    def is_valid(self, param):
+        r"""Check if the current set of iteration parameters is valid
+        for this parameter value.
+
+        Args:
+            param (dict): Set of iteration parameters.
+
+        Returns:
+            bool: True if the value is valid, False otherwise.
+
+        """
+        for k, v in self.depends.items():
+            if isinstance(param[k], DependentIterationParam):
+                if not param[k].is_valid(param):
+                    return False
+                if param[k].value not in v:
+                    return False
+            elif param[k] not in v:
+                return False
+        return True
+
+    @classmethod
+    def check_param(cls, param):
+        r"""Check a set of parameters for dependencies.
+
+        Args:
+            param (dict): Set of iteration parameters.
+
+        Returns:
+            bool: True if the parameters are valid, False otherwise.
+
+        """
+        result = True
+        for k in list(param.keys()):
+            if not isinstance(param[k], cls):
+                continue
+            if not param[k].is_valid(param):
+                result = False
+            param[k] = param[k].value
+        return result
 
 
 class DataProcessor:
