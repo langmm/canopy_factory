@@ -1,13 +1,14 @@
 name: canopy
 channels:
   - conda-forge
-  - fredboudon
+  - openalea3
+  # - fredboudon
 dependencies:
   - ffmpeg
   - imageio
   - matplotlib
   - numpy < 2  # Compatibility with pandas
-  # - openalea.lpy  # Current conda install fails as of 9/11/2025
+  - openalea.lpy  # Current conda install from fredboudon fails as of 9/11/2025
   - pandas
   - pvlib
   - python

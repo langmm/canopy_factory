@@ -37,7 +37,7 @@ jobs:
           activate-environment: canopy
           auto-update-conda: true
           python-version: ${{ matrix.python-version }}
-          channels: msys,conda-forge,fredboudon
+          channels: msys,conda-forge,openalea3
           # use-only-tar-bz2: true
           channel-priority: strict
           # miniforge-variant: Miniforge3
@@ -59,11 +59,12 @@ jobs:
       #   run: |
       #     cd ..
       #     ./canopy_factory/build_ePhotosynthesis_C.sh
-      - name: Install lpy
-        run: |
-          conda install -c fredboudon openalea.lpy
-          # cd ..
-          # ./canopy_factory/build_lpy.sh
+      # - name: Install lpy
+      #   run: |
+      #     conda install -c openalea3 openalea.lpy
+      #     # conda install -c fredboudon openalea.lpy
+      #     # cd ..
+      #     # ./canopy_factory/build_lpy.sh
       # - name: Install embree
       #   run: |
       #     cd ..
