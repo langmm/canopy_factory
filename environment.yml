@@ -16,7 +16,8 @@ dependencies:
   - pyyaml
   - scipy
   - yggdrasil-rapidjson
-  - yggdrasil
+  # - yggdrasil-python-rapidjson  # Waiting on conda-forge feedstock
+  # - yggdrasil
   # yggdrasil dependencies
   - czmq
   # - ePhotosynthesis_C  # Once this is released

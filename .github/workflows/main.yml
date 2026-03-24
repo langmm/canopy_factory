@@ -45,6 +45,9 @@ jobs:
           environment-file: environment.yml
 
       # Build & install dependencies
+      - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
+        run: |
+          pip install yggdrasil-python-rapidjson
       - name: Install embree & hothouse build dependencies
         run: |
           conda env update -n canopy --file environment_raytrace.yml
