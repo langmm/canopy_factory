@@ -4,6 +4,8 @@ channels:
   - openalea3
   # - fredboudon
 dependencies:
+  - embree >=4.0.0  # Can be removed once pyembree is available that works with 4.0.0
+  - pyembree
   - ffmpeg
   - imageio
   - matplotlib

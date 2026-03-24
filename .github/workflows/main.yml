@@ -61,10 +61,8 @@ jobs:
       #     ./canopy_factory/build_ePhotosynthesis_C.sh
       # - name: Install lpy
       #   run: |
-      #     conda install -c openalea3 openalea.lpy
-      #     # conda install -c fredboudon openalea.lpy
-      #     # cd ..
-      #     # ./canopy_factory/build_lpy.sh
+      #     cd ..
+      #     ./canopy_factory/build_lpy.sh
       # - name: Install embree
       #   run: |
       #     cd ..
@@ -90,13 +88,16 @@ jobs:
         run: |
           pytest -sv tests
 
-      # - name: Doctests
-      #   run: |
-      #     make -C docs doctest -e PYTHON=$(which python3)
+      - name: Doctests
+        run: |
+          make -C docs doctest -e PYTHON=$(which python3)
 
   docs:
     name: Build the Docs
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
     steps:
     - uses: actions/checkout@v4
       with:
