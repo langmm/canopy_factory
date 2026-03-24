@@ -9,7 +9,7 @@ dependencies:
   - ffmpeg
   - imageio
   - matplotlib
-  - numpy < 2  # Compatibility with pandas
+  - numpy  # Compatibility with pandas
   - openalea.lpy  # Current conda install from fredboudon fails as of 9/11/2025
   - pandas
   - pvlib
