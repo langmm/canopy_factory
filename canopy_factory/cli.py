@@ -90,7 +90,10 @@ class InstrumentedParserSet(SetBase):
         r"""Add an argument to the parser.
 
         Args:
-            *args, **kwargs: All arguments are passed to the add_argument
+            *args: All arguments are passed to the add_argument
+                method of the subparsers (if there are any) or the parent
+                class (if there are not any subparsers).
+            **kwargs: All arguments are passed to the add_argument
                 method of the subparsers (if there are any) or the parent
                 class (if there are not any subparsers).
 
@@ -132,7 +135,9 @@ class InstrumentedSubparserSet(InstrumentedParserSet):
 
         Args:
             name (str): ID string for the parser.
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                add_parser method for the underlying subparser group.
+            **kwargs: Additional keyword arguments are passed to the
                 add_parser method for the underlying subparser group.
 
         Returns:
@@ -155,7 +160,9 @@ class InstrumentedSubparserSet(InstrumentedParserSet):
                 add the subparser if it does not exist. If a dictionary
                 is provided, it will be passed as keyword arguments to
                 the add_parser method.
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                get_parser method for the underlying subparser group.
+            **kwargs: Additional keyword arguments are passed to the
                 get_parser method for the underlying subparser group.
 
         Returns:
@@ -205,7 +212,9 @@ class SubParsersAction(argparse._SubParsersAction):
 
         Args:
             name (str): ID string for the parser.
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                add_parser method for the underlying subparser group.
+            **kwargs: Additional keyword arguments are passed to the
                 add_parser method for the underlying subparser group.
 
         Returns:
@@ -325,7 +334,10 @@ class SubParsersAction(argparse._SubParsersAction):
         r"""Add an argument to the parser.
 
         Args:
-            *args, **kwargs: All arguments are passed to the add_argument
+            *args: All arguments are passed to the add_argument
+                method of the subparsers (if there are any) or the parent
+                class (if there are not any subparsers).
+            **kwargs: All arguments are passed to the add_argument
                 method of the subparsers (if there are any) or the parent
                 class (if there are not any subparsers).
 
@@ -872,7 +884,10 @@ class InstrumentedParser(argparse.ArgumentParser):
         r"""Add an argument to the parser.
 
         Args:
-            *args, **kwargs: All arguments are passed to the add_argument
+            *args: All arguments are passed to the add_argument
+                method of the subparsers (if there are any) or the parent
+                class (if there are not any subparsers).
+            **kwargs: All arguments are passed to the add_argument
                 method of the subparsers (if there are any) or the parent
                 class (if there are not any subparsers).
 
@@ -3565,7 +3580,8 @@ class TaskBase(SubparserBase):
             args (argparse.Namespace): Parsed arguments.
             subset (list, optional): Set of arguments that should be
                 adjusted. If not provided, all of the available arguments
-                identified by the available options will be performed.
+                identified by the available options will be performed.::
+
                     'internal': Internal arguments will be adjusted by
                         this task.
                     'external': External arguments will be adjusted by

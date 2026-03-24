@@ -28,10 +28,34 @@ canopy\_factory.cli module
    :show-inheritance:
    :undoc-members:
 
+canopy\_factory.config module
+-----------------------------
+
+.. automodule:: canopy_factory.config
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+canopy\_factory.light\_sources module
+-------------------------------------
+
+.. automodule:: canopy_factory.light_sources
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 canopy\_factory.raytrace module
 -------------------------------
 
 .. automodule:: canopy_factory.raytrace
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+canopy\_factory.simulate module
+-------------------------------
+
+.. automodule:: canopy_factory.simulate
    :members:
    :show-inheritance:
    :undoc-members:

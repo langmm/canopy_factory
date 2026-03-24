@@ -3868,7 +3868,9 @@ class DataProcessor:
         r"""Get the base ID from a datafile.
 
         Args:
-            *args, **kwargs: Additional arguments are passed to
+            *args: Additional arguments are passed to
+                ids_from_file.
+            **kwargs: Additional keyword arguments are passed to
                 ids_from_file.
 
         Returns:

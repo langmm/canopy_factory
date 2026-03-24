@@ -465,11 +465,13 @@ class ArgumentDescriptionABC(abc.ABC):
 
         Args:
             include (str, optional): Specifies what to include in the
-                returned list. Supported options include:
+                returned list. Supported options include::
+
                   'dest': Full argument name with prefix/suffix.
                   'name': Argument name without prefix/suffix.
                   'both': Tuple of result from 'dest' & 'name'.
                   'flag': Use the first CLI flag.
+
             no_root (bool, optional): If True, don't include this
                 argument.
 
@@ -919,7 +921,9 @@ class ArgumentDescriptionABC(abc.ABC):
         args.
 
         Args:
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                suffix generator's generate method.
+            **kwargs: Additional keyword arguments are passed to the
                 suffix generator's generate method.
 
         Returns:
@@ -2183,7 +2187,8 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
 
         Args:
             include (str, optional): Specifies what to include in the
-                returned list. Supported options include:
+                returned list. Supported options include::
+
                   'dest': Full argument name with prefix/suffix.
                   'name': Argument name without prefix/suffix.
                   'both': Tuple of result from 'dest' & 'name'.

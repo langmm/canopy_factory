@@ -737,7 +737,8 @@ class RayTracerBase(RegisteredClassBase):
         Args:
             face_scalar (np.ndarray): Array of scalars for each face.
             method (str, optional): Method to use to map from face values
-                to vertex values.
+                to vertex values.::
+
                     'average': Average over the values for each face that
                         vertices are part of.
                     'deposit': Split the values for each face amongst its

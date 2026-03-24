@@ -50,7 +50,10 @@ templates_path = ['_templates']
 exclude_patterns = []
 pygments_style = 'sphinx'
 todo_include_todos = True
-
+# napoleon_include_private_with_doc = True
+napoleon_custom_sections = [
+    ('Class Attributes', "params_style"),
+]
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output

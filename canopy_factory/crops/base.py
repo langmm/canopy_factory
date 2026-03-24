@@ -426,7 +426,7 @@ class ParameterDict(DictSet):
         Args:
             cls (PlantParameterBase): Parameter instance that is being
                 updated. Default parameters will be added to the current
-                set based on the existing parameters and the class's
+                set based on the existing parameters and the class\'s
                 prefix will be added to the dictionary prefix within the
                 context.
 
@@ -664,7 +664,7 @@ class ParameterIndex(SimpleWrapper):
         w (int): Index within component whorl.
         unit_system (, optional): Unit system that should be used.
 
-    ClassAttributes:
+    Class Attributes:
         parameter_names (list): Variables that are used by the index.
 
     """
@@ -763,7 +763,7 @@ class SimplePlantParameter(PlantParameterBase):
             kwargs will be used.
         parent (PlantParameterBase, optional): Parent parameter that
             uses this parameter.
-        defaults (dict, optional): Defaults (with only this parameter's
+        defaults (dict, optional): Defaults (with only this parameter\'s
             prefixes) that should be used for parameters missing from
             param.
         seed (int, optional): Seed that should be used for the random
@@ -780,13 +780,13 @@ class SimplePlantParameter(PlantParameterBase):
         required (bool, optional): If True, this parameter is required
             and errors will be raised if it is not fully specified.
         **kwargs: Additional keyword arguments are only allowed for
-            root parameters (that don't have a parent) in which case
+            root parameters (that don\'t have a parent) in which case
             they are treated as param.
 
     Attributes:
         parameters (dict): Child parameters used by this parameter.
 
-    ClassAttributes:
+    Class Attributes:
         _name (str): Name that should be used to register the class and
             be used as the default prefix.
         _properties (dict): Set of properties that control the parameter.
@@ -1103,7 +1103,7 @@ class SimplePlantParameter(PlantParameterBase):
                 be used as the prefix.
 
         Returns:
-            bool: True if k starts with this parameter's prefix.
+            bool: True if k starts with this parameter\'s prefix.
 
         """
         if use_fullname:
@@ -1156,7 +1156,9 @@ class SimplePlantParameter(PlantParameterBase):
         r"""Context with an updated index.
 
         Args:
-            *args, **kwargs: Arguments are used to create a
+            *args: Arguments are used to create a
+                ParameterIndex instance for the context.
+            **kwargs: Keyword arguments are used to create a
                 ParameterIndex instance for the context.
 
         """
@@ -1677,7 +1679,8 @@ class SimplePlantParameter(PlantParameterBase):
         Args:
             name (str): Base name for parameters.
             scope (str, optional): Scope for parameters that should
-                be returned. Options are:
+                be returned. Options are::
+
                   'all': Return all parameters.
                   'core': Return parameters only directly allowed by
                       this parameter.
@@ -1944,7 +1947,9 @@ class SimplePlantParameter(PlantParameterBase):
 
         Args:
             profile (str): Name of the profile that should be sampled.
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                generator method for the specified profile.
+            **kwargs: Additional keyword arguments are passed to the
                 generator method for the specified profile.
 
         """
@@ -2889,7 +2894,7 @@ class ScalarPlantParameter(SimplePlantParameter):
 class CurvePlantParameter(SimplePlantParameter):
     r"""Class for a curve parameter.
 
-    ClassAttributes:
+    Class Attributes:
         _required_curve (list): Properties required when the curve is
             not generated from a curve patch.
         _required_patch (list): Properties required when the curve is
@@ -3433,7 +3438,7 @@ class Template3DPlantParameter(Template2DPlantParameter):
 class ParameterCollection(SimplePlantParameter):
     r"""Class for collection of parameters.
 
-    ClassAttributes:
+    Class Attributes:
         _parameters (dict): Mapping between parameter class names and
             lists of parameter names that should be included in this
             collection using that class.
@@ -4146,7 +4151,7 @@ class FruitComponent(GeometricComponentBase):
 class PlantGenerator(ParameterCollection):
     r"""Base class for generating plants.
 
-    ClassAttributes:
+    Class Attributes:
         _plant_name (str): Name of the plant that this class will
             generate.
 
