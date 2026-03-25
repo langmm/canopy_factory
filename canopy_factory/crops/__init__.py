@@ -735,7 +735,7 @@ class LayoutTask(TaskBase):
         # TODO: Allow multiple crop classes?
         pos0 = self.args.plant_spacing * np.zeros((1, 3), 'f4')
         out = pos0 + units.QuantityArray(
-            self.get_periodic_shifts(
+            utils.get_periodic_shifts(
                 self.args.virtual_period.astype('f4'),
                 self.args.virtual_direction.astype('f4'),
                 np.array([self.args.nrows, self.args.ncols, 0], 'i4'),
@@ -746,61 +746,6 @@ class LayoutTask(TaskBase):
             self.args.plant_spacing.units,
         )
         return out
-
-    @classmethod
-    def get_periodic_shifts(cls, period, direction, count,
-                            include_origin=False,
-                            dont_reflect=False, dont_center=False):
-        r"""Get the shifts that should be applied to plants.
-
-        Args:
-            period (np.ndarray): Length of the period along each
-                direction.
-            direction (np.ndarray): Unit vector for the directions
-                along which the period should be applied.
-            count (np.ndarray): Number of times the period should be
-                repeated in each direction.
-            include_origin (bool, optional): If True, include the origin
-                in the returned shifts.
-            dont_reflect (bool, optional): If True, the shifts will only
-                occur in the positive direction along each axis.
-            dont_center (bool, optional): If True, this shifts will not
-                be centered on the origin.
-
-        Returns:
-            np.ndarray: Shifts in each coordinate that should be applied.
-
-        """
-        import itertools
-        shifts = []
-        opts = []
-        for axis in range(len(count)):
-            if period[axis] == 0:
-                opts.append([0])
-                continue
-            if dont_reflect:
-                count_lh = -(count[axis] // 2)
-                count_rh = count[axis] + count_lh
-            else:
-                count_lh = -count[axis]
-                count_rh = count[axis] + 1
-            if dont_center:
-                count_rh = count_rh - count_lh
-                count_lh = 0
-            opts.append(list(range(count_lh, count_rh)))
-        for buffers in itertools.product(*opts):
-            if (not include_origin) and all(ibuffer == 0 for ibuffer
-                                            in buffers):
-                continue
-
-            def _shift(axis):
-                return buffers[axis] * period[axis] * direction[axis, :]
-
-            ishift = _shift(0)
-            for axis in range(1, len(count)):
-                ishift += _shift(axis)
-            shifts.append(ishift)
-        return np.vstack(shifts)
 
     @cached_property
     def nplants_virtual(self):
@@ -828,7 +773,7 @@ class LayoutTask(TaskBase):
         pos_units0 = self.plant_positions.units
         pos0 = self.plant_positions
         shifts = units.QuantityArray(
-            self.get_periodic_shifts(
+            utils.get_periodic_shifts(
                 self.args.periodic_period.astype('f4'),
                 self.args.periodic_direction.astype('f4'),
                 self.args.periodic_canopy_count_array,
@@ -923,19 +868,19 @@ class LayoutTask(TaskBase):
     def scene_layout(self):
         r"""dict: Parameters describing the scene layout."""
         out = {
-            'plants': self.project_onto_ground(
+            'plants': utils.project_onto_ground(
                 self.plant_positions,
                 self.args.axis_rows, self.args.axis_cols,
             ),
-            'periodic_plants': self.project_onto_ground(
+            'periodic_plants': utils.project_onto_ground(
                 self.plant_positions_periodic,
                 self.args.axis_rows, self.args.axis_cols,
             ),
-            'north': self.project_onto_ground(
+            'north': utils.project_onto_ground(
                 self.args.axis_north,
                 self.args.axis_rows, self.args.axis_cols, ray=True,
             ),
-            'east': self.project_onto_ground(
+            'east': utils.project_onto_ground(
                 self.args.axis_east,
                 self.args.axis_rows, self.args.axis_cols, ray=True,
             ),
@@ -993,37 +938,6 @@ class LayoutTask(TaskBase):
             return self.args.exterior_plant_color
         return self.args.interior_plant_color
 
-    @classmethod
-    def project_onto_ground(cls, pos, xaxis, yaxis, ray=False):
-        r"""Project a 3D point onto the ground.
-
-        Args:
-            pos (np.ndarray): Set of one or more 3D positions.
-            xaxis (np.ndarray): Unit vector for the x axis.
-            yaxis (np.ndarray): Unit vector for the y axis.
-            ray (bool, optional): If True, treat pos as a ray and
-                normalize the returned projection.
-
-        Returns:
-            np.ndarray: x & y components of pos projected onto the
-                scene ground.
-
-        """
-        pos_units = None
-        if isinstance(pos, (units.Quantity, units.QuantityArray)):
-            pos_units = pos.units
-            pos = pos.data
-        x = np.dot(pos, xaxis)
-        y = np.dot(pos, yaxis)
-        out = np.vstack([x, y]).T
-        if pos.ndim == 1:
-            out = out[0]
-        if ray:
-            out /= np.linalg.norm(out)
-        elif pos_units is not None:
-            out = units.QuantityArray(out, pos_units)
-        return out
-
     def plot_sun(self, time, plant_min, plant_max,
                  arrow_length=0.1, nrays=9):
         r"""Plot the location of the sun for a given time as a set of
@@ -1047,7 +961,7 @@ class LayoutTask(TaskBase):
         plant_min = plant_min - plant_pad
         plant_max = plant_max + plant_pad
         plant_mid = (plant_min + plant_max) / 2
-        raysun = self.project_onto_ground(
+        raysun = utils.project_onto_ground(
             -self.get_solar_direction(time=time),
             self.args.axis_rows, self.args.axis_cols, ray=True,
         )
@@ -1672,7 +1586,7 @@ class GenerateTask(TaskBase):
             np.dot(mesh_dict['vertex'], self.args.axis_up)
             - self.args.ground_height.value
         )
-        vert_ground = LayoutTask.project_onto_ground(
+        vert_ground = utils.project_onto_ground(
             mesh_dict['vertex'],
             self.args.axis_rows, self.args.axis_cols,
         )

@@ -270,13 +270,30 @@ class TestRayTraceTask(TestTask):
             tuple: Update actual & expected objects for comparison.
 
         """
-        if output == 'raytrace_stats':
-            assert 'compute_time' in expected
-            assert 'compute_time' in actual
-            expected = {k: v for k, v in expected.items()
-                        if k != 'compute_time'}
-            actual = {k: v for k, v in actual.items()
-                      if k != 'compute_time'}
+        if output == 'raytrace_stats' or (output == 'raytrace'
+                                          and isinstance(expected, dict)):
+            if output == 'raytrace':
+                assert 'HEADER_JSON' in expected
+                assert 'HEADER_JSON' in actual
+                expected_header = expected['HEADER_JSON']
+                actual_header = actual['HEADER_JSON']
+            else:
+                expected_header = expected
+                actual_header = actual
+            assert 'compute_time' in expected_header
+            assert 'compute_time' in actual_header
+            expected_header = {k: v for k, v in expected_header.items()
+                               if k != 'compute_time'}
+            actual_header = {k: v for k, v in actual_header.items()
+                             if k != 'compute_time'}
+            if output == 'raytrace':
+                expected = {k: v for k, v in expected.items()}
+                actual = {k: v for k, v in actual.items()}
+                expected['HEADER_JSON'] = expected_header
+                actual['HEADER_JSON'] = actual_header
+            else:
+                expected = expected_header
+                actual = actual_header
         return super(TestRayTraceTask, cls).prepare_comparison_data(
             output, actual, expected)
 

@@ -9,6 +9,7 @@ import warnings
 import subprocess
 import traceback
 import contextlib
+import itertools
 import re
 import glob
 from canopy_factory.config import PackageConfig
@@ -2610,6 +2611,91 @@ class SolarModel(object):
     def ppfd_diffuse(self):
         r"""units.Quantity: Diffuse photosynthetic photon flux density"""
         return self.eta_par * self.eta_photon * self.dhi
+
+
+def project_onto_ground(pos, xaxis, yaxis, ray=False):
+    r"""Project a 3D point onto the ground.
+
+    Args:
+        pos (np.ndarray): Set of one or more 3D positions.
+        xaxis (np.ndarray): Unit vector for the x axis.
+        yaxis (np.ndarray): Unit vector for the y axis.
+        ray (bool, optional): If True, treat pos as a ray and
+            normalize the returned projection.
+
+    Returns:
+        np.ndarray: x & y components of pos projected onto the
+            scene ground.
+
+    """
+    pos_units = None
+    if isinstance(pos, (units.Quantity, units.QuantityArray)):
+        pos_units = pos.units
+        pos = pos.data
+    x = np.dot(pos, xaxis)
+    y = np.dot(pos, yaxis)
+    out = np.vstack([x, y]).T
+    if pos.ndim == 1:
+        out = out[0]
+    if ray:
+        out /= np.linalg.norm(out)
+    elif pos_units is not None:
+        out = units.QuantityArray(out, pos_units)
+    return out
+
+
+def get_periodic_shifts(period, direction, count,
+                        include_origin=False,
+                        dont_reflect=False, dont_center=False):
+    r"""Get the shifts that should be applied to plants.
+
+    Args:
+        period (np.ndarray): Length of the period along each
+            direction.
+        direction (np.ndarray): Unit vector for the directions
+            along which the period should be applied.
+        count (np.ndarray): Number of times the period should be
+            repeated in each direction.
+        include_origin (bool, optional): If True, include the origin
+            in the returned shifts.
+        dont_reflect (bool, optional): If True, the shifts will only
+            occur in the positive direction along each axis.
+        dont_center (bool, optional): If True, this shifts will not
+            be centered on the origin.
+
+    Returns:
+        np.ndarray: Shifts in each coordinate that should be applied.
+
+    """
+    shifts = []
+    opts = []
+    for axis in range(len(count)):
+        if period[axis] == 0:
+            opts.append([0])
+            continue
+        if dont_reflect:
+            count_lh = -(count[axis] // 2)
+            count_rh = count[axis] + count_lh
+        else:
+            count_lh = -count[axis]
+            count_rh = count[axis] + 1
+        if dont_center:
+            count_rh = count_rh - count_lh
+            count_lh = 0
+        opts.append(list(range(count_lh, count_rh)))
+    for buffers in itertools.product(*opts):
+        if (not include_origin) and all(ibuffer == 0 for ibuffer
+                                        in buffers):
+            continue
+
+        def _shift(axis):
+            return buffers[axis] * period[axis] * direction[axis, :]
+
+        ishift = _shift(0)
+        for axis in range(1, len(count)):
+            ishift += _shift(axis)
+        shifts.append(ishift)
+    return np.vstack(shifts)
 
 
 class UnitSet(object):
