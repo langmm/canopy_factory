@@ -4,12 +4,8 @@ universal = 1
 [build-system]
 requires = [
   "setuptools >= 61.0",
-  # "scikit-build-core<0.11.2",
   "setuptools_scm",
-  # "hatch-fancy-pypi-readme",
 ]
-
-# build-backend = "scikit_build_core.build"
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -31,20 +27,21 @@ dynamic = [
 #   "tbb-devel",
 # ]
 dependencies = [
+  "embreex",  # Can be removed once hothouse added as no direct dependence
   # "hothouse>=0.1.0",  # should be installed from source on maize branch
   "imageio",
   "matplotlib>=3.10.0",
   "numpy>=1.13.0,<2.0",
   "pandas",
   "pvlib>=0.7.2",
-  # "pyembree",  # should be installed from source on callbacks branch
   "pyshp",
   "pyyaml",
   "scipy",
   "yggdrasil-python-rapidjson",
 ]
 description = "Tool for generating & utilizing 3D meshes for simulated canopies"
-license = {file = "LICENSE"}
+license-files = ["LICEN[CS]E*"]
+license = "GPL-3.0-or-later"
 keywords = [
   "models", "plants", "simulation", "canopy_factory", "CROPPS",
 ]
@@ -61,12 +58,13 @@ classifiers = [
   "Natural Language :: English",
   "Topic :: Scientific/Engineering",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.7",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
-requires-python = ">= 3.7"
+requires-python = ">= 3.10"
 
 # [project.scripts]
 # canopy_factory = "canopy_factory.cli:parse_args"
@@ -86,23 +84,8 @@ dev = [
   'pytest>=8.4',
   'pytest-cov',
   'sphinx',
+  'flake8',
 ]
-
-# [tool.scikit-build]
-# experimental=true
-# sdist.exclude = [
-#   ".git*",
-# ]
-# sdist.include = [
-#   "yggdrasil/_version.py",
-# ]
-# wheel.exclude = [
-#   "__pycache__",
-# ]
-# wheel.packages = ["canopy_factory"]
-# wheel.install-dir = "canopy_factory"
-# metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
-# metadata.readme.provider = "scikit_build_core.metadata.fancy_pypi_readme"
 
 [tool.setuptools]
 include-package-data = true
@@ -114,12 +97,6 @@ readme = {file = ["README.md"]}
 [tool.setuptools_scm]
 version_file = "canopy_factory/_version.py"
 scm.git.describe_command = "git describe --tags --abbrev=0"
-
-# [tool.hatch.metadata.hooks.fancy-pypi-readme]
-# content-type = "text/x-rst"
-
-# [[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
-# path = "README.md"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
@@ -136,6 +113,8 @@ filterwarnings = [
   # Errors from traittypes import in hothouse
   "ignore:((.|\n)*)Sentinel is not a public part of the traitlets API((.|\n)*)",
   "ignore:((.|\n)*)was set from the constructor((.\n)*)",
+  # Error from pvlib import
+  "ignore:((.|\n)*)Implicit None on return values is deprecated and will raise KeyErrors((.\n)*)",
 ]
 
 [tool.coverage.run]
@@ -174,10 +153,13 @@ exclude_lines = [
 [tool.cibuildwheel]
 test-requires = ["pytest"]
 test-command = "pytest -m {project}/tests"
+# Based on embreex values
+skip = "*i686 *-win32 *musllinux*"
+manylinux-x86_64-image = "manylinux_2_28"
 
 [tool.black]
 line-length = 88
-target-version = ['py37', 'py38', 'py39', 'py310', 'py311']
+target-version = ['py310', 'py311', 'py312', 'py313', 'py314']
 exclude = '''
 /(
     \.eggs

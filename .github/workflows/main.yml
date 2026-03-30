@@ -9,6 +9,9 @@ on:
   schedule:
     - cron: 0 10 * * 1  # 3AM PST
 
+env:
+  PYTHONVERSION_STD: "3.14"
+
 jobs:
   tests:
     name: All tests, on current Python
@@ -20,17 +23,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.12]
+        python-version: [3.12]  # ["3.10", 3.11, 3.12, 3.13, 3.14]
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: (WINDOWS,CONDA) Set up MSVC Compiler
-        uses: ilammy/msvc-dev-cmd@v1
-        if: matrix.os == 'Windows'
+      # - name: (WINDOWS,CONDA) Set up MSVC Compiler
+      #   uses: ilammy/msvc-dev-cmd@v1
+      #   if: matrix.os == 'windows-latest'
       - name: (CONDA) Set up miniconda base environment
         uses: conda-incubator/setup-miniconda@v3
         with:
@@ -38,19 +41,16 @@ jobs:
           auto-update-conda: true
           python-version: ${{ matrix.python-version }}
           channels: msys,conda-forge,openalea3
-          # use-only-tar-bz2: true
           channel-priority: strict
-          # miniforge-variant: Miniforge3
-          # miniforge-version: latest
           environment-file: environment.yml
 
       # Build & install dependencies
       - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
         run: |
           pip install yggdrasil-python-rapidjson
-      - name: Install embree & hothouse build dependencies
-        run: |
-          conda env update -n canopy --file environment_raytrace.yml
+      # - name: Install embree & hothouse build dependencies
+      #   run: |
+      #     conda env update -n canopy --file environment_raytrace.yml
       # - name: Install yggdrasil
       #   run: |
       #     cd ..
@@ -67,10 +67,10 @@ jobs:
       #   run: |
       #     cd ..
       #     ./canopy_factory/build_embree.sh
-      - name: Install pyembree
-        run: |
-          cd ..
-          ./canopy_factory/build_pyembree.sh
+      # - name: Install pyembree
+      #   run: |
+      #     cd ..
+      #     ./canopy_factory/build_pyembree.sh
       - name: Install hothouse
         run: |
           cd ..
@@ -83,6 +83,10 @@ jobs:
       - name: Show installed packages
         run: |
           conda list
+
+      - name: Check syntax
+        run: |
+          flake8 canopy_factory
 
       - name: Test CLI
         run: |
@@ -103,28 +107,28 @@ jobs:
       run:
         shell: bash -el {0}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         submodules: true
+    # - name: Get tags required by setuptools_scm to generate version
+    #   run: |
+    #     git fetch --prune --unshallow
+    #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
     - name: Set up miniconda environment w/ dependencies
       uses: conda-incubator/setup-miniconda@v3
       with:
         activate-environment: canopy
         auto-update-conda: true
-        python-version: "3.12"
+        python-version: ${{ env.PYTHONVERSION_STD }}
         channels: msys,conda-forge,fredboudon
         channel-priority: strict
         environment-file: environment.yml
-    - name: Install dependencies for building documents
+    - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
       run: |
-        conda env update --file environment_docs.yml
-    - name: Install embree & hothouse build dependencies
-      run: |
-        conda env update -n canopy --file environment_raytrace.yml
-    - name: Install pyembree
-      run: |
-        cd ..
-        ./canopy_factory/build_pyembree.sh
+        pip install yggdrasil-python-rapidjson
+    # - name: Install embree & hothouse build dependencies
+    #   run: |
+    #     conda env update -n canopy --file environment_raytrace.yml
     - name: Install hothouse
       run: |
         cd ..
@@ -132,10 +136,6 @@ jobs:
     - name: Install canopy_factory
       run: |
         pip install -v .
-    # - name: Get tags required by setuptools_scm to generate version
-    #   run: |
-    #     git fetch --prune --unshallow
-    #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
     - name: Build the docs
       run: |
         cd docs
@@ -149,75 +149,89 @@ jobs:
         BRANCH: gh-pages
         FOLDER: docs/build/html/
 
+  build_sdist:
+    name: Build sdist & wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHONVERSION_STD }}
+
+      - name: Install pypa/build
+        run: python -m pip install build
+      - name: Build a binary wheel and a source tarball
+        run: python -m build  # --sdist
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sdist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+
   # build_wheels:
   #   name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
   #   runs-on: ${{ matrix.os }}
   #   strategy:
   #     matrix:
-  #       os:
-  #         - ubuntu-22.04
-  #         - macos-12
-  #         - windows-2019
-  #       arch:
-  #         - auto
-  #       include:
-  #         - os: ubuntu-22.04
-  #           arch: aarch64
-  #         # - os: ubuntu-22.04
-  #         #   arch: ppc64le
-  #         - os: macos-14
-  #           arch: arm64
+  #       os: [ubuntu-latest, macos-latest, windows-latest, macos-15-intel]
+  #       arch: [auto]
   #     fail-fast: false
             
   #   steps:
   #     - name: Checkout sources
-  #       uses: actions/checkout@v4
-  #       with:
-  #         submodules: true
+  #       uses: actions/checkout@v6
 
   #     - name: Install Python
-  #       uses: actions/setup-python@v5
+  #       uses: actions/setup-python@v6
   #       with:
-  #         python-version: '3.11'
+  #         python-version: ${{ env.PYTHONVERSION_STD }}
 
-  #     - uses: docker/setup-qemu-action@v3
-  #       if:  ${{ matrix.arch == 'aarch64' || matrix.arch == 'ppc64le' }}
-  #       name: Set up QEMU
+  #     - name: Install cibuildwheel
+  #       run: python -m pip install cibuildwheel==3.4.0
 
   #     - name: Build wheels
-  #       uses: pypa/cibuildwheel@v2.16.5
+  #       run: python -m cibuildwheel --output-dir wheelhouse
   #       env:
   #         CIBW_ARCHS_LINUX: ${{ matrix.arch }}
   #         CIBW_ARCHS_MACOS: ${{ matrix.arch }}
-  #         CIBW_TEST_REQUIRES: "pytest pytest-benchmark pytz"
-  #         CIBW_TEST_COMMAND: "pytest -sv {project}/tests"
-  #         CIBW_SKIP: "cp2* cp33* cp34* cp35* cp36* pp* cp310-manylinux_i686 cp311-manylinux_i686 cp312-manylinux_i686 *-musllinux_*"
-  #         CIBW_ENVIRONMENT: "PIP_ONLY_BINARY=numpy"
-  #         # CIBW_BEFORE_BUILD: python -m pip install oldest-supported-numpy
-  #         # CIBW_PRERELEASE_PYTHONS: True
+  #         CIBW_ENABLE: cpython-prerelease
 
   #     - name: Upload artifacts
-  #       uses: actions/upload-artifact@v4
+  #       uses: actions/upload-artifact@v6
   #       with:
   #         name: wheels-for-${{ matrix.os }}-${{ matrix.arch }}
   #         path: ./wheelhouse/*.whl
 
-  # upload_wheels:
-  #   name: Upload wheels to PyPI
-  #   needs: build_wheels
-  #   runs-on: ubuntu-latest
+  upload_wheels:
+    name: Upload wheels to PyPI
+    needs: [build_sdist]  # , build_wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
 
-  #   # Upload to PyPI on every tag starting with 'v'
-  #   if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
+    # Upload only for release
+    if: github.event_name == 'release'
 
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         path: dist
-  #         pattern: wheels-for-*
-  #         merge-multiple: true
+    # Upload to PyPI on every tag starting with 'v'
+    # if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
 
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
-  #       with:
-  #         user: __token__
-  #         password: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      # - uses: actions/download-artifact@v6
+      #   with:
+      #     path: dist
+      #     pattern: wheels-for-*
+      #     merge-multiple: true
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          pattern: sdist
+          merge-multiple: true
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

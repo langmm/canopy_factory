@@ -18,7 +18,11 @@ class HothouseRayTracer(RayTracerBase):
     @cached_args_property
     def scene(self):
         r"""hothouse.scene.Scene: Scene containing geometry."""
-        kws = {'ground': self.ground, 'up': self.up, 'north': self.north}
+        kws = {
+            'ground': self.ground.astype('f4'),
+            'up': self.up.astype('f4'),
+            'north': self.north.astype('f4'),
+        }
         scene_cls = Scene
         if ((self.args.periodic_canopy == 'scene'
              or self.args.canopy == 'virtual_single')):
@@ -211,9 +215,9 @@ class HothouseRayTracer(RayTracerBase):
             longitude=self.solar_model.longitude.value,
             date=self.solar_model.time,
             diffuse_intensity=self.solar_model.ppfd_diffuse.value[0],
-            ground=self.ground,
-            north=self.north,
-            zenith=self.zenith,
+            ground=self.ground.astype('f4'),
+            north=self.north.astype('f4'),
+            zenith=self.zenith.astype('f4'),
             scene_limits=self.virtual_scene_model.limits.astype('f4'),
             solar_altitude=self.solar_model.apparent_elevation,
             solar_azimuth=self.solar_model.azimuth,
