@@ -10,7 +10,7 @@ on:
     - cron: 0 10 * * 1  # 3AM PST
 
 env:
-  PYTHONVERSION_STD: "3.14"
+  PYTHONVERSION_STD: "3.12"
 
 jobs:
   tests:

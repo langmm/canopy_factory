@@ -54,7 +54,6 @@ maintainers = [
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Natural Language :: English",
   "Topic :: Scientific/Engineering",
   "Programming Language :: Python :: 3",
