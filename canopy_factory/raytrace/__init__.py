@@ -20,7 +20,7 @@ from canopy_factory.cli import (
     OptimizationTaskBase,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
-from canopy_factory import light_sources
+from canopy_factory import light_sources  # noqa: F401
 from canopy_factory.raytrace import hothouse
 
 
