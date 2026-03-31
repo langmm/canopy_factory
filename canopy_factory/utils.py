@@ -1414,7 +1414,7 @@ def prune_empty_faces(mesh, area_min=None):
         return mesh
     # print(f'Removing {nempty}/{len(areas)} faces with areas <= '
     #       f'{area_min}')
-    from canopy_factory.raytrace import RayTracerBase
+    from canopy_factory.raytrace.base import RayTracerBase
     out = RayTracerBase.select_faces(mesh, area_mask)
     areas = np.array(out.areas)
     area_mask = (areas > area_min)
@@ -3890,6 +3890,7 @@ class DataProcessor:
         },
         'additionalProperties': False,
     }
+    _ignore_data = False
 
     def __init__(self, crop=None, year=None, metadata=None, units=None):
         if metadata is None:
@@ -3999,6 +4000,8 @@ class DataProcessor:
             list: Matching files.
 
         """
+        if cls._ignore_data:
+            return []
         if isinstance(crop, list):
             out = []
             for x in crop:
@@ -4372,6 +4375,7 @@ class DataProcessor:
 
         """
         # TODO: Use schema to validate the loaded data
+        assert not self._ignore_data
         if fname is None:
             fname = self.output_name(self.crop, self.year)
         if not (os.path.isfile(fname) or os.path.isabs(fname)):
@@ -4392,6 +4396,7 @@ class DataProcessor:
                 provided, one will be generated using output_name.
 
         """
+        assert not self._ignore_data
         if not self.data:
             raise RuntimeError(f'Data is empty. {fname} will not be '
                                f'created.')

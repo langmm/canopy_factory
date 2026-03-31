@@ -52,9 +52,9 @@ class ParametrizeCropTask(TaskBase):
             include=['id', 'data', 'data_year'],
             modifications={
                 'id': {
-                    'append_choices': ['all'],
+                    'append_choices': ['default', 'all'],
                     'suffix_param': {
-                        'cond': True,
+                        'noteq': 'default',
                         'skip_outputs': ['lpy_model'],
                     },
                 },
@@ -199,7 +199,8 @@ class ParametrizeCropTask(TaskBase):
         elif args.data_year and not args.data_year.startswith('all'):
             args.data = utils.DataProcessor.output_name(args.crop,
                                                         args.data_year)
-            if not os.path.isfile(args.data):
+            if ((utils.DataProcessor._ignore_data
+                 or not os.path.isfile(args.data))):
                 args.data = None
                 args.data_year = None
             else:
@@ -1228,12 +1229,12 @@ class GenerateTask(TaskBase):
             return []
         if args.data:
             return utils.DataProcessor.from_file(args.data).ids
-        elif args.data_year:
+        elif args.data_year and not utils.DataProcessor._ignore_data:
             data = utils.DataProcessor.output_name(args.crop,
                                                    args.data_year)
             if os.path.isfile(data):
                 return utils.DataProcessor.from_file(data).ids
-        return []
+        return ['default']
 
     @classmethod
     def base_param_class(cls, args):
@@ -1247,8 +1248,8 @@ class GenerateTask(TaskBase):
 
         """
         years = utils.DataProcessor.available_years(args.crop)
-        if not years:
-            return {'id': None, 'data_year': None}
+        if (not years) or args.id == 'default':
+            return {'id': 'default', 'data_year': None}
         ids = utils.DataProcessor.available_ids(args.crop, year=years[0])
         assert ids
         return {'id': ids[0], 'data_year': years[0]}

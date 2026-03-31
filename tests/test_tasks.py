@@ -18,8 +18,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
     _registry_name = None
     _params = {
         'crop': ['maize'],
-        'id': ['B73_WT'],
-        'data_year': ['2024'],
+        'id': ['default'],
+        # 'data_year': ['2024'],
     }
     _params_data = ['id', 'data_year']
     _compare_methods = {}
@@ -202,7 +202,8 @@ class TestParametrizeCropTask(TestTask):
         'arguments': {
             'values': [
                 {},
-                {'crop': 'maize', 'piecewise_param': 'N'},
+                {'crop': 'maize', 'id': 'B73_WT',
+                 'piecewise_param': 'N', 'data_year': '2024'},
             ],
         },
     }
@@ -213,17 +214,17 @@ class TestGenerateTask(TestTask):
 
     _registry_name = 'generate'
     _params = {
-        'data_year': ['2024'],
         'arguments': {
             'values': [
-                {'canopy': 'single'},
-                {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'unique'},
-                {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'tile'},
+                {'canopy': 'single', 'data_year': '2024'},
+                {'crop': 'maize', 'id': 'default', 'canopy': 'unique'},
+                {'crop': 'maize', 'id': 'default', 'canopy': 'tile'},
                 {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'single',
-                 'piecewise_param': 'N'},
+                 'piecewise_param': 'N', 'data_year': '2024'},
             ],
         },
     }
+    # _compare_methods = {'generate': 'approx'}
 
     @pytest.fixture
     def compare_method(self, output, arguments):
@@ -231,6 +232,25 @@ class TestGenerateTask(TestTask):
         if arguments.get('canopy', 'single') in ['unique', 'tile']:
             return False  # Large
         return self._compare_methods.get(output, 'bytes')
+
+    @classmethod
+    def prepare_comparison_data(cls, output, actual, expected):
+        r"""Perform an actions necessary to modify the data prior to
+        comparison.
+
+        Args:
+            output (str): Type of output being compared.
+            actual (object): Actual object.
+            expected (object): Expected object.
+
+        Returns:
+            tuple: Update actual & expected objects for comparison.
+
+        """
+        if output == 'generate' and not isinstance(expected, (str, bytes)):
+            expected = utils.get_mesh_dict(expected)
+            actual = utils.get_mesh_dict(actual)
+        return actual, expected
 
 
 class TestRayTraceTask(TestTask):
@@ -240,12 +260,16 @@ class TestRayTraceTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
-                 'canopy': 'single'},
-                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
-                 'canopy': 'virtual', 'periodic_canopy': True},
-                {'crop': 'maize', 'id': 'B73_WT', 'data_year': '2024',
+                {'crop': 'maize', 'id': 'default', 'canopy': 'single'},
+                {'crop': 'maize', 'id': 'default', 'canopy': 'virtual',
+                 'periodic_canopy': True},
+                {'crop': 'maize', 'id': 'default',
                  'canopy': 'virtual_single'},
+            ],
+            'ids': [
+                'single',
+                'virtual_periodic',
+                'virtual_single',
             ],
         },
     }

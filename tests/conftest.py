@@ -1,7 +1,9 @@
 import pytest
 import os
 import copy
-from canopy_factory.utils import get_class_registry, DataProcessor, units
+from canopy_factory.utils import (
+    get_class_registry, DataProcessor, units, cfg
+)
 
 
 _param_args = ['crop', 'id', 'data_year']
@@ -39,6 +41,11 @@ def pytest_addoption(parser):
         help="Preserve step output to speed up consequent runs.",
         action='store_true',
     )
+    parser.addoption(
+        "--ignore-data",
+        help="Run tests as if the collected data does not exist.",
+        action='store_true',
+    )
     for k in _param_args:
         parser.addoption("--" + k.replace('_', '-'), type=str)
 
@@ -46,7 +53,9 @@ def pytest_addoption(parser):
 def pytest_runtest_setup(item):
     if not (item.cls and item.cls._registry_name
             and (item.config.getoption('task')
-                 or item.config.getoption('skip_task'))):
+                 or item.config.getoption('skip_task')
+                 or item.config.getoption('ignore_data')
+                 or not os.path.isdir(cfg['directories']['input']))):
         return
     if ((item.config.getoption('task')
          and (item.cls._registry_name not in
@@ -58,6 +67,12 @@ def pytest_runtest_setup(item):
               item.config.getoption('skip_task')))):
         pytest.skip(f"\"{item.cls._registry_name}\" "
                     f"task tests disabled")
+    if ((item.config.getoption('ignore_data')
+         or not os.path.isdir(cfg['directories']['input']))):
+        vid = item.callspec.params['arguments'].get(
+            'id', item.callspec.params.get('id', 'default'))
+        if vid != 'default':
+            pytest.skip(f"No local data for id=\"{vid}\"")
     for k in _param_args:
         v = item.config.getoption(k)
         if not v:
@@ -108,13 +123,18 @@ def pytest_generate_tests(metafunc):
         }
         argvalues = []
         for k in crops:
-            kparam = DataProcessor.available_param(
-                param_names, crop=k, **param_kwargs)
+            default_param = {'id': 'default'}
+            if metafunc.config.getoption('ignore_data'):
+                DataProcessor._ignore_data = True
+                kparam = []
+            else:
+                kparam = DataProcessor.available_param(
+                    param_names, crop=k, **param_kwargs)
             if kparam:
                 argvalues += kparam
-            else:
-                argvalues.append(
-                    tuple([k] + [None for _ in implicit_param]))
+            argvalues.append(
+                tuple([k] + [default_param.get(kp, None)
+                             for kp in implicit_param]))
         params['crop'] = {
             'names': argnames,
             'values': argvalues,

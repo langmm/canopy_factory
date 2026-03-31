@@ -135,7 +135,7 @@ jobs:
         ./canopy_factory/build_hothouse.sh
     - name: Install canopy_factory
       run: |
-        pip install -v .
+        pip install -v '.[dev]'
     - name: Build the docs
       run: |
         cd docs

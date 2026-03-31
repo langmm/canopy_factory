@@ -2888,7 +2888,7 @@ class ScalarPlantParameter(SimplePlantParameter):
             out = vmin
         if vmax is not None and out > vmax:
             out = vmax
-        return out
+        return float(out)
 
 
 class CurvePlantParameter(SimplePlantParameter):
@@ -3731,13 +3731,13 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         DX = 1.0 / self.get("NDivide")
         assert self.current_index['x'] is None
         try:
-            x = 0
+            x = 0.0
             while x <= 1:
                 self.current_index['x'] = x
                 yield x
                 if x == 1:
                     break
-                x = min(x + DX, 1)
+                x = min(x + DX, 1.0)
         finally:
             self.current_index['x'] = None
 
@@ -4341,15 +4341,15 @@ class PlantGenerator(ParameterCollection):
             else:
                 mods['default'] = ids[0]
             dst._arguments['id'].modify(**mods)
-        years = DataProcessor.available_years(cls._name)
-        if years:
-            mods = {'append_choices': years}
-            if 'data_year' in cls._defaults:
-                assert cls._defaults['data_year'] in years
-                mods['default'] = cls._defaults['data_year']
-            else:
-                mods['default'] = years[0]
-            dst._arguments['data_year'].modify(**mods)
+        # years = DataProcessor.available_years(cls._name)
+        # if years:
+        #     mods = {'append_choices': years}
+        #     if 'data_year' in cls._defaults:
+        #         assert cls._defaults['data_year'] in years
+        #         mods['default'] = cls._defaults['data_year']
+        #     else:
+        #         mods['default'] = years[0]
+        #     dst._arguments['data_year'].modify(**mods)
 
     @property
     def lsystem(self):
