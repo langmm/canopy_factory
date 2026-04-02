@@ -8,6 +8,7 @@ Subpackages
    :maxdepth: 4
 
    canopy_factory.crops
+   canopy_factory.raytrace
 
 Submodules
 ----------
@@ -40,14 +41,6 @@ canopy\_factory.light\_sources module
 -------------------------------------
 
 .. automodule:: canopy_factory.light_sources
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-canopy\_factory.raytrace module
--------------------------------
-
-.. automodule:: canopy_factory.raytrace
    :members:
    :show-inheritance:
    :undoc-members:
