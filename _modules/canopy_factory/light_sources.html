@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>canopy_factory.light_sources &#8212; canopy_factory 0.1.dev8+g603f752.d20250626 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/basic.css?v=b08954a9" />
+    <link rel="stylesheet" type="text/css" href="../../_static/alabaster.css?v=27fed22d" />
+    <script src="../../_static/documentation_options.js?v=5d402546"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+   
+  <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <h1>Source code for canopy_factory.light_sources</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">yggdrasil_rapidjson</span><span class="w"> </span><span class="kn">import</span> <span class="n">units</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">canopy_factory</span><span class="w"> </span><span class="kn">import</span> <span class="n">arguments</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">canopy_factory.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">cached_args_property</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">canopy_factory.cli</span><span class="w"> </span><span class="kn">import</span> <span class="n">SubparserBase</span>
+
+
+<div class="viewcode-block" id="LightSourceBase">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.LightSourceBase">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">LightSourceBase</span><span class="p">(</span><span class="n">SubparserBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Base class for light sources.&quot;&quot;&quot;</span>
+
+    <span class="n">_registry_key</span> <span class="o">=</span> <span class="s1">&#39;light_source&#39;</span>
+    <span class="n">_name</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">_default</span> <span class="o">=</span> <span class="s1">&#39;sun&#39;</span>
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">arguments</span><span class="o">.</span><span class="n">CompositeArgumentDescription</span><span class="p">(</span>
+            <span class="s1">&#39;light&#39;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s1">&#39; of the light source&#39;</span><span class="p">,</span>
+        <span class="p">),</span>
+    <span class="p">]</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">geometry</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;str: Light geometry.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_geometry</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_geometry</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ppf_direct</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: Direct photosynthetic photon flux.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ppf_diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: Diffuse photosynthetic photon flux.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+
+<div class="viewcode-block" id="SolarLightSource">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.SolarLightSource">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SolarLightSource</span><span class="p">(</span><span class="n">LightSourceBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Solar light source.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;sun&#39;</span>
+    <span class="n">_geometry</span> <span class="o">=</span> <span class="s1">&#39;orthographic&#39;</span>
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="p">[</span><span class="n">LightSourceBase</span><span class="o">.</span><span class="n">_arguments</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span>
+        <span class="n">modifications</span><span class="o">=</span><span class="p">{</span>
+            <span class="s1">&#39;eta_par&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="mf">0.368</span><span class="p">,</span>
+                <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span>
+                    <span class="s1">&#39;Fraction of solar radiation (assuming black-body &#39;</span>
+                    <span class="s1">&#39;spectrum of 5800 K) that is photosynthetically &#39;</span>
+                    <span class="s1">&#39;active (wavelengths 400–700 nm).&#39;</span>
+                <span class="p">),</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;eta_photon&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="mf">4.56</span><span class="p">,</span>
+                <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span>
+                    <span class="s1">&#39;Average number of photons per photosynthetically &#39;</span>
+                    <span class="s1">&#39;activate unit of radiation (in µmol s−1 W−1).&#39;</span>
+                <span class="p">),</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">),</span>
+        <span class="n">arguments</span><span class="o">.</span><span class="n">CompositeArgumentDescription</span><span class="p">(</span>
+            <span class="s1">&#39;location&#39;</span><span class="p">,</span>
+            <span class="n">description</span><span class="o">=</span><span class="s1">&#39; that the light should be modeled for&#39;</span><span class="p">,</span>
+            <span class="n">defaults</span><span class="o">=</span><span class="p">{</span>
+                <span class="s1">&#39;location&#39;</span><span class="p">:</span> <span class="s1">&#39;Champaign&#39;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="n">suffix_param</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;noteq&#39;</span><span class="p">:</span> <span class="s1">&#39;Champaign&#39;</span><span class="p">},</span>
+        <span class="p">),</span>
+        <span class="n">arguments</span><span class="o">.</span><span class="n">CompositeArgumentDescription</span><span class="p">(</span>
+            <span class="s1">&#39;time&#39;</span><span class="p">,</span>
+            <span class="n">description</span><span class="o">=</span><span class="s1">&#39; that the light should be modeled for&#39;</span><span class="p">,</span>
+            <span class="n">defaults</span><span class="o">=</span><span class="p">{</span>
+                <span class="s1">&#39;hour&#39;</span><span class="p">:</span> <span class="s1">&#39;noon&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;doy&#39;</span><span class="p">:</span> <span class="s1">&#39;summer_solstice&#39;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="n">suffix_param</span><span class="o">=</span><span class="p">{},</span>
+        <span class="p">),</span>
+        <span class="p">((</span><span class="s1">&#39;--method-solar-position&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="s1">&#39;nrel_numpy&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;choices&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;nrel_numpy&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s1">&#39;Method that should be used by pvlib to determine the &#39;</span>
+                <span class="s1">&#39;relative air mass.&#39;</span>
+            <span class="p">),</span>
+        <span class="p">}),</span>
+        <span class="p">((</span><span class="s1">&#39;--method-airmass&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="s1">&#39;kastenyoung1989&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;choices&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;kastenyoung1989&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s1">&#39;Model that should be used by pvlib to determine the &#39;</span>
+                <span class="s1">&#39;relative air mass.&#39;</span>
+            <span class="p">),</span>
+        <span class="p">}),</span>
+        <span class="p">((</span><span class="s1">&#39;--method-irradiance&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="s1">&#39;ineichen&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;choices&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;ineichen&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s1">&#39;Model that should be used by pvlib to determine the &#39;</span>
+                <span class="s1">&#39;solar irradiance.&#39;</span>
+            <span class="p">),</span>
+        <span class="p">}),</span>
+    <span class="p">]</span>
+
+<div class="viewcode-block" id="SolarLightSource.adjust_args">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.SolarLightSource.adjust_args">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">adjust_args</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">skip</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Adjust the parsed arguments including setting defaults that</span>
+<span class="sd">        depend on other provided arguments.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            args (argparse.Namespace): Parsed arguments.</span>
+<span class="sd">            skip (list, optional): Arguments to skip.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;HERE&quot;</span><span class="p">)</span>
+        <span class="c1"># 1. Initialize location</span>
+        <span class="c1"># 2. Transfer timezone from location to time</span>
+        <span class="c1"># Initialize time first, then use solar model to set</span>
+        <span class="c1"># irradiance</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;time&#39;</span><span class="p">]:</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_convert_composite</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="n">k</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">SolarLightSource</span><span class="p">,</span> <span class="bp">cls</span><span class="p">)</span><span class="o">.</span><span class="n">adjust_args</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">skip</span><span class="o">=</span><span class="n">skip</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;method_solar_position&#39;</span><span class="p">,</span> <span class="s1">&#39;method_solar_position&#39;</span><span class="p">]:</span>
+            <span class="nb">setattr</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">time</span><span class="o">.</span><span class="n">solar_model</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">k</span><span class="p">))</span></div>
+
+
+    <span class="nd">@cached_args_property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">solar_model</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;SolarModel: Model for the sun using pvlib.&quot;&quot;&quot;</span>
+        <span class="n">kws</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">k</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">[</span>
+                <span class="s1">&#39;method_solar_position&#39;</span><span class="p">,</span> <span class="s1">&#39;method_airmass&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;method_irradiance&#39;</span>
+            <span class="p">]</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">location</span><span class="o">.</span><span class="n">create_solar_model</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">,</span> <span class="o">**</span><span class="n">kws</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ppfd_direct</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: Direct photosynthetic photon flux density&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">solar_model</span><span class="o">.</span><span class="n">ppfd_direct</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ppfd_diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: Diffuse photosynthetic photon flux density&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">solar_model</span><span class="o">.</span><span class="n">ppfd_diffuse</span></div>
+
+
+
+<div class="viewcode-block" id="BulbTypeBase">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.BulbTypeBase">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">BulbTypeBase</span><span class="p">(</span><span class="n">SubparserBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Base class for different bulb types.&quot;&quot;&quot;</span>
+
+    <span class="n">_registry_key</span> <span class="o">=</span> <span class="s1">&#39;bulb_type&#39;</span>
+    <span class="n">_name</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+
+<div class="viewcode-block" id="IncandescentBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.IncandescentBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">IncandescentBulb</span><span class="p">(</span><span class="n">BulbTypeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Incandescent bulb.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;incandescent&#39;</span></div>
+
+
+
+<div class="viewcode-block" id="FluorescentBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.FluorescentBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">FluorescentBulb</span><span class="p">(</span><span class="n">BulbTypeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Fluorescent bulb.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;fluorescent&#39;</span></div>
+
+
+
+<div class="viewcode-block" id="LEDBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.LEDBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">LEDBulb</span><span class="p">(</span><span class="n">BulbTypeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;LED bulb.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;LED&#39;</span></div>
+
+
+
+<div class="viewcode-block" id="BulbShapeBase">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.BulbShapeBase">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">BulbShapeBase</span><span class="p">(</span><span class="n">SubparserBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Base class for different bulb shapes.&quot;&quot;&quot;</span>
+
+    <span class="n">_registry_key</span> <span class="o">=</span> <span class="s1">&#39;bulb_shape&#39;</span>
+    <span class="n">_name</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">_default</span> <span class="o">=</span> <span class="s1">&#39;sphere&#39;</span>
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="p">((</span><span class="s1">&#39;--bulb-width&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;units&#39;</span><span class="p">:</span> <span class="s1">&#39;cm&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="s1">&#39;Width of the bulb (in cm)&#39;</span><span class="p">,</span>
+        <span class="p">}),</span>
+    <span class="p">]</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">surface_area</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb surface area.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">volume</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb volume.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+
+<div class="viewcode-block" id="TubeBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.TubeBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">TubeBulb</span><span class="p">(</span><span class="n">BulbShapeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Tube bulb.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;tube&#39;</span>
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="n">BulbShapeBase</span><span class="o">.</span><span class="n">_arguments</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span>
+        <span class="n">modifications</span><span class="o">=</span><span class="p">{</span>
+            <span class="s1">&#39;bulb_width&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="n">units</span><span class="o">.</span><span class="n">Quantity</span><span class="p">(</span><span class="mf">2.5</span><span class="p">,</span> <span class="s1">&#39;cm&#39;</span><span class="p">)},</span>
+        <span class="p">},</span>
+    <span class="p">)</span> <span class="o">+</span> <span class="p">[</span>
+        <span class="p">((</span><span class="s1">&#39;--bulb-length&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;units&#39;</span><span class="p">:</span> <span class="s1">&#39;cm&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="n">units</span><span class="o">.</span><span class="n">Quantity</span><span class="p">(</span><span class="mf">121.92</span><span class="p">,</span> <span class="s1">&#39;cm&#39;</span><span class="p">),</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="s1">&#39;Length of the bulb (in cm)&#39;</span><span class="p">,</span>
+        <span class="p">}),</span>
+    <span class="p">]</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">surface_area</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb surface area.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">bulb_width</span>
+                <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">bulb_width</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">bulb_length</span><span class="p">))</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">volume</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb volume.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">bulb_width</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">bulb_length</span></div>
+
+
+
+<div class="viewcode-block" id="SphereBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.SphereBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SphereBulb</span><span class="p">(</span><span class="n">BulbShapeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Spherical bulb.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;sphere&#39;</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">bulb_radius</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb radius.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">bulb_width</span> <span class="o">/</span> <span class="mf">2.0</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">surface_area</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb surface area.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="mf">4.0</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">bulb_radius</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">volume</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;units.Quantity: The bulb volume.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="mf">4.0</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">bulb_radius</span> <span class="o">**</span> <span class="mi">3</span><span class="p">)</span> <span class="o">/</span> <span class="mf">3.0</span></div>
+
+
+
+<div class="viewcode-block" id="StandardBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.StandardBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">StandardBulb</span><span class="p">(</span><span class="n">BulbShapeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Standard bulb.&quot;&quot;&quot;</span>
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="n">BulbShapeBase</span><span class="o">.</span><span class="n">_arguments</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span>
+        <span class="n">modifications</span><span class="o">=</span><span class="p">{</span>
+            <span class="s1">&#39;bulb_width&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="n">units</span><span class="o">.</span><span class="n">Quantity</span><span class="p">(</span><span class="mf">6.1</span><span class="p">,</span> <span class="s1">&#39;cm&#39;</span><span class="p">)},</span>
+        <span class="p">},</span>
+    <span class="p">)</span> <span class="o">+</span> <span class="p">[</span>
+        <span class="p">((</span><span class="s1">&#39;--bulb-height&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;units&#39;</span><span class="p">:</span> <span class="s1">&#39;cm&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="n">units</span><span class="o">.</span><span class="n">Quantity</span><span class="p">(</span><span class="mf">11.4</span><span class="p">,</span> <span class="s1">&#39;cm&#39;</span><span class="p">),</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="s1">&#39;Height of the bulb (in cm)&#39;</span><span class="p">,</span>
+        <span class="p">}),</span>
+    <span class="p">]</span></div>
+
+    <span class="c1"># TODO: Area</span>
+
+
+<div class="viewcode-block" id="PointBulb">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.PointBulb">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">PointBulb</span><span class="p">(</span><span class="n">BulbShapeBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Single point source.&quot;&quot;&quot;</span>
+
+    <span class="n">_name</span> <span class="o">=</span> <span class="s1">&#39;point&#39;</span></div>
+
+
+
+<div class="viewcode-block" id="ArtificalLightSourceBase">
+<a class="viewcode-back" href="../../canopy_factory.html#canopy_factory.light_sources.ArtificalLightSourceBase">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ArtificalLightSourceBase</span><span class="p">(</span><span class="n">LightSourceBase</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Base class for artifical light source.&quot;&quot;&quot;</span>
+
+    <span class="n">_arguments</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">arguments</span><span class="o">.</span><span class="n">ClassSubparserArgumentDescription</span><span class="p">(</span><span class="s1">&#39;bulb_type&#39;</span><span class="p">),</span>
+        <span class="n">arguments</span><span class="o">.</span><span class="n">ClassSubparserArgumentDescription</span><span class="p">(</span><span class="s1">&#39;bulb_shape&#39;</span><span class="p">),</span>
+        <span class="p">((</span><span class="s1">&#39;--light-duration&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="mf">12.0</span><span class="p">,</span> <span class="s1">&#39;units&#39;</span><span class="p">:</span> <span class="s1">&#39;hr&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span><span class="s1">&#39;Number of the hours each light should be turned &#39;</span>
+                     <span class="s1">&#39;on in each illumination cycle.&#39;</span><span class="p">),</span>
+        <span class="p">}),</span>
+        <span class="p">((</span><span class="s1">&#39;--light-period&#39;</span><span class="p">,</span> <span class="p">),</span> <span class="p">{</span>
+            <span class="s1">&#39;default&#39;</span><span class="p">:</span> <span class="mf">24.0</span><span class="p">,</span> <span class="s1">&#39;units&#39;</span><span class="p">:</span> <span class="s1">&#39;hr&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;help&#39;</span><span class="p">:</span> <span class="p">(</span><span class="s1">&#39;Number of the hours between the starts of &#39;</span>
+                     <span class="s1">&#39;sequential illumination cycles.&#39;</span><span class="p">),</span>
+        <span class="p">}),</span>
+    <span class="p">]</span></div>
+
+</pre></div>
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../../index.html">canopy_factory</a></h1>
+
+
+
+
+
+
+
+
+
+<search id="searchbox" style="display: none" role="search">
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../canopy_factory.html">canopy_factory package</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../index.html">Documentation overview</a><ul>
+  <li><a href="../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Meagan Lang.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 8.3.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>
