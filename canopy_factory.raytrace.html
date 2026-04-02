@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="./">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>canopy_factory.raytrace package &#8212; canopy_factory 0.1.dev61+g44e0cdd38.d20260331 documentation</title>
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="_static/basic.css?v=b08954a9" />
+    <link rel="stylesheet" type="text/css" href="_static/alabaster.css?v=27fed22d" />
+    <script src="_static/documentation_options.js?v=4d183cd4"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="canopy_factory.crops package" href="canopy_factory.crops.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="canopy-factory-raytrace-package">
+<h1>canopy_factory.raytrace package<a class="headerlink" href="#canopy-factory-raytrace-package" title="Link to this heading">¶</a></h1>
+<section id="submodules">
+<h2>Submodules<a class="headerlink" href="#submodules" title="Link to this heading">¶</a></h2>
+</section>
+<section id="module-canopy_factory.raytrace.base">
+<span id="canopy-factory-raytrace-base-module"></span><h2>canopy_factory.raytrace.base module<a class="headerlink" href="#module-canopy_factory.raytrace.base" title="Link to this heading">¶</a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">canopy_factory.raytrace.base.</span></span><span class="sig-name descname"><span class="pre">RayTracerBase</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geometryids</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase" title="Link to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="canopy_factory.html#canopy_factory.utils.RegisteredClassBase" title="canopy_factory.utils.RegisteredClassBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">RegisteredClassBase</span></code></a></p>
+<p>Base class for ray tracers.</p>
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_direction">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_direction</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_direction" title="Link to this definition">¶</a></dt>
+<dd><p>Unit vector for camera’s pointing direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_distance">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_distance</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_distance" title="Link to this definition">¶</a></dt>
+<dd><p>Distance between the camera and the scene scenter.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_location">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_location</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_location" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of the camera.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_right">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_right</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_right" title="Link to this definition">¶</a></dt>
+<dd><p>Unit vector for camera’s right direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_scene_dims">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_scene_dims</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_scene_dims" title="Link to this definition">¶</a></dt>
+<dd><p>Scene dimensions parallel to the image plant.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.camera_up">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_up</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.camera_up" title="Link to this definition">¶</a></dt>
+<dd><p>Unit vector in the camera’s up direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.clipping_distance">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">clipping_distance</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.clipping_distance" title="Link to this definition">¶</a></dt>
+<dd><p>Maximum distance of any scene limits from the scene
+center along the camera line-of-sight.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.coverage">
+<span class="sig-name descname"><span class="pre">coverage</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.coverage"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.coverage" title="Link to this definition">¶</a></dt>
+<dd><p>Compute the scene coverage.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Percent of rays that hit the plants.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.east">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">east</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.east" title="Link to this definition">¶</a></dt>
+<dd><p>Vector direction of east in the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.face2vertex">
+<span class="sig-name descname"><span class="pre">face2vertex</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">face_scalar</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'average'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.face2vertex"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.face2vertex" title="Link to this definition">¶</a></dt>
+<dd><p>Convert an array of scalars for each face to an array of
+scalars for each vertex.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>face_scalar</strong> (<em>np.ndarray</em>) – Array of scalars for each face.</p></li>
+<li><p><strong>method</strong> (<em>str</em><em>, </em><em>optional</em>) – <p>Method to use to map from face values
+to vertex values.:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="s1">&#39;average&#39;</span><span class="p">:</span> <span class="n">Average</span> <span class="n">over</span> <span class="n">the</span> <span class="n">values</span> <span class="k">for</span> <span class="n">each</span> <span class="n">face</span> <span class="n">that</span>
+    <span class="n">vertices</span> <span class="n">are</span> <span class="n">part</span> <span class="n">of</span><span class="o">.</span>
+<span class="s1">&#39;deposit&#39;</span><span class="p">:</span> <span class="n">Split</span> <span class="n">the</span> <span class="n">values</span> <span class="k">for</span> <span class="n">each</span> <span class="n">face</span> <span class="n">amongst</span> <span class="n">its</span>
+    <span class="n">vertices</span> <span class="n">additively</span><span class="o">.</span>
+</pre></div>
+</div>
+</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Array of scalars for each vertex.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.field_scene_model">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">field_scene_model</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.field_scene_model" title="Link to this definition">¶</a></dt>
+<dd><p>Field scene properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#canopy_factory.raytrace.base.SceneModel" title="canopy_factory.raytrace.base.SceneModel">SceneModel</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.finalize_face_index">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">finalize_face_index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">Nface</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shift</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.finalize_face_index"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.finalize_face_index" title="Link to this definition">¶</a></dt>
+<dd><p>Convert a face index to a numpy array.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>idx</strong> (<em>dict</em>) – Dictionary of indices created when selecting a
+subset of a mesh.</p></li>
+<li><p><strong>Nface</strong> (<em>int</em>) – Number of faces in the mesh.</p></li>
+<li><p><strong>shift</strong> (<em>int</em><em>, </em><em>optional</em>) – Factor that should be added to the
+final index.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Face indices selected by idx.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.geometryid_order">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">geometryid_order</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.geometryid_order" title="Link to this definition">¶</a></dt>
+<dd><p>Set of IDs that should be used to split the geometry
+into parts.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>list</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.ground">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ground</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.ground" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of the scene center on the ground.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.ground_origin">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ground_origin</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.ground_origin" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of the scene center on the ground.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_center">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_center</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_center" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of the image’s center.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_distance">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_distance</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_distance" title="Link to this definition">¶</a></dt>
+<dd><p>Distance of the image plane from the camera.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_height">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_height</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_height" title="Link to this definition">¶</a></dt>
+<dd><p>Image height.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_nx">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_nx</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_nx" title="Link to this definition">¶</a></dt>
+<dd><p>Number of pixels in the x direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>int</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_ny">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_ny</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_ny" title="Link to this definition">¶</a></dt>
+<dd><p>Number of pixels in the y direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>int</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.image_width">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">image_width</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.image_width" title="Link to this definition">¶</a></dt>
+<dd><p>Image width.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.layout_scene_model">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">layout_scene_model</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.layout_scene_model" title="Link to this definition">¶</a></dt>
+<dd><p>Field scene properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#canopy_factory.raytrace.base.SceneModel" title="canopy_factory.raytrace.base.SceneModel">SceneModel</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.mesh_item">
+<span class="sig-name descname"><span class="pre">mesh_item</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">key</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.mesh_item"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.mesh_item" title="Link to this definition">¶</a></dt>
+<dd><p>Get the portion of the mesh corresponding to a key specifying
+which part of the geometry should be selected.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>key</strong> (<em>tuple</em><em>, </em><em>None</em>) – Key specifying a part of the geometry.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Mesh dictionary for selected part of the geometry.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>dict</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.mesh_keys">
+<span class="sig-name descname"><span class="pre">mesh_keys</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.mesh_keys"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.mesh_keys" title="Link to this definition">¶</a></dt>
+<dd><p>Get the set of keys splitting up the mesh geometry into
+parts.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Keys.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>list</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.north">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">north</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.north" title="Link to this definition">¶</a></dt>
+<dd><p>Vector direction of north in the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.nvirtual">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">nvirtual</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.nvirtual" title="Link to this definition">¶</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.parse_axis">
+<span class="sig-name descname"><span class="pre">parse_axis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.parse_axis"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.parse_axis" title="Link to this definition">¶</a></dt>
+<dd><p>Parse axis values that specify direction relative to the
+scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>x</strong> (<em>str</em>) – Input string.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Axis vector.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.periodic_shifts">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">periodic_shifts</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.periodic_shifts" title="Link to this definition">¶</a></dt>
+<dd><p>Shifts for positions of periodic plants.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.plant_triangles">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">plant_triangles</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.plant_triangles" title="Link to this definition">¶</a></dt>
+<dd><p>Yields tuples of plant ID &amp; arrays of triangles for the
+faces in that plant.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.ray_directions">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_directions</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.ray_directions" title="Link to this definition">¶</a></dt>
+<dd><p>Ray directions.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.ray_lengths">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_lengths</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.ray_lengths" title="Link to this definition">¶</a></dt>
+<dd><p>Ray lengths.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.ray_origins">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_origins</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.ray_origins" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of ray origins.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.raytrace">
+<span class="sig-name descname"><span class="pre">raytrace</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">query</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.raytrace"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.raytrace" title="Link to this definition">¶</a></dt>
+<dd><p>Run the ray tracer and get values for each face.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>query</strong> (<em>str</em>) – Type of raytrace operation that should be
+performed.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Ray tracer results for each face.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.real_scene_model">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">real_scene_model</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.real_scene_model" title="Link to this definition">¶</a></dt>
+<dd><p>Scene properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#canopy_factory.raytrace.base.SceneModel" title="canopy_factory.raytrace.base.SceneModel">SceneModel</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.render">
+<span class="sig-name descname"><span class="pre">render</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.render"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.render" title="Link to this definition">¶</a></dt>
+<dd><p>Image the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>values</strong> (<em>np.ndarray</em>) – Values on each face that should be used
+when imaging the scene.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Ray tracer results for each pixel.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.resolution">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">resolution</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.resolution" title="Link to this definition">¶</a></dt>
+<dd><p>Number of pixels per cm that image should be rendered
+will.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.select_faces">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">select_faces</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">continuous</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dont_prune_vertices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.select_faces"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.select_faces" title="Link to this definition">¶</a></dt>
+<dd><p>Select a subset of the faces in a mesh.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>mesh_dict</strong> (<em>dict</em>) – Dictionary of mesh properties.</p></li>
+<li><p><strong>cond</strong> (<em>np.ndarray</em>) – Condition that should be used to select
+the faces.</p></li>
+<li><p><strong>continuous</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, the faces and vertices
+for which the condition is True are continuous.</p></li>
+<li><p><strong>dont_prune_vertices</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, vertices that
+are not selected are not removed.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><dl class="simple">
+<dt>Dictionary of mesh properties with only the selected</dt><dd><p>faces.</p>
+</dd>
+</dl>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>dict</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.select_vertices">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">select_vertices</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cond</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">continuous</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#RayTracerBase.select_vertices"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.select_vertices" title="Link to this definition">¶</a></dt>
+<dd><p>Select a subset of the vertices in a mesh.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>mesh_dict</strong> (<em>dict</em>) – Dictionary of mesh properties.</p></li>
+<li><p><strong>cond</strong> (<em>np.ndarray</em>) – Condition that should be used to select
+the vertices.</p></li>
+<li><p><strong>continuous</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, the faces and vertices
+for which the condition is True are continuous.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><dl class="simple">
+<dt>Dictionary of mesh properties with only the selected</dt><dd><p>vertices.</p>
+</dd>
+</dl>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>dict</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.up">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">up</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.up" title="Link to this definition">¶</a></dt>
+<dd><p>Vector direction of up in the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.virtual_scene_model">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">virtual_scene_model</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.virtual_scene_model" title="Link to this definition">¶</a></dt>
+<dd><p>Virtual scene properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#canopy_factory.raytrace.base.SceneModel" title="canopy_factory.raytrace.base.SceneModel">SceneModel</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.virtual_shifts">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">virtual_shifts</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.virtual_shifts" title="Link to this definition">¶</a></dt>
+<dd><p>Shifts for positions of virtual plants.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.zenith">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">zenith</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.zenith" title="Link to this definition">¶</a></dt>
+<dd><p>Vector from the ground in the up direction with
+a length equal to the farthest point in the scene from the
+ground</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.RayTracerBase.zenith_origin">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">zenith_origin</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.RayTracerBase.zenith_origin" title="Link to this definition">¶</a></dt>
+<dd><p>Vector from the ground in the up direction with
+a length equal to the farthest point in the scene from the
+ground</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.SceneModel">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">canopy_factory.raytrace.base.</span></span><span class="sig-name descname"><span class="pre">SceneModel</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mins</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">maxs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/base.html#SceneModel"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.base.SceneModel" title="Link to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="canopy_factory.html#canopy_factory.utils.RegisteredClassBase" title="canopy_factory.utils.RegisteredClassBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">RegisteredClassBase</span></code></a></p>
+<p>Container for scene properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>mins</strong> (<em>np.ndarray</em>) – Minimum bounds of scene in each dimension.</p></li>
+<li><p><strong>maxs</strong> (<em>np.ndarray</em>) – Maximum bounds of scene in each dimension.</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.SceneModel.center">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">center</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.SceneModel.center" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of the scene’s center.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.SceneModel.dim">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dim</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.SceneModel.dim" title="Link to this definition">¶</a></dt>
+<dd><p>Scene’s dimensions in each direction.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.base.SceneModel.limits">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">limits</span></span><a class="headerlink" href="#canopy_factory.raytrace.base.SceneModel.limits" title="Link to this definition">¶</a></dt>
+<dd><p>Corners of a box containing the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="module-canopy_factory.raytrace.embree">
+<span id="canopy-factory-raytrace-embree-module"></span><h2>canopy_factory.raytrace.embree module<a class="headerlink" href="#module-canopy_factory.raytrace.embree" title="Link to this heading">¶</a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.embree.EmbreeRayTracer">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">canopy_factory.raytrace.embree.</span></span><span class="sig-name descname"><span class="pre">EmbreeRayTracer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geometryids</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/embree.html#EmbreeRayTracer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.embree.EmbreeRayTracer" title="Link to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#canopy_factory.raytrace.base.RayTracerBase" title="canopy_factory.raytrace.base.RayTracerBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">RayTracerBase</span></code></a></p>
+<p>Raytracer using embree directly.</p>
+</dd></dl>
+
+</section>
+<section id="module-canopy_factory.raytrace.hothouse">
+<span id="canopy-factory-raytrace-hothouse-module"></span><h2>canopy_factory.raytrace.hothouse module<a class="headerlink" href="#module-canopy_factory.raytrace.hothouse" title="Link to this heading">¶</a></h2>
+<dl class="py class">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">canopy_factory.raytrace.hothouse.</span></span><span class="sig-name descname"><span class="pre">HothouseRayTracer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geometryids</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer" title="Link to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#canopy_factory.raytrace.base.RayTracerBase" title="canopy_factory.raytrace.base.RayTracerBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">RayTracerBase</span></code></a></p>
+<p>Raytrace using hothouse.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.RTC_INVALID_GEOMETRY_ID">
+<span class="sig-name descname"><span class="pre">RTC_INVALID_GEOMETRY_ID</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">np.int32(-1)</span></em><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.RTC_INVALID_GEOMETRY_ID" title="Link to this definition">¶</a></dt>
+<dd></dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.camera_blaster">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">camera_blaster</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.camera_blaster" title="Link to this definition">¶</a></dt>
+<dd><p>Blaster for camera.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>hothouse.blaster.RayBlaster</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.coverage">
+<span class="sig-name descname"><span class="pre">coverage</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.coverage"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.coverage" title="Link to this definition">¶</a></dt>
+<dd><p>Compute the scene coverage.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Percent of rays that hit the plants.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>float</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.coverage_blaster">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">coverage_blaster</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.coverage_blaster" title="Link to this definition">¶</a></dt>
+<dd><p>Blaster for coverage.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>hothouse.blaster.OrthographicRayBlaster</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.get_solar_blaster">
+<span class="sig-name descname"><span class="pre">get_solar_blaster</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.get_solar_blaster"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.get_solar_blaster" title="Link to this definition">¶</a></dt>
+<dd><p>Create a hothouse SunRayBlaster.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>**kwargs</strong> – All keyword arguments are passed to the
+SunRayBlaster constructor after supplementing missing
+arguments with scene properties.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Blaster instance.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>SunRayBlaster</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.plantid2geomIDs">
+<span class="sig-name descname"><span class="pre">plantid2geomIDs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">plantid</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_virtual</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.plantid2geomIDs"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.plantid2geomIDs" title="Link to this definition">¶</a></dt>
+<dd><p>Get the scene geometry IDs for a given plant ID including both
+real and virtual plant geometries.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>plantid</strong> (<em>int</em>) – Plant ID to get geometry IDs for.</p></li>
+<li><p><strong>exclude_virtual</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, don’t include
+virtual plant geometries.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Geometry IDs.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>list</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.point_source_blaster">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">point_source_blaster</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.point_source_blaster" title="Link to this definition">¶</a></dt>
+<dd><p>Blaster for a point
+source.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>hothouse.blaster.SphericalRayBlaster</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_directions">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_directions</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_directions" title="Link to this definition">¶</a></dt>
+<dd><p>Ray directions.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_lengths">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_lengths</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_lengths" title="Link to this definition">¶</a></dt>
+<dd><p>Ray lengths.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_origins">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_origins</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_origins" title="Link to this definition">¶</a></dt>
+<dd><p>Coordinates of ray origins.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_properties">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ray_properties</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.ray_properties" title="Link to this definition">¶</a></dt>
+<dd><p>Ray properties.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>tuple</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.raytrace">
+<span class="sig-name descname"><span class="pre">raytrace</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">query</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.raytrace"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.raytrace" title="Link to this definition">¶</a></dt>
+<dd><p>Run the ray tracer and get values for each face.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>query</strong> (<em>str</em>) – Type of raytrace operation that should be
+performed.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Ray tracer results for each face.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.raytrace_sample">
+<span class="sig-name descname"><span class="pre">raytrace_sample</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hits</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">values</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">value_miss</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">nan</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'accumulate'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.raytrace_sample"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.raytrace_sample" title="Link to this definition">¶</a></dt>
+<dd><p>Sample a set of values for each face in the mesh based on
+the faces hit by the ray tracer.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>hits</strong> (<em>dict</em>) – Raytracer result.</p></li>
+<li><p><strong>values</strong> (<em>np.ndarray</em>) – Array of values at each face.</p></li>
+<li><p><strong>value_miss</strong> (<em>np.float64</em><em>, </em><em>optional</em>) – Value to use when a ray
+did not hit a face.</p></li>
+<li><p><strong>method</strong> (<em>str</em><em>, </em><em>optional</em>) – How the values should be sampled.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Result for each ray.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.render">
+<span class="sig-name descname"><span class="pre">render</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">values</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">value_miss</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">blaster</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/canopy_factory/raytrace/hothouse.html#HothouseRayTracer.render"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.render" title="Link to this definition">¶</a></dt>
+<dd><p>Image the scene.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>values</strong> (<em>np.ndarray</em>) – Values on each face that should be used
+when imaging the scene.</p></li>
+<li><p><strong>value_miss</strong> (<em>float</em><em>, </em><em>optional</em>) – Value that should be used for
+pixels that do not hit anything.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Ray tracer results for each pixel.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.scene">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">scene</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.scene" title="Link to this definition">¶</a></dt>
+<dd><p>Scene containing geometry.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>hothouse.scene.Scene</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.solar_blaster">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">solar_blaster</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.solar_blaster" title="Link to this definition">¶</a></dt>
+<dd><p>Blaster for sun.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>hothouse.blaster.SolarBlaster</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="canopy_factory.raytrace.hothouse.HothouseRayTracer.solar_model">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">solar_model</span></span><a class="headerlink" href="#canopy_factory.raytrace.hothouse.HothouseRayTracer.solar_model" title="Link to this definition">¶</a></dt>
+<dd><p>Model for the sun using pvlib.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="canopy_factory.html#canopy_factory.utils.SolarModel" title="canopy_factory.utils.SolarModel">SolarModel</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="module-canopy_factory.raytrace">
+<span id="module-contents"></span><h2>Module contents<a class="headerlink" href="#module-canopy_factory.raytrace" title="Link to this heading">¶</a></h2>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="index.html">canopy_factory</a></h1>
+
+
+
+
+
+
+
+
+
+<search id="searchbox" style="display: none" role="search">
+    <div class="searchformwrapper">
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="canopy_factory.html">canopy_factory package</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="canopy_factory.html#subpackages">Subpackages</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.arguments">canopy_factory.arguments module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.cli">canopy_factory.cli module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.config">canopy_factory.config module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.light_sources">canopy_factory.light_sources module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.simulate">canopy_factory.simulate module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory.utils">canopy_factory.utils module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="canopy_factory.html#module-canopy_factory">Module contents</a></li>
+</ul>
+</li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="index.html">Documentation overview</a><ul>
+  <li><a href="canopy_factory.html">canopy_factory package</a><ul>
+      <li>Previous: <a href="canopy_factory.crops.html" title="previous chapter">canopy_factory.crops package</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Meagan Lang.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 8.3.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+      |
+      <a href="_sources/canopy_factory.raytrace.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>
