@@ -172,7 +172,8 @@ class ParametrizeCropTask(TaskBase):
             self.args = copy.deepcopy(self.args)
             self.args.id = utils.DataProcessor.base_id_from_file(
                 getattr(self.args, 'data', None), crop=self.args.crop,
-                year=(None if self.args.data_year.startswith('all')
+                year=(None if (isinstance(self.args.data_year, str)
+                               and self.args.data_year.startswith('all'))
                       else self.args.data_year),
             )
         self.finalize()

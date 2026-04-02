@@ -129,7 +129,6 @@ class HothouseRayTracer(RayTracerBase):
             height=self.args.plot_length,
             nx=self.args.nrays,
             ny=self.args.nrays,
-            multibounce=False,
         )
         return out
 
@@ -194,7 +193,7 @@ class HothouseRayTracer(RayTracerBase):
             direct_ppfd=direct_ppfd,
             diffuse_ppfd=diffuse_ppfd,
             nx=self.args.nrays, ny=self.args.nrays,
-            multibounce=self.args.multibounce, **kws
+            **kws
         )
 
     def get_solar_blaster(self, **kwargs):
@@ -222,7 +221,6 @@ class HothouseRayTracer(RayTracerBase):
             solar_altitude=self.solar_model.apparent_elevation,
             solar_azimuth=self.solar_model.azimuth,
             nx=self.args.nrays, ny=self.args.nrays,
-            multibounce=self.args.multibounce,
         )
         if self.args.periodic_canopy == 'rays':
             kws.update(
@@ -380,10 +378,11 @@ class HothouseRayTracer(RayTracerBase):
             component_values = self.scene.compute_flux_density(
                 self.solar_blaster,
                 any_direction=self.args.any_direction,
+                multibounce=self.args.multibounce,
             )
         elif query == 'hits':
             component_values = self.scene.compute_hit_count(
-                self.solar_blaster)
+                self.solar_blaster, multibounce=self.args.multibounce)
         else:
             raise ValueError(f"Unsupported ray tracer query "
                              f"\"{query}\"")
@@ -462,6 +461,7 @@ class HothouseRayTracer(RayTracerBase):
             if hasattr(self.scene, 'buffer_as_primary'):
                 prev = self.scene.buffer_as_primary
                 self.scene.buffer_as_primary = True
+            # TODO: Pass multibounce to allow reflection etc.
             hits = blaster.compute_count(self.scene)
         finally:
             if hasattr(self.scene, 'buffer_as_primary'):

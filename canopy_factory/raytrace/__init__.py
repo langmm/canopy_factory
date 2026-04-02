@@ -558,23 +558,26 @@ class RayTraceTask(TaskBase):
                 }
             return []
 
+        def to_value(v, v0):
+            out = v if not (isinstance(v, np.ndarray) and v.shape) else v.T
+            if isinstance(v, units.QuantityArray):
+                out = out.value
+            if isinstance(v0, np.ndarray) and not isinstance(out, np.ndarray):
+                out = out * np.ones(v0.shape)
+            return out
+
         if isinstance(values[0], dict):
             out = {
-                k: np.vstack([
-                    x[k] if not (isinstance(x[k], np.ndarray)
-                                 and x[k].shape)
-                    else x[k].T
-                    for x in values
-                ]) for k in values[0].keys()
+                k: np.vstack([to_value(x[k], values[0][k])
+                              for x in values])
+                for k in values[0].keys()
             }
             for k, v in values[0].items():
                 if isinstance(v, units.QuantityArray):
                     out[k] = units.QuantityArray(out[k], v.units)
         else:
             out = np.vstack([
-                x if not (isinstance(x, np.ndarray) and x.shape)
-                else x.T
-                for x in values
+                to_value(x, values[0]) for x in values
             ])
             if isinstance(values[0], units.QuantityArray):
                 out = units.QuantityArray(out, values[0].units)

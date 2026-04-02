@@ -4341,15 +4341,15 @@ class PlantGenerator(ParameterCollection):
             else:
                 mods['default'] = ids[0]
             dst._arguments['id'].modify(**mods)
-        # years = DataProcessor.available_years(cls._name)
-        # if years:
-        #     mods = {'append_choices': years}
-        #     if 'data_year' in cls._defaults:
-        #         assert cls._defaults['data_year'] in years
-        #         mods['default'] = cls._defaults['data_year']
-        #     else:
-        #         mods['default'] = years[0]
-        #     dst._arguments['data_year'].modify(**mods)
+        years = DataProcessor.available_years(cls._name)
+        if years:
+            mods = {'append_choices': years}
+            # if 'data_year' in cls._defaults:
+            #     assert cls._defaults['data_year'] in years
+            #     mods['default'] = cls._defaults['data_year']
+            # else:
+            #     mods['default'] = years[0]
+            dst._arguments['data_year'].modify(**mods)
 
     @property
     def lsystem(self):
