@@ -1,5 +1,12 @@
 # Minimal makefile for Sphinx documentation
 #
+# Initial set up
+#   git clone git@github.com:langmm/canopy_factory.git $(REPODIR)
+#   cd $(REPODIR)
+#   git checkout --orphan gh-pages
+#   git rm -r --cached .
+#   git commit --allow-empty -m "Initial empty gh-pages branch"
+#   git push origin gh-pages
 
 # You can set these variables from the command line, and also
 # from the environment for the first two.

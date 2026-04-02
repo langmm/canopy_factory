@@ -1,7 +1,7 @@
 {
+    "id": "B73_rdla",
     "data": "maize_2024.json",
     "data_year": "2024",
-    "id": "B73_rdla",
     "Plastocron": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAACEA=-YGG-",
     "AgeInc": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAA8D8=-YGG-",
     "AgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAANEA=-YGG-",
@@ -59,8 +59,7 @@
     "InternodeColorFuncVarMax": "AgeRemove",
     "NodeElements": [
         "Cotyledon",
-        "Leaf",
-        "Branch"
+        "Leaf"
     ],
     "LeafMethod": "sweep",
     "LeafUnfurledLength": 0.3,

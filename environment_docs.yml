@@ -1,0 +1,7 @@
+# Dependencies required to build docs
+name: canopy
+channels:
+  - conda-forge
+dependencies:
+  - make
+  - sphinx

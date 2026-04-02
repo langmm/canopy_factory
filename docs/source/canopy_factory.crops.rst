@@ -36,6 +36,14 @@ canopy\_factory.crops.monocot module
    :show-inheritance:
    :undoc-members:
 
+canopy\_factory.crops.tomato module
+-----------------------------------
+
+.. automodule:: canopy_factory.crops.tomato
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 Module contents
 ---------------
 

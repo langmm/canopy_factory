@@ -32,7 +32,10 @@ class PackageConfig(ConfigParser, object):
             (k, os.path.join(v, self.fbase))
             for k, v in self.directories.items()
         ])
-        super(PackageConfig, self).__init__()
+        super(PackageConfig, self).__init__(
+            allow_no_value=True,
+            converters={'json': rapidjson.loads},
+        )
         self.read()
         if not os.path.isfile(self.files['user']):
             self.write(self.files['user'])
@@ -81,6 +84,20 @@ class PackageConfig(ConfigParser, object):
             fname = self.files['local']
         with open(fname, 'w') as fd:
             super(PackageConfig, self).write(fd)
+
+    def set(self, section, option, value=None):
+        r"""Set an option in a section.
+
+        Args:
+            section (str): Section name.
+            option (str): Option name.
+            value (object, optional): Option value. None indicates an
+                empty option value.
+
+        """
+        if not (value is None or isinstance(value, str)):
+            value = rapidjson.dumps(value)
+        return super(PackageConfig, self).set(section, option, value)
 
     def reset(self):
         r"""Clear the current parameters."""

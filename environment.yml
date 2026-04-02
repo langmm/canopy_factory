@@ -1,13 +1,16 @@
 name: canopy
 channels:
   - conda-forge
-  - fredboudon
+  - openalea3
+  # - fredboudon
 dependencies:
+  # - embreex  # Not available on conda-forge, can be removed once hothouse is published
+  # - hothouse
   - ffmpeg
   - imageio
   - matplotlib
-  - numpy < 2  # Compatibility with pandas
-  # - openalea.lpy  # Current conda install fails as of 9/11/2025
+  - numpy  # Compatibility with pandas
+  - openalea.lpy  # Current conda install from fredboudon fails as of 9/11/2025
   - pandas
   - pvlib
   - python
@@ -15,7 +18,9 @@ dependencies:
   - pytest
   - pyyaml
   - scipy
-  - yggdrasil
+  - yggdrasil-rapidjson
+  # - yggdrasil-python-rapidjson  # Waiting on conda-forge feedstock
+  # - yggdrasil
   # yggdrasil dependencies
   - czmq
   # - ePhotosynthesis_C  # Once this is released

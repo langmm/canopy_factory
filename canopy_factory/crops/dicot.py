@@ -46,6 +46,7 @@ class DicotGenerator(PlantGenerator):
     _defaults = dict(
         PlantGenerator._defaults,
         NMax=10,
+        NodeElements=['Cotyledon', 'Leaf', 'Branch', 'Fruit'],
         # Petiole parameters
         PetioleLength=0.5,
         PetioleWidth=0.125,

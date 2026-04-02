@@ -20,6 +20,7 @@ from canopy_factory.utils import (
     cached_property, DataProcessor,
     DictWrapper, DictSet, PrefixedDict, SimpleWrapper, temporary_prefix,
 )
+from canopy_factory.arguments import ArgumentDescription
 
 
 ############################################################
@@ -38,15 +39,19 @@ class PlantParameterBase(SubparserBase):
     _property_dependencies = {}
     _property_dependencies_defaults = {}
     _unit_dimension = None
+    _argument_properties = []
+    _args_type = None
 
     @staticmethod
     def _add_parameter_arguments(cls, dst, name=None,
                                  existing=None, **kws):
         if existing is None:
-            existing = [x[0][0] for x in dst._arguments]
+            existing = [x.dest for x in dst._arguments]
         if name is None:
             name = ''
-        for k, v in cls._properties.items():
+        # for k, v in cls._properties.items():  # Add all properties
+        for k in cls._argument_properties:
+            v = cls._properties[k]
             cls._add_parameter_argument(cls, dst, name, existing,
                                         k, v, **kws)
 
@@ -54,7 +59,7 @@ class PlantParameterBase(SubparserBase):
     def _add_parameter_argument(cls, dst, name, existing, k, v,
                                 parents=None, dependencies=None, **kws):
         if existing is None:
-            existing = [x[0][0] for x in dst._arguments]
+            existing = [x.dest for x in dst._arguments]
         if name is None:
             name = ''
         kname = name if name.endswith(k) else name + k
@@ -74,9 +79,9 @@ class PlantParameterBase(SubparserBase):
                                          parents=parents,
                                          dependencies=dependencies,
                                          **kws)
-        if new_arg[0][0] not in existing:
+        if new_arg.dest not in existing:
             dst._arguments.append(new_arg)
-            existing.append(new_arg[0][0])
+            existing.append(new_arg.dest)
 
     @staticmethod
     def _property2argument(cls, dst, name, k, json,
@@ -125,7 +130,7 @@ class PlantParameterBase(SubparserBase):
             kwargs['dest'] = kname
         if any(dependencies):
             kwargs['dependencies'] = dependencies
-        return ((f'--{kname_arg}', ), kwargs)
+        return ArgumentDescription((f'--{kname_arg}', ), kwargs)
 
     @staticmethod
     def _format_help(cls, dst, msg, name, k, parents=None):
@@ -262,7 +267,7 @@ class ParameterValues(DictSet):
         super(ParameterValues, self).__init__(members)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
         return self.simple
 
@@ -282,7 +287,8 @@ class ParameterValues(DictSet):
         r"""str: Current parameter being generated."""
         return self.instance.current_param
 
-    def get(self, k, default=NoDefault, return_other=None, **kwargs):
+    def get(self, k, default=NoDefault, return_other=None,
+            return_container=False, **kwargs):
         r"""Get a parameter value.
 
         Args:
@@ -291,6 +297,8 @@ class ParameterValues(DictSet):
                 parameter is not set.
             return_other (str, optional): Name of what should be
                 returned instead of the parameter value.
+            return_container (bool, optional): If True, return the
+                parameter that contains k.
             **kwargs: Additional keyword arguments are passed to any
                 nested calls to get or generate.
 
@@ -299,6 +307,8 @@ class ParameterValues(DictSet):
 
         """
         if k in ParameterIndex.parameter_names:
+            assert return_other is None
+            assert not return_container
             v = self.index[k]
             if v is None:
                 if default is NoDefault:
@@ -308,20 +318,27 @@ class ParameterValues(DictSet):
         v = NoDefault
         if return_other not in [None, 'instance']:
             v = self.get(k, default=default, return_other='instance',
-                         **kwargs)
+                         return_container=return_container, **kwargs)
             if isinstance(v, PlantParameterBase):
                 v = getattr(v, return_other)
             return v
         try:
             if k == '' and self.current_param != self.instance.fullname:
                 v = self.instance
+                if return_container:
+                    v = v.parent
             else:
                 v = self[k]
+                if return_container:
+                    v = self.instance
         except KeyError:
             if v is NoDefault and k in self.instance.component_parameters:
                 try:
                     v = self.instance.component.get(
-                        k, return_other=return_other, **kwargs)
+                        k, return_other=return_other,
+                        return_container=return_container,
+                        **kwargs
+                    )
                 except KeyError:
                     pass
             if v is NoDefault and k in self.instance.external_parameters:
@@ -330,14 +347,16 @@ class ParameterValues(DictSet):
                 else:
                     src = self.instance.root
                 try:
-                    v = src.get(k, return_other='instance')
+                    v = src.get(k, return_other='instance',
+                                return_container=return_container)
                 except KeyError:
                     pass
             if v is NoDefault:
                 for kk, vv in self.nested.items():
                     if vv.prefixes(k):
                         v = vv.get(
-                            vv.remove_prefix(k), return_other='instance')
+                            vv.remove_prefix(k), return_other='instance',
+                            return_container=return_container)
                         break
             if v is NoDefault:
                 if default is NoDefault:
@@ -365,21 +384,21 @@ class ParameterDict(DictSet):
         self.previous = PrefixedDict(DictSet([]), immutable=True, **kwargs)
         self.defaults = PrefixedDict(DictSet([]), immutable=True, **kwargs)
         self.component = None
-        self._dest = PrefixedDict({}, **kwargs)
+        self._storage = PrefixedDict({}, **kwargs)
         members = [
-            self.provided, self.previous, self._dest, self.defaults,
+            self.provided, self.previous, self._storage, self.defaults,
         ]
         super(ParameterDict, self).__init__(members, **kwargs)
 
     @property
-    def dest(self):
+    def storage(self):
         r"""DictWrapper: Destination dictionary for added keys."""
-        return self._dest
+        return self._storage
 
     @property
     def prefix(self):
         r"""str: Current prefix."""
-        return self.dest.prefix
+        return self.storage.prefix
 
     @contextlib.contextmanager
     def temporary_source_prefix(self, prefix, **kwargs):
@@ -407,7 +426,7 @@ class ParameterDict(DictSet):
         Args:
             cls (PlantParameterBase): Parameter instance that is being
                 updated. Default parameters will be added to the current
-                set based on the existing parameters and the class's
+                set based on the existing parameters and the class\'s
                 prefix will be added to the dictionary prefix within the
                 context.
 
@@ -645,7 +664,7 @@ class ParameterIndex(SimpleWrapper):
         w (int): Index within component whorl.
         unit_system (, optional): Unit system that should be used.
 
-    ClassAttributes:
+    Class Attributes:
         parameter_names (list): Variables that are used by the index.
 
     """
@@ -744,7 +763,7 @@ class SimplePlantParameter(PlantParameterBase):
             kwargs will be used.
         parent (PlantParameterBase, optional): Parent parameter that
             uses this parameter.
-        defaults (dict, optional): Defaults (with only this parameter's
+        defaults (dict, optional): Defaults (with only this parameter\'s
             prefixes) that should be used for parameters missing from
             param.
         seed (int, optional): Seed that should be used for the random
@@ -761,13 +780,13 @@ class SimplePlantParameter(PlantParameterBase):
         required (bool, optional): If True, this parameter is required
             and errors will be raised if it is not fully specified.
         **kwargs: Additional keyword arguments are only allowed for
-            root parameters (that don't have a parent) in which case
+            root parameters (that don\'t have a parent) in which case
             they are treated as param.
 
     Attributes:
         parameters (dict): Child parameters used by this parameter.
 
-    ClassAttributes:
+    Class Attributes:
         _name (str): Name that should be used to register the class and
             be used as the default prefix.
         _properties (dict): Set of properties that control the parameter.
@@ -1084,7 +1103,7 @@ class SimplePlantParameter(PlantParameterBase):
                 be used as the prefix.
 
         Returns:
-            bool: True if k starts with this parameter's prefix.
+            bool: True if k starts with this parameter\'s prefix.
 
         """
         if use_fullname:
@@ -1137,7 +1156,9 @@ class SimplePlantParameter(PlantParameterBase):
         r"""Context with an updated index.
 
         Args:
-            *args, **kwargs: Arguments are used to create a
+            *args: Arguments are used to create a
+                ParameterIndex instance for the context.
+            **kwargs: Keyword arguments are used to create a
                 ParameterIndex instance for the context.
 
         """
@@ -1658,7 +1679,8 @@ class SimplePlantParameter(PlantParameterBase):
         Args:
             name (str): Base name for parameters.
             scope (str, optional): Scope for parameters that should
-                be returned. Options are:
+                be returned. Options are::
+
                   'all': Return all parameters.
                   'core': Return parameters only directly allowed by
                       this parameter.
@@ -1925,7 +1947,9 @@ class SimplePlantParameter(PlantParameterBase):
 
         Args:
             profile (str): Name of the profile that should be sampled.
-            *args, **kwargs: Additional arguments are passed to the
+            *args: Additional arguments are passed to the
+                generator method for the specified profile.
+            **kwargs: Additional keyword arguments are passed to the
                 generator method for the specified profile.
 
         """
@@ -2285,6 +2309,39 @@ class FunctionPlantParameter(OptionPlantParameter):
         the function applies."""
         return self.get('VarMin', None)
 
+    def normalize(self, v, func=None):
+        r"""Normalize the independent variable for this function.
+
+        Args:
+            v (object): Independent variable value to normalize.
+
+        Returns:
+            object: Normalized object.
+
+        """
+        # func = self.parameters['']
+        if func in ['one', 'zero', 'expression', 'alias']:
+            return v
+        vmin = None
+        vmax = None
+        vnorm = None
+        if self.maxvar is not None:
+            vmax = self.get(self.maxvar)
+            if v > vmax:
+                v = vmax
+        if self.minvar is not None:
+            vmin = self.get(self.minvar)
+            if v < vmin:
+                v = vmin
+        if self.normvar is not None:
+            vnorm = self.get(self.normvar)
+        elif vmin is not None and vmax is not None:
+            v = v - vmin
+            vnorm = vmax - vmin
+        if vnorm is not None:
+            v = v / vnorm
+        return v
+
     def _generate(self, **kwargs):
         r"""Generate this parameter.
 
@@ -2311,24 +2368,7 @@ class FunctionPlantParameter(OptionPlantParameter):
         if func == 'alias':
             return v
         v0 = v
-        vmin = None
-        vmax = None
-        vnorm = None
-        if self.maxvar is not None:
-            vmax = self.get(self.maxvar)
-            if v > vmax:
-                v = vmax
-        if self.minvar is not None:
-            vmin = self.get(self.minvar)
-            if v < vmin:
-                v = vmin
-        if self.normvar is not None:
-            vnorm = self.get(self.normvar)
-        elif vmin is not None and vmax is not None:
-            v = v - vmin
-            vnorm = vmax - vmin
-        if vnorm is not None:
-            v = v / vnorm
+        v = self.normalize(v, func=func)
         if callable(func):
             out = func(v)
         elif func == 'linear':
@@ -2381,10 +2421,7 @@ class FunctionPlantParameter(OptionPlantParameter):
             out = function(v)
         else:
             raise ValueError(f"Unsupported function name \"{func}\"")
-        self.log(f'{self.fullname}[{self.namevar}={v0} (v={v})] = {out} '
-                 f'(MIN: {self.minvar} = {vmin}, '
-                 f'MAX: {self.maxvar} = {vmax}, '
-                 f'NORM: {self.normvar} = {vnorm})')
+        self.log(f'{self.fullname}[{self.namevar}={v0} (v={v})] = {out}')
         return out
 
     @classmethod
@@ -2851,13 +2888,13 @@ class ScalarPlantParameter(SimplePlantParameter):
             out = vmin
         if vmax is not None and out > vmax:
             out = vmax
-        return out
+        return float(out)
 
 
 class CurvePlantParameter(SimplePlantParameter):
     r"""Class for a curve parameter.
 
-    ClassAttributes:
+    Class Attributes:
         _required_curve (list): Properties required when the curve is
             not generated from a curve patch.
         _required_patch (list): Properties required when the curve is
@@ -3401,7 +3438,7 @@ class Template3DPlantParameter(Template2DPlantParameter):
 class ParameterCollection(SimplePlantParameter):
     r"""Class for collection of parameters.
 
-    ClassAttributes:
+    Class Attributes:
         _parameters (dict): Mapping between parameter class names and
             lists of parameter names that should be included in this
             collection using that class.
@@ -3509,12 +3546,10 @@ class ComponentBase(SimplePlantParameter):
             ]
             if production:
                 out += [
-                    f'    print(f"Removing {self.name}[{k}={{{k}}}] P")',
                     '    produce *',
                 ]
             else:
                 out += [
-                    f'    print(f"Removing {self.name}[{k}={{{k}}}]")',
                     '    produce [/(0)]',
                 ]
         return out
@@ -3684,7 +3719,8 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
     @cached_property
     def index_parameters(self):
         r"""list: Set of index parameters that this parameter uses."""
-        out = copy.deepcopy(super(GeometricComponentBase, self).index_parameters)
+        out = copy.deepcopy(
+            super(GeometricComponentBase, self).index_parameters)
         if 'NDivide' in self.parameters and 'X' not in out:
             out.append('X')
         return out
@@ -3695,13 +3731,13 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         DX = 1.0 / self.get("NDivide")
         assert self.current_index['x'] is None
         try:
-            x = 0
+            x = 0.0
             while x <= 1:
                 self.current_index['x'] = x
                 yield x
                 if x == 1:
                     break
-                x = min(x + DX, 1)
+                x = min(x + DX, 1.0)
         finally:
             self.current_index['x'] = None
 
@@ -3747,10 +3783,6 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         args = self.lsystem_args(for_rule=for_rule)
         prefix = f'generator.{self.name}'
         out = []
-        if 'Color' in self.parameters:
-            out += [
-                f'nproduce SetColor({prefix}Color({args}))',
-            ]
         if 'RotationAngle' in self.parameters:
             out += [
                 f'nproduce /({prefix}RotationAngle({args}))',
@@ -3769,6 +3801,10 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
             if 'Profile' in self.parameters:
                 kout[0] += ' @Ge @Gc'
             out += kout
+        if 'Color' in self.parameters:
+            out += [
+                f'nproduce SetColor({prefix}Color({args}))',
+            ]
         method = self.get('Method')
         if method == 'nongeometric':
             pass
@@ -3888,6 +3924,7 @@ class WhorlComponent(SimplePlantParameter):
                     if x in self.root._components]
         out = []
         for element in elements:
+            assert element in self.root._components
             args = self.root.parameters[element].lsystem_args(for_rule=True)
             out += [
                 f'for w in range(generator.{element}WMax()):',
@@ -3906,9 +3943,7 @@ class NodeComponent(WhorlComponent):
     r"""Node component."""
 
     _name = 'Node'
-    _properties = {}
-    _required = []
-    _constants = {'Elements': ['Cotyledon', 'Leaf', 'Branch']}
+    _defaults = {'Elements': ['Cotyledon', 'Leaf', 'Branch', 'Fruit']}
 
 
 class LeafComponent(GeometricComponentBase):
@@ -4073,30 +4108,28 @@ class ApexComponent(ComponentBase):
         return out
 
 
+class PedicelComponent(PetioleComponent):
+    r"""Pedicel component."""
+
+    _name = 'Pedicel'
+
+
 class BudComponent(GeometricComponentBase):
     r"""Bud component."""
 
     _name = 'Bud'
-
-
-class PedicelComponent(GeometricComponentBase):
-    r"""Pedicel component."""
-
-    _name = 'Pedicel'
-    _properties = {
-        k: v for k, v in GeometricComponentBase._properties.items()
-        if k not in ['Angle', 'RotationAngle']
-    }
     _defaults = dict(
         GeometricComponentBase._defaults,
-        Method='cylinder',
+        Method='sphere',
     )
+    _subcomponents = ['Pedicel']
 
 
 class FlowerComponent(GeometricComponentBase):
     r"""Flower component."""
 
     _name = 'Flower'
+    _subcomponents = ['Pedicel']
 
 
 class FruitComponent(GeometricComponentBase):
@@ -4106,7 +4139,9 @@ class FruitComponent(GeometricComponentBase):
     _defaults = dict(
         GeometricComponentBase._defaults,
         Method='sphere',
+        Color=[255, 0, 0],
     )
+    _subcomponents = ['Pedicel']
 
 
 ###############################################
@@ -4116,7 +4151,7 @@ class FruitComponent(GeometricComponentBase):
 class PlantGenerator(ParameterCollection):
     r"""Base class for generating plants.
 
-    ClassAttributes:
+    Class Attributes:
         _plant_name (str): Name of the plant that this class will
             generate.
 
@@ -4127,6 +4162,7 @@ class PlantGenerator(ParameterCollection):
     _help = None
     _default = 'maize'
     _arguments = []
+    _argument_properties = ['id', 'data', 'data_year']
     _properties = dict(
         ParameterCollection._properties,
         data={
@@ -4217,8 +4253,8 @@ class PlantGenerator(ParameterCollection):
             )
             if component not in cls._required:
                 cls._required.append(component)
-        ParameterCollection._on_registration(cls)
         cls._arguments = []
+        ParameterCollection._on_registration(cls)
         cls._add_parameter_arguments(cls, cls)
 
     def __init__(self, param=None, seed=0, verbose=False,
@@ -4262,21 +4298,6 @@ class PlantGenerator(ParameterCollection):
         return None
 
     @classmethod
-    def ids_from_file(cls, fname):
-        r"""Determine all of the available ids from the provided file.
-
-        Args:
-            fname (str): Data file.
-
-        Returns:
-            list: Crop IDs.
-
-        """
-        if fname is None:
-            return []
-        return DataProcessor.from_file(fname).ids
-
-    @classmethod
     def parameters_from_file(cls, args, parameters):
         r"""Calculate parameters based on emperical data.
 
@@ -4306,54 +4327,29 @@ class PlantGenerator(ParameterCollection):
         r"""str: Crop class."""
         return self.get("id")
 
-    @classmethod
-    def add_arguments(cls, parser, **kwargs):
-        r"""Add arguments associated with this subparser to a parser.
-
-        Args:
-            parser (InstrumentedParser): Parser that the arguments
-                should be added to.
-            **kwargs: Additional keyword arguments are passed to parent
-                method.
-
-        """
-        super(PlantGenerator, cls).add_arguments(parser, **kwargs)
-        if not kwargs.get('only_subparser', False):
-            cls._add_ids_from_file(parser)
-
-    @classmethod
-    def _add_ids_from_file(cls, parser):
+    @staticmethod
+    def _add_parameter_arguments(cls, dst, **kws):
+        PlantParameterBase._add_parameter_arguments(cls, dst, **kws)
         if not cls._name:
             return
-        vparser = parser.get_subparser('crop', cls._name)
         ids = DataProcessor.available_ids(cls._name)
         if ids:
-            ids_action = vparser.find_argument('id')
-            ids_action.choices = (
-                ids + ids_action.choices if ids_action.choices
-                else ids
-            )
+            mods = {'append_choices': ids}
             if 'id' in cls._defaults:
                 assert cls._defaults['id'] in ids
-                ids_action.default = cls._defaults['id']
+                mods['default'] = cls._defaults['id']
             else:
-                ids_action.default = ids[0]
+                mods['default'] = ids[0]
+            dst._arguments['id'].modify(**mods)
         years = DataProcessor.available_years(cls._name)
         if years:
-            years_action = vparser.find_argument('data_year')
-            years_action.choices = (
-                years + years_action.choices if years_action.choices
-                else years
-            )
-            if 'data_year' in cls._defaults:
-                assert cls._defaults['data_year'] in years
-                years_action.default = cls._defaults['data_year']
-            else:
-                years_action.default = years[0]
-
-        available = set()
-        for action in vparser._actions:
-            available |= set(action.option_strings + [action.dest])
+            mods = {'append_choices': years}
+            # if 'data_year' in cls._defaults:
+            #     assert cls._defaults['data_year'] in years
+            #     mods['default'] = cls._defaults['data_year']
+            # else:
+            #     mods['default'] = years[0]
+            dst._arguments['data_year'].modify(**mods)
 
     @property
     def lsystem(self):

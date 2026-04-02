@@ -1,4 +1,4 @@
-# Dependencies required to build pyembree (and embree 2.*.*)
+# Dependencies required to build pyembree
 name: canopy
 channels:
   - conda-forge

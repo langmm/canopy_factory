@@ -20,6 +20,7 @@ class MonocotGenerator(PlantGenerator):
     _defaults = dict(
         PlantGenerator._defaults,
         NMax=10,
+        NodeElements=['Cotyledon', 'Leaf'],
         LeafAngle=30,
         LeafMethod='sweep',
         LeafLength=60.0,

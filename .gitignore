@@ -4,6 +4,11 @@ cplantbox/
 
 output/
 
+# Generated version
+_version.py
+
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
