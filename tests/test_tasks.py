@@ -11,6 +11,31 @@ from canopy_factory.cli import IterationTaskBase
 # - unit tests
 
 
+def test_nested(assert_nested_allclose):
+    import copy
+    import numpy as np
+    from yggdrasil_rapidjson import units
+    a = {
+        0: np.ones((5, )),
+        1: [np.zeros((2, )), np.ones((3, ))],
+        2: units.QuantityArray(np.arange(5), "cm"),
+    }
+
+    def create_copy(value):
+        out = copy.deepcopy(a)
+        out[0][1] += value
+        out[1][0][1] += value
+        out[1][1][1] += value
+        out[2][1] = out[2][1] + units.Quantity(value, "cm")
+        return out
+
+    assert_nested_allclose(a, a)
+    b = create_copy(1e-16)
+    assert_nested_allclose(a, b)
+    # c = create_copy(266)
+    # assert_nested_allclose(a, c)
+
+
 class TestTask(object, metaclass=utils.RegisteredMetaClass):
     r"""Class for testing task output."""
 
@@ -106,11 +131,25 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         r"""str: Path of file containing expected result."""
         return instance._testing_default_files[output]
 
+    @pytest.fixture(scope="class")
+    def tolerance_approx(self):
+        r"""Method to determine tolerance to use for approximate
+        comparison based on the type of output."""
+
+        def _tolerance_approx(output):
+            if output in ['raytrace', 'raytrace_stats', 'totals']:
+                # return {'rel': 1e-6}
+                return {'rtol': 1e-6}
+            return {}
+
+        return _tolerance_approx
+
     def test_output(self, instance, output, compare_method,
                     fname_actual, fname_expected, approx_nested,
                     create_missing_data, overwrite_existing_data,
                     compare_approx, compare_bytes,
-                    compare_approx_csv, compare_bytes_csv):
+                    compare_approx_csv, compare_bytes_csv,
+                    tolerance_approx):
         r"""Test creating output."""
         if fname_expected.endswith(('.png', '.gif')):
             # Don't compare png binaries
@@ -136,7 +175,11 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
             data_expected = instance.read_output(output, fname_expected)
         data_actual, data_expected = self.prepare_comparison_data(
             output, data_actual, data_expected)
-        eval(f'compare_{compare_method}')(data_actual, data_expected)
+        kws = (
+            {} if ('approx' not in compare_method)
+            else tolerance_approx(output)
+        )
+        eval(f'compare_{compare_method}')(data_actual, data_expected, **kws)
 
     @classmethod
     def prepare_comparison_data(cls, output, actual, expected):
@@ -274,7 +317,8 @@ class TestRayTraceTask(TestTask):
         },
     }
     _compare_methods = {
-        'raytrace': 'bytes_csv',
+        # 'raytrace': 'bytes_csv',
+        'raytrace': 'approx_csv',
         'raytrace_limits': 'approx',
         'raytrace_stats': 'approx',
         'traced_mesh': False,
