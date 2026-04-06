@@ -19,9 +19,9 @@ class HothouseRayTracer(RayTracerBase):
     def scene(self):
         r"""hothouse.scene.Scene: Scene containing geometry."""
         kws = {
-            'ground': self.ground.astype('f4'),
-            'up': self.up.astype('f4'),
-            'north': self.north.astype('f4'),
+            'ground': self.ground,
+            'up': self.up,
+            'north': self.north,
         }
         scene_cls = Scene
         if ((self.args.periodic_canopy == 'scene'
@@ -35,15 +35,15 @@ class HothouseRayTracer(RayTracerBase):
                         * (2 * self.args.periodic_canopy_count_array + 1)
                     )
                 kws.update(
-                    period=self.args.virtual_period.astype('f4'),
-                    direction=self.args.virtual_direction.astype('f4'),
+                    period=self.args.virtual_period,
+                    direction=self.args.virtual_direction,
                     count=virtual_count,
                     dont_reflect=True,
                 )
             else:
                 kws.update(
-                    period=self.args.periodic_period.astype('f4'),
-                    direction=self.args.periodic_direction.astype('f4'),
+                    period=self.args.periodic_period,
+                    direction=self.args.periodic_direction,
                     count=self.args.periodic_canopy_count_array,
                 )
         out = scene_cls(**kws)
@@ -63,13 +63,13 @@ class HothouseRayTracer(RayTracerBase):
             primID = self._currentIDs['primID']
             realID = self._currentIDs['realID']
             kws = dict(
-                vertices=mesh_dict['vertex'].astype('f4'),
+                vertices=mesh_dict['vertex'],
                 indices=mesh_dict['face'].astype('i4'),
-                attributes=mesh_dict['vertex_colors'].astype('f4'),
-                triangles=triangles.astype('f4'),
+                attributes=mesh_dict['vertex_colors'],
+                triangles=triangles,
             )
             if shift is None:
-                shift = np.zeros((3,), 'f4')
+                shift = np.zeros((3,), 'f8')
             else:
                 for k in ['vertices', 'triangles']:
                     kws[k] = kws[k] + shift
@@ -122,9 +122,9 @@ class HothouseRayTracer(RayTracerBase):
         r"""hothouse.blaster.OrthographicRayBlaster: Blaster for coverage."""
         from hothouse.blaster import OrthographicRayBlaster
         out = OrthographicRayBlaster(
-            center=self.zenith_origin.astype("f4"),
-            forward=-self.up.astype("f4"),
-            up=self.args.axis_cols.astype("f4"),
+            center=self.zenith_origin,
+            forward=-self.up,
+            up=self.args.axis_cols,
             width=self.args.plot_width,
             height=self.args.plot_length,
             nx=self.args.nrays,
@@ -150,9 +150,9 @@ class HothouseRayTracer(RayTracerBase):
         rbcls = camera_classes[self.args.camera_type]
         assert self.image_width.value > 0
         camera_blaster = rbcls(
-            center=self.image_center.astype("f4"),
-            forward=self.camera_direction.astype("f4"),
-            up=self.camera_up.astype("f4"),
+            center=self.image_center,
+            forward=self.camera_direction,
+            up=self.camera_up,
             width=self.image_width,
             height=self.image_height,
             nx=self.image_nx,
@@ -215,18 +215,18 @@ class HothouseRayTracer(RayTracerBase):
             date=self.solar_model.time,
             intensity_density=self.solar_model.ppfd_direct.value[0],
             diffuse_intensity=self.solar_model.ppfd_diffuse.value[0],
-            ground=self.ground.astype('f4'),
-            north=self.north.astype('f4'),
-            zenith=self.zenith.astype('f4'),
-            scene_limits=self.virtual_scene_model.limits.astype('f4'),
+            ground=self.ground,
+            north=self.north,
+            zenith=self.zenith,
+            scene_limits=self.virtual_scene_model.limits,
             solar_altitude=self.solar_model.apparent_elevation,
             solar_azimuth=self.solar_model.azimuth,
             nx=self.args.nrays, ny=self.args.nrays,
         )
         if self.args.periodic_canopy == 'rays':
             kws.update(
-                period=self.args.periodic_period.astype('f4'),
-                periodic_direction=self.args.periodic_direction.astype('f4'),
+                period=self.args.periodic_period,
+                periodic_direction=self.args.periodic_direction,
                 periodic_count=self.args.periodic_canopy_count_array,
             )
         for k, v in kws.items():
@@ -294,9 +294,9 @@ class HothouseRayTracer(RayTracerBase):
 
         """
         if method in ['multiply']:
-            out = np.ones(hits['geomID'].shape, "f4")
+            out = np.ones(hits['geomID'].shape, "f8")
         else:
-            out = np.zeros(hits['geomID'].shape, "f4")
+            out = np.zeros(hits['geomID'].shape, "f8")
         if isinstance(values, units.QuantityArray):
             out = units.QuantityArray(out, values.units)
             value_miss = parse_quantity(value_miss, values.units)

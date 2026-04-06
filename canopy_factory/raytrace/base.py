@@ -291,12 +291,12 @@ class RayTracerBase(RegisteredClassBase):
     @cached_args_property
     def up(self):
         r"""np.ndarray: Vector direction of up in the scene."""
-        return self.args.axis_up.astype("f4")
+        return self.args.axis_up
 
     @cached_args_property
     def north(self):
         r"""np.ndarray: Vector direction of north in the scene."""
-        return self.args.axis_north.astype("f4")
+        return self.args.axis_north
 
     @cached_args_property
     def east(self):
@@ -313,25 +313,25 @@ class RayTracerBase(RegisteredClassBase):
     def virtual_shifts(self):
         r"""np.ndarray: Shifts for positions of virtual plants."""
         if not self.args.canopy.startswith('virtual'):
-            return np.zeros((0, 3), 'f4')
+            return np.zeros((0, 3), 'f8')
         return utils.get_periodic_shifts(
             self.args.virtual_period,
             self.args.virtual_direction,
             self.args.virtual_canopy_count_array,
             dont_reflect=True,
             dont_center=(self.args.canopy != 'virtual_single'),
-        ).astype('f4')
+        )
 
     @cached_args_property
     def periodic_shifts(self):
         r"""np.ndarray: Shifts for positions of periodic plants."""
         if self.args.periodic_canopy not in ['scene', 'plants']:
-            return np.zeros((0, 3), 'f4')
+            return np.zeros((0, 3), 'f8')
         return utils.get_periodic_shifts(
             self.args.periodic_period,
             self.args.periodic_direction,
             self.args.periodic_canopy_count_array,
-        ).astype('f4')
+        )
 
     @cached_args_property
     def real_scene_model(self):
@@ -359,7 +359,7 @@ class RayTracerBase(RegisteredClassBase):
             return self.real_scene_model
         mins = self.real_scene_model.mins
         maxs = self.real_scene_model.maxs
-        shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+        shifts = np.vstack([np.zeros(mins.shape, 'f8'),
                             self.virtual_shifts])
         if getattr(self.args, 'scene_mins', None) is None:
             mins = (mins + shifts).min(axis=0)
@@ -375,7 +375,7 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.canopy.startswith('virtual'):
             shifts = utils.project_onto_ground(
                 np.vstack([
-                    np.zeros((self.virtual_shifts.shape[1]), 'f4'),
+                    np.zeros((self.virtual_shifts.shape[1]), 'f8'),
                     self.virtual_shifts]),
                 self.args.axis_rows, self.args.axis_cols,
             )
@@ -399,7 +399,7 @@ class RayTracerBase(RegisteredClassBase):
             + self.args.plot_length * self.args.axis_cols
         )
         if self.args.canopy.startswith('virtual'):
-            shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+            shifts = np.vstack([np.zeros(mins.shape, 'f8'),
                                 self.virtual_shifts])
             mins = (mins + shifts).min(axis=0)
             maxs = (maxs + shifts).max(axis=0)
