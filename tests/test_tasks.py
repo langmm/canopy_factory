@@ -137,8 +137,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         comparison based on the type of output."""
 
         def _tolerance_approx(output):
-            if output in ['raytrace', 'raytrace_stats', 'totals']:
-                # return {'rel': 1e-6}
+            if output in ['raytrace', 'raytrace_stats', 'totals',
+                          'render_camera']:
                 return {'rtol': 1e-6}
             return {}
 

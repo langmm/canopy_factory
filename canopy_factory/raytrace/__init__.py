@@ -125,6 +125,9 @@ class RayTraceTask(TaskBase):
     ]
 
     _name = 'raytrace'
+    _help = (
+        'Run a raytracer on a canopy mesh to calculate intercepted light'
+    )
     _output_info = {
         'raytrace': {
             'upstream': ['generate'],
@@ -1254,6 +1257,7 @@ class RenderTask(TaskBase):
     r"""Class for rendering a 3D canopy."""
 
     _name = 'render'
+    _help = 'Run a raytracer to render a canopy mesh'
     _output_info = {
         'render': {
             'ext': '.png',
@@ -1698,6 +1702,7 @@ class RenderTask(TaskBase):
 class TotalsTask(TemporalTaskBase):
     r"""Class for plotting the flux on a geometry as a function of time."""
     _name = 'totals'
+    _help = 'Get canopy properties over a period of time'
     _step_task = RayTraceTask
     _output_info = {
         'totals': {
@@ -2087,6 +2092,10 @@ class AnimateTask(TemporalTaskBase):
     r"""Class for producing an animation."""
 
     _name = 'animate'
+    _help = (
+        'Create an animation by rendering a canopy mesh over a period '
+        'of time'
+    )
     _step_task = RenderTask
     _step_args_preserve = ['render_colormap']
     _output_info = {
@@ -2246,6 +2255,10 @@ class MatchQuery(OptimizationTaskBase):
 
     _step_task = RayTraceTask
     _name = 'match_query'
+    _help = (
+        'Perform an optimization to find the parameter required to '
+        'match calculated properties between two canopies'
+    )
     _final_outputs = ['totals_plot']
     _arguments = [
         (('--goal', ), {

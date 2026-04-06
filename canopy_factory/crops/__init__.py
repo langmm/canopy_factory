@@ -499,6 +499,7 @@ class LayoutTask(TaskBase):
     r"""Class for plotting the layout of a canopy."""
 
     _name = 'layout'
+    _help = 'Plot the layout of a generated canopy'
     _output_info = {
         'layout': {
             'base_prefix': True,
