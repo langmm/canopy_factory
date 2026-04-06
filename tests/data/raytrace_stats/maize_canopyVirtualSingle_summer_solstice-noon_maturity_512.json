@@ -204,9 +204,24 @@
         "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsyXSwidW5pdHMiOiJjbSJ9-YGG-qbIVeDd8TT80Heo2xzliQA==-YGG-",
         "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsyXSwidW5pdHMiOiJjbSJ9-YGG-qbIVeDd8TT80Heo2xzliQA==-YGG-"
     },
-    "compute_time": 1.3116631507873535,
+    "compute_time": 1.3068759441375732,
     "coverage": 0.4247093200683594,
     "LAI": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6IiJ9-YGG-/i+yq0Mq7j8=-YGG-",
-    "virtual_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlszOSwzXX0=-YGG-AAC3wgAAAABmZhjDZmaSwgAAAABmZhjDmZlbwgAAAABmZhjDZmYSwgAAAABmZhjDZmaSwQAAAABmZhjDAAAAAAAAAABmZhjDZmaSQQAAAABmZhjDZmYSQgAAAABmZhjDmZlbQgAAAABmZhjDZmaSQgAAAABmZhjDAAC3wgAAAABmZpjCZmaSwgAAAABmZpjCmZlbwgAAAABmZpjCZmYSwgAAAABmZpjCZmaSwQAAAABmZpjCAAAAAAAAAABmZpjCZmaSQQAAAABmZpjCZmYSQgAAAABmZpjCmZlbQgAAAABmZpjCZmaSQgAAAABmZpjCAAC3wgAAAAAAAAAAZmaSwgAAAAAAAAAAmZlbwgAAAAAAAAAAZmYSwgAAAAAAAAAAZmaSwQAAAAAAAAAAZmaSQQAAAAAAAAAAZmYSQgAAAAAAAAAAmZlbQgAAAAAAAAAAZmaSQgAAAAAAAAAAAAC3wgAAAABmZphCZmaSwgAAAABmZphCmZlbwgAAAABmZphCZmYSwgAAAABmZphCZmaSwQAAAABmZphCAAAAAAAAAABmZphCZmaSQQAAAABmZphCZmYSQgAAAABmZphCmZlbQgAAAABmZphCZmaSQgAAAABmZphC-YGG-",
-    "periodic_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlswLDNdfQ==-YGG--YGG-"
+    "scene_model": {
+        "virtual_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlszOSwzXX0=-YGG-AAC3wgAAAABmZhjDZmaSwgAAAABmZhjDmZlbwgAAAABmZhjDZmYSwgAAAABmZhjDZmaSwQAAAABmZhjDAAAAAAAAAABmZhjDZmaSQQAAAABmZhjDZmYSQgAAAABmZhjDmZlbQgAAAABmZhjDZmaSQgAAAABmZhjDAAC3wgAAAABmZpjCZmaSwgAAAABmZpjCmZlbwgAAAABmZpjCZmYSwgAAAABmZpjCZmaSwQAAAABmZpjCAAAAAAAAAABmZpjCZmaSQQAAAABmZpjCZmYSQgAAAABmZpjCmZlbQgAAAABmZpjCZmaSQgAAAABmZpjCAAC3wgAAAAAAAAAAZmaSwgAAAAAAAAAAmZlbwgAAAAAAAAAAZmYSwgAAAAAAAAAAZmaSwQAAAAAAAAAAZmaSQQAAAAAAAAAAZmYSQgAAAAAAAAAAmZlbQgAAAAAAAAAAZmaSQgAAAAAAAAAAAAC3wgAAAABmZphCZmaSwgAAAABmZphCmZlbwgAAAABmZphCZmYSwgAAAABmZphCZmaSwQAAAABmZphCAAAAAAAAAABmZphCZmaSQQAAAABmZphCZmYSQgAAAABmZphCmZlbQgAAAABmZphCZmaSQgAAAABmZphC-YGG-",
+        "periodic_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlswLDNdfQ==-YGG--YGG-",
+        "ground": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-gBcRUBEQYEAAAAAAAAAAAOrnTdVjBmNA-YGG-",
+        "north": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlszXX0=-YGG-AACAPwAAAAAAAAAA-YGG-",
+        "zenith": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlszXX0=-YGG-gBcRUBEQYEBaFoy+isd8QOrnTdVjBmNA-YGG-",
+        "limits": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOls4LDNdfQ==-YGG-+qngpnU4YcAc++aFHUxCv+Tbu8ZJPWjA+qngpnU4YcAc++aFHUxCv+Lnv8f7nltACwqD8lnPXUAc++aFHUxCv+Tbu8ZJPWjACwqD8lnPXUAc++aFHUxCv+Lnv8f7nltA+qngpnU4YcDWxtgJr0JiQOTbu8ZJPWjA+qngpnU4YcDWxtgJr0JiQOLnv8f7nltACwqD8lnPXUDWxtgJr0JiQOTbu8ZJPWjACwqD8lnPXUDWxtgJr0JiQOLnv8f7nltA-YGG-"
+    },
+    "solar_model": {
+        "ppfd_direct": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsxXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTIpIn0=-YGG-czuNDCFglUA=-YGG-",
+        "ppfd_diffuse": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsxXSwidW5pdHMiOiJcdTAwQjVtb2wqKHMqKi0xKSoobSoqLTIpIn0=-YGG-FK8qAs6Db0A=-YGG-",
+        "time": "2024-06-20T12:54:43.950993-05:00",
+        "latitude": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-kKD4MeYOREA=-YGG-",
+        "longitude": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-K/aX3ZMPVsA=-YGG-",
+        "apparent_elevation": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-+9idI91UUkA=-YGG-",
+        "azimuth": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRlZyJ9-YGG-B7KeZwCAZkA=-YGG-"
+    }
 }

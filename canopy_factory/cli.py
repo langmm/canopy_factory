@@ -3989,7 +3989,8 @@ class TaskBase(SubparserBase):
         ext = os.path.splitext(fname)[-1]
         if ext == '.json':
             with open(fname, 'r') as fd:
-                return rapidjson.load(fd)
+                return rapidjson.load(
+                    fd, datetime_mode=rapidjson.DM_ISO8601)
         elif ext == '.csv':
             return utils.read_csv(fname, verbose=args.verbose)
         elif ext in ['.obj', '.ply']:
@@ -4044,6 +4045,7 @@ class TaskBase(SubparserBase):
             assert output
             with open(fname, 'w') as fd:
                 rapidjson.dump(output, fd,
+                               datetime_mode=rapidjson.DM_ISO8601,
                                write_mode=rapidjson.WM_PRETTY)
             return
         elif ext == '.csv':

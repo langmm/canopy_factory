@@ -213,6 +213,7 @@ class HothouseRayTracer(RayTracerBase):
             latitude=self.solar_model.latitude.value,
             longitude=self.solar_model.longitude.value,
             date=self.solar_model.time,
+            intensity_density=self.solar_model.ppfd_direct.value[0],
             diffuse_intensity=self.solar_model.ppfd_diffuse.value[0],
             ground=self.ground.astype('f4'),
             north=self.north.astype('f4'),
@@ -241,10 +242,10 @@ class HothouseRayTracer(RayTracerBase):
                  f"\n   diffuse = {self.solar_model.ppfd_diffuse}",
                  force=True)
         blaster = self.get_solar_blaster()
-        blaster.intensity = (
-            self.solar_model.ppfd_direct.value[0]
-            * blaster.width * blaster.height
-        )
+        # blaster.intensity = (
+        #     self.solar_model.ppfd_direct.value[0]
+        #     * blaster.width * blaster.height
+        # )
         return blaster
 
     @property

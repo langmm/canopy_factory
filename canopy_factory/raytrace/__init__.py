@@ -5,7 +5,6 @@ import itertools
 import pprint
 import copy
 import time
-from datetime import datetime
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
@@ -547,6 +546,8 @@ class RayTraceTask(TaskBase):
             assert isinstance(values[0], dict)
             out = {}
             for k in values[0].keys():
+                if k in ['scene_model', 'solar_model']:
+                    continue
                 out[k] = cls.join_query_stats(
                     [v[k] for v in values], k, per_plant=per_plant,
                 )
@@ -1079,8 +1080,19 @@ class RayTraceTask(TaskBase):
         if not self.args.canopy.startswith('virtual'):
             leaf_area = leaf_area / (self.args.nrows * self.args.ncols)
         output['LAI'] = leaf_area * self.planting_density
-        for k in ['virtual_shifts', 'periodic_shifts']:
-            output[k] = getattr(self.raytracer, k)
+        output['scene_model'] = {
+            k: getattr(self.raytracer, k)
+            for k in ['virtual_shifts', 'periodic_shifts',
+                      'ground', 'north', 'zenith']
+        }
+        output['scene_model']['limits'] = (
+            self.raytracer.virtual_scene_model.limits
+        )
+        output['solar_model'] = {
+            k: getattr(self.raytracer.solar_model, k)
+            for k in ['ppfd_direct', 'ppfd_diffuse', 'time', 'latitude',
+                      'longitude', 'apparent_elevation', 'azimuth']
+        }
         return output
 
     @classmethod
@@ -1762,42 +1774,6 @@ class TotalsTask(TemporalTaskBase):
             },
         }),
     ]
-
-    @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        out = super(TotalsTask, cls)._read_output(args, name, fname)
-        if name == 'totals':
-            out['times'] = [
-                datetime.fromisoformat(x) for x in out['times']
-            ]
-        return out
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        if name == 'totals':
-            output = dict(output,
-                          times=[x.isoformat() for x in output['times']])
-        super(TotalsTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
