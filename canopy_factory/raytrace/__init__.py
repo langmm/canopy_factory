@@ -1093,6 +1093,8 @@ class RayTraceTask(TaskBase):
             for k in ['ppfd_direct', 'ppfd_diffuse', 'time', 'latitude',
                       'longitude', 'apparent_elevation', 'azimuth']
         }
+        pprint.pprint(output['scene_model'])
+        pprint.pprint(output['solar_model'])
         return output
 
     @classmethod

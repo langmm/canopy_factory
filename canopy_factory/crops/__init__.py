@@ -719,7 +719,7 @@ class LayoutTask(TaskBase):
         args.virtual_canopy_count_array = np.ones((3, ), 'i4')
         args.virtual_period = np.array([
             args.row_spacing, args.plant_spacing, 0.0
-        ], 'f4')
+        ])
         args.virtual_direction = args.periodic_direction
         if args.canopy.startswith('virtual'):
             args.virtual_canopy_count_array[0] = args.nrows
@@ -739,8 +739,8 @@ class LayoutTask(TaskBase):
         pos0 = self.args.plant_spacing * np.zeros((1, 3), 'f4')
         out = pos0 + units.QuantityArray(
             utils.get_periodic_shifts(
-                self.args.virtual_period.astype('f4'),
-                self.args.virtual_direction.astype('f4'),
+                self.args.virtual_period,
+                self.args.virtual_direction,
                 np.array([self.args.nrows, self.args.ncols, 0], 'i4'),
                 include_origin=True,
                 dont_reflect=True,
