@@ -491,6 +491,7 @@ class RayTraceTask(TaskBase):
             if self.args.canopy == 'virtual':
                 out = [out]
                 if k == 'plantids':
+                    assert out[0].min() == 0
                     maxid = out[0].max() + 1
                     for ivert in range(1, self.nvirtual + 1):
                         out.append(out[0] + ivert * maxid)
@@ -1078,6 +1079,8 @@ class RayTraceTask(TaskBase):
         if not self.args.canopy.startswith('virtual'):
             leaf_area = leaf_area / (self.args.nrows * self.args.ncols)
         output['LAI'] = leaf_area * self.planting_density
+        for k in ['virtual_shifts', 'periodic_shifts']:
+            output[k] = getattr(self.raytracer, k)
         return output
 
     @classmethod

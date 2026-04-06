@@ -204,7 +204,9 @@
         "0": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsyXSwidW5pdHMiOiJjbSJ9-YGG-qbIVeDd8TT80Heo2xzliQA==-YGG-",
         "total": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsyXSwidW5pdHMiOiJjbSJ9-YGG-qbIVeDd8TT80Heo2xzliQA==-YGG-"
     },
-    "compute_time": 0.4279289245605469,
+    "compute_time": 0.4055511951446533,
     "coverage": 0.14176559448242188,
-    "LAI": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6IiJ9-YGG-/i+yq0Mq7j8=-YGG-"
+    "LAI": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6IiJ9-YGG-/i+yq0Mq7j8=-YGG-",
+    "virtual_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlswLDNdfQ==-YGG--YGG-",
+    "periodic_shifts": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6NCwic2hhcGUiOlswLDNdfQ==-YGG--YGG-"
 }
