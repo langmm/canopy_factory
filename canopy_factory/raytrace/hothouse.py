@@ -72,7 +72,7 @@ class HothouseRayTracer(RayTracerBase):
                 shift = np.zeros((3,), 'f8')
             else:
                 for k in ['vertices', 'triangles']:
-                    kws[k] = kws[k] + shift
+                    kws[k] = np.round(kws[k] + shift, decimals=6)
             plant = Model(**kws)
             if plant_type == 'real':
                 self._plantid2geomID[plantid] = {
