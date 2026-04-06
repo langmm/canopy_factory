@@ -308,11 +308,15 @@ class TestRayTraceTask(TestTask):
                  'periodic_canopy': True},
                 {'crop': 'maize', 'id': 'default',
                  'canopy': 'virtual_single'},
+                {'crop': 'maize', 'id': 'default', 'canopy': 'virtual',
+                 'periodic_canopy': True,
+                 'time': '2024-06-20 13:54:43.950993-05:00'},
             ],
             'ids': [
                 'single',
                 'virtual_periodic',
                 'virtual_single',
+                'virtual_periodic_t2',
             ],
         },
     }
@@ -384,7 +388,8 @@ class TestTotalsTask(TestTask):
         'arguments': {
             'values': [
                 dict(x, start_time='noon', duration='1 hr')
-                for x in TestRayTraceTask._params['arguments']['values'][1:]
+                for x in TestRayTraceTask._params['arguments']['values']
+                if x.get('canopy', None) != 'single' and 'time' not in x
             ],
         },
     }

@@ -611,7 +611,7 @@ class RayTracerBase(RegisteredClassBase):
         r"""int: Number of pixels in the x direction."""
         if ((self.args.resolution is not None
              or self.args.image_nx is None)):
-            return int(self.image_width * self.resolution)
+            return int(np.round((self.image_width * self.resolution).value))
         return self.args.image_nx
 
     @cached_args_property
@@ -620,7 +620,7 @@ class RayTracerBase(RegisteredClassBase):
         if ((self.args.resolution is not None
              or (self.args.image_ny is None
                  and self.args.image_nx is not None))):
-            return int(self.image_height * self.resolution)
+            return int(np.round((self.image_height * self.resolution).value))
         elif self.args.image_ny is not None:
             return self.args.image_ny
         return 2048

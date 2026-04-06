@@ -2238,7 +2238,7 @@ class AnimateTask(TemporalTaskBase):
             self._inset_figure = self.totals_task.generate_output(
                 'totals_plot')
             width_px = old_data.shape[1]
-            height_px = int(0.2 * width_px)
+            height_px = int(np.round(0.2 * width_px))
             dpi = self._inset_figure.get_dpi()
             figsize = ((width_px + 1) / dpi, (height_px + 1) / dpi)
             self._inset_figure.set_size_inches(*figsize)
