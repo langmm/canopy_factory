@@ -10,6 +10,7 @@ from canopy_factory.utils import (
     parse_quantity, parse_axis,
     cached_property, cached_args_property,
 )
+from hothouse.sun_calc import stable_tan
 
 
 class SceneModel(RegisteredClassBase):
@@ -290,12 +291,12 @@ class RayTracerBase(RegisteredClassBase):
     @cached_args_property
     def up(self):
         r"""np.ndarray: Vector direction of up in the scene."""
-        return self.args.axis_up.astype("f4")
+        return self.args.axis_up
 
     @cached_args_property
     def north(self):
         r"""np.ndarray: Vector direction of north in the scene."""
-        return self.args.axis_north.astype("f4")
+        return self.args.axis_north
 
     @cached_args_property
     def east(self):
@@ -312,25 +313,25 @@ class RayTracerBase(RegisteredClassBase):
     def virtual_shifts(self):
         r"""np.ndarray: Shifts for positions of virtual plants."""
         if not self.args.canopy.startswith('virtual'):
-            return np.zeros((0, 3), 'f4')
+            return np.zeros((0, 3), 'f8')
         return utils.get_periodic_shifts(
             self.args.virtual_period,
             self.args.virtual_direction,
             self.args.virtual_canopy_count_array,
             dont_reflect=True,
             dont_center=(self.args.canopy != 'virtual_single'),
-        ).astype('f4')
+        )
 
     @cached_args_property
     def periodic_shifts(self):
         r"""np.ndarray: Shifts for positions of periodic plants."""
         if self.args.periodic_canopy not in ['scene', 'plants']:
-            return np.zeros((0, 3), 'f4')
+            return np.zeros((0, 3), 'f8')
         return utils.get_periodic_shifts(
             self.args.periodic_period,
             self.args.periodic_direction,
             self.args.periodic_canopy_count_array,
-        ).astype('f4')
+        )
 
     @cached_args_property
     def real_scene_model(self):
@@ -358,7 +359,7 @@ class RayTracerBase(RegisteredClassBase):
             return self.real_scene_model
         mins = self.real_scene_model.mins
         maxs = self.real_scene_model.maxs
-        shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+        shifts = np.vstack([np.zeros(mins.shape, 'f8'),
                             self.virtual_shifts])
         if getattr(self.args, 'scene_mins', None) is None:
             mins = (mins + shifts).min(axis=0)
@@ -374,7 +375,7 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.canopy.startswith('virtual'):
             shifts = utils.project_onto_ground(
                 np.vstack([
-                    np.zeros((self.virtual_shifts.shape[1]), 'f4'),
+                    np.zeros((self.virtual_shifts.shape[1]), 'f8'),
                     self.virtual_shifts]),
                 self.args.axis_rows, self.args.axis_cols,
             )
@@ -398,7 +399,7 @@ class RayTracerBase(RegisteredClassBase):
             + self.args.plot_length * self.args.axis_cols
         )
         if self.args.canopy.startswith('virtual'):
-            shifts = np.vstack([np.zeros(mins.shape, 'f4'),
+            shifts = np.vstack([np.zeros(mins.shape, 'f8'),
                                 self.virtual_shifts])
             mins = (mins + shifts).min(axis=0)
             maxs = (maxs + shifts).max(axis=0)
@@ -456,8 +457,8 @@ class RayTracerBase(RegisteredClassBase):
         if vadjup == 0.0:
             out = self.up
         else:
-            angle = np.arccos(vadjup)
-            vhyp = self.up / np.cos(angle)
+            # angle = np.arccos(vadjup)
+            vhyp = self.up / vadjup  # np.cos(angle)
             out = vhyp - vadj
         out /= np.linalg.norm(out)
         return out
@@ -487,8 +488,7 @@ class RayTracerBase(RegisteredClassBase):
         fov_width = np.max(np.abs(np.dot(
             self.virtual_scene_model.limits - self.virtual_scene_model.center,
             self.camera_right)))
-        camera_distance = np.abs(
-            fov_width / np.tan(self.args.camera_fov_width / 2.0))
+        camera_distance = np.abs(fov_width / self.tan_camera_fov[0])
         if camera_distance < self.clipping_distance.value:
             camera_distance = self.clipping_distance.value
         out = (
@@ -513,8 +513,8 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.image_width is not None:
             return self.args.image_width
         if self.args.camera_type == 'projection':
-            return 2.0 * self.image_distance * np.abs(np.tan(
-                self.args.camera_fov_width / 2.0))
+            return 2.0 * self.image_distance * np.abs(
+                self.tan_camera_fov[0])
         elif self.args.camera_type == 'orthographic':
             return self.camera_scene_dims[0]
         else:
@@ -527,8 +527,8 @@ class RayTracerBase(RegisteredClassBase):
         if self.args.image_height is not None:
             return self.args.image_height
         if self.args.camera_type == 'projection':
-            return 2.0 * self.image_distance * np.abs(np.tan(
-                self.args.camera_fov_height / 2.0))
+            return 2.0 * self.image_distance * np.abs(
+                self.tan_camera_fov[1])
         elif self.args.camera_type == 'orthographic':
             return self.camera_scene_dims[1]
         else:
@@ -562,17 +562,22 @@ class RayTracerBase(RegisteredClassBase):
             self.args.mesh_units)
 
     @cached_args_property
+    def tan_camera_fov(self):
+        return [
+            stable_tan(np.radians(self.args.camera_fov_width.value) / 2),
+            stable_tan(np.radians(self.args.camera_fov_height.value) / 2)
+        ]
+
+    @cached_args_property
     def image_distance(self):
         r"""float: Distance of the image plane from the camera."""
         if self.args.camera_type == 'projection':
             if self.args.image_width is not None:
-                return np.abs(
-                    (self.image_width / 2.0)
-                    / np.tan(self.args.camera_fov_width / 2.0))
+                return np.abs((self.image_width / 2.0)
+                              / self.tan_camera_fov[0])
             elif self.args.image_height is not None:
-                return np.abs(
-                    (self.image_height / 2.0)
-                    / np.tan(self.args.camera_fov_height / 2.0))
+                return np.abs((self.image_height / 2.0)
+                              / self.tan_camera_fov[1])
             out = self.camera_distance - self.clipping_distance
             if out.value < 0:
                 out.value = 0.0
@@ -606,7 +611,7 @@ class RayTracerBase(RegisteredClassBase):
         r"""int: Number of pixels in the x direction."""
         if ((self.args.resolution is not None
              or self.args.image_nx is None)):
-            return int(self.image_width * self.resolution)
+            return int(np.round((self.image_width * self.resolution).value))
         return self.args.image_nx
 
     @cached_args_property
@@ -615,7 +620,7 @@ class RayTracerBase(RegisteredClassBase):
         if ((self.args.resolution is not None
              or (self.args.image_ny is None
                  and self.args.image_nx is not None))):
-            return int(self.image_height * self.resolution)
+            return int(np.round((self.image_height * self.resolution).value))
         elif self.args.image_ny is not None:
             return self.args.image_ny
         return 2048

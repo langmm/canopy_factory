@@ -5,7 +5,6 @@ import itertools
 import pprint
 import copy
 import time
-from datetime import datetime
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
@@ -125,6 +124,9 @@ class RayTraceTask(TaskBase):
     ]
 
     _name = 'raytrace'
+    _help = (
+        'Run a raytracer on a canopy mesh to calculate intercepted light'
+    )
     _output_info = {
         'raytrace': {
             'upstream': ['generate'],
@@ -488,6 +490,7 @@ class RayTraceTask(TaskBase):
             if self.args.canopy == 'virtual':
                 out = [out]
                 if k == 'plantids':
+                    assert out[0].min() == 0
                     maxid = out[0].max() + 1
                     for ivert in range(1, self.nvirtual + 1):
                         out.append(out[0] + ivert * maxid)
@@ -543,6 +546,8 @@ class RayTraceTask(TaskBase):
             assert isinstance(values[0], dict)
             out = {}
             for k in values[0].keys():
+                if k in ['scene_model', 'solar_model']:
+                    continue
                 out[k] = cls.join_query_stats(
                     [v[k] for v in values], k, per_plant=per_plant,
                 )
@@ -1075,6 +1080,21 @@ class RayTraceTask(TaskBase):
         if not self.args.canopy.startswith('virtual'):
             leaf_area = leaf_area / (self.args.nrows * self.args.ncols)
         output['LAI'] = leaf_area * self.planting_density
+        output['scene_model'] = {
+            k: getattr(self.raytracer, k)
+            for k in ['virtual_shifts', 'periodic_shifts',
+                      'ground', 'north', 'zenith']
+        }
+        output['scene_model']['limits'] = (
+            self.raytracer.virtual_scene_model.limits
+        )
+        output['solar_model'] = {
+            k: getattr(self.raytracer.solar_model, k)
+            for k in ['ppfd_direct', 'ppfd_diffuse', 'time', 'latitude',
+                      'longitude', 'apparent_elevation', 'azimuth']
+        }
+        pprint.pprint(output['scene_model'])
+        pprint.pprint(output['solar_model'])
         return output
 
     @classmethod
@@ -1254,6 +1274,7 @@ class RenderTask(TaskBase):
     r"""Class for rendering a 3D canopy."""
 
     _name = 'render'
+    _help = 'Run a raytracer to render a canopy mesh'
     _output_info = {
         'render': {
             'ext': '.png',
@@ -1698,6 +1719,7 @@ class RenderTask(TaskBase):
 class TotalsTask(TemporalTaskBase):
     r"""Class for plotting the flux on a geometry as a function of time."""
     _name = 'totals'
+    _help = 'Get canopy properties over a period of time'
     _step_task = RayTraceTask
     _output_info = {
         'totals': {
@@ -1754,42 +1776,6 @@ class TotalsTask(TemporalTaskBase):
             },
         }),
     ]
-
-    @classmethod
-    def _read_output(cls, args, name, fname):
-        r"""Load an output file produced by this task.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to read.
-            fname (str): Path of file that should be read from.
-
-        Returns:
-            object: Contents of the output file.
-
-        """
-        out = super(TotalsTask, cls)._read_output(args, name, fname)
-        if name == 'totals':
-            out['times'] = [
-                datetime.fromisoformat(x) for x in out['times']
-            ]
-        return out
-
-    @classmethod
-    def _write_output(cls, args, name, fname, output):
-        r"""Write to an output file.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Name of the output to write.
-            fname (str): Path of the file that should be written to.
-            output (object): Output object to write to file.
-
-        """
-        if name == 'totals':
-            output = dict(output,
-                          times=[x.isoformat() for x in output['times']])
-        super(TotalsTask, cls)._write_output(args, name, fname, output)
 
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
@@ -2087,6 +2073,10 @@ class AnimateTask(TemporalTaskBase):
     r"""Class for producing an animation."""
 
     _name = 'animate'
+    _help = (
+        'Create an animation by rendering a canopy mesh over a period '
+        'of time'
+    )
     _step_task = RenderTask
     _step_args_preserve = ['render_colormap']
     _output_info = {
@@ -2229,7 +2219,7 @@ class AnimateTask(TemporalTaskBase):
             self._inset_figure = self.totals_task.generate_output(
                 'totals_plot')
             width_px = old_data.shape[1]
-            height_px = int(0.2 * width_px)
+            height_px = int(np.round(0.2 * width_px))
             dpi = self._inset_figure.get_dpi()
             figsize = ((width_px + 1) / dpi, (height_px + 1) / dpi)
             self._inset_figure.set_size_inches(*figsize)
@@ -2246,6 +2236,10 @@ class MatchQuery(OptimizationTaskBase):
 
     _step_task = RayTraceTask
     _name = 'match_query'
+    _help = (
+        'Perform an optimization to find the parameter required to '
+        'match calculated properties between two canopies'
+    )
     _final_outputs = ['totals_plot']
     _arguments = [
         (('--goal', ), {

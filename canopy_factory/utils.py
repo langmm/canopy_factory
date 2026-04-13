@@ -1614,7 +1614,7 @@ def rotation_matrix(theta, u):
           (u[1] * u[2] * inv_cos_theta) - (u[0] * sin_theta)],
          [(u[2] * u[0] * inv_cos_theta) - (u[1] * sin_theta),
           (u[2] * u[1] * inv_cos_theta) + (u[0] * sin_theta),
-          cos_theta + (u[2] * u[2] * inv_cos_theta)]], dtype='f4')
+          cos_theta + (u[2] * u[2] * inv_cos_theta)]], dtype='f8')
     return R
 
 
@@ -2532,8 +2532,8 @@ class SolarModel(object):
             latitude=self.latitude.value, longitude=self.longitude.value,
             date=self.time, solar_altitude=self.apparent_elevation,
             solar_azimuth=self.azimuth,
-            zenith=up.astype('f4'), north=north.astype('f4'),
-            ground=np.zeros((3,), 'f4'),
+            zenith=up, north=north,
+            ground=np.zeros((3,), 'f8'),
             # direct_ppfd=self.ppfd_direct,
             # diffuse_ppfd=self.ppfd_diffuse,
         )

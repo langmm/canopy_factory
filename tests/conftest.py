@@ -1,6 +1,7 @@
 import pytest
 import os
 import copy
+import numpy as np
 from canopy_factory.utils import (
     get_class_registry, DataProcessor, units, cfg
 )
@@ -8,6 +9,16 @@ from canopy_factory.utils import (
 
 _param_args = ['crop', 'id', 'data_year']
 _step_outputs = []
+
+
+class NestedAssertionError(AssertionError):
+
+    def __init__(self, nested):
+        self.nested = nested
+        msg = ''
+        for k, v in nested.items():
+            msg += f'\n\n{k}\n\t' + v.replace('\n', '\n\t')
+        super(NestedAssertionError, self).__init__(msg)
 
 
 def pytest_addoption(parser):
@@ -222,6 +233,63 @@ def cleanup_step_files(request):
 
 
 @pytest.fixture(scope="session")
+def assert_allclose():
+    r"""Assert that arrays are close."""
+
+    def _assert_allclose(a, b, rtol=1e-07, atol=1e-15, **kwargs):
+        np.testing.assert_allclose(a, b, rtol=rtol, atol=atol, **kwargs)
+
+    return _assert_allclose
+
+
+@pytest.fixture(scope="session")
+def assert_nested_allclose(assert_allclose):
+    from collections import OrderedDict
+
+    def _assert_nested_allclose(a, b, **kwargs):
+        errors = {}
+        if isinstance(b, (list, tuple)):
+            assert isinstance(a, type(b))
+            assert len(a) == len(b)
+            for i, (ia, ib) in enumerate(zip(a, b)):
+                try:
+                    _assert_nested_allclose(ia, ib, **kwargs)
+                except AssertionError as e:
+                    if isinstance(e, NestedAssertionError):
+                        for kerr, verr in e.nested.items():
+                            errors[f'{i}->{kerr}'] = verr
+                    else:
+                        errors[f'{i}'] = e.args[0]
+        elif isinstance(b, (dict, OrderedDict)):
+            assert isinstance(a, type(b))
+            assert len(a) == len(b)
+            a_keys = list(sorted(a.keys()))
+            b_keys = list(sorted(b.keys()))
+            assert a_keys == b_keys
+            for k in b_keys:
+                try:
+                    _assert_nested_allclose(a[k], b[k], **kwargs)
+                except AssertionError as e:
+                    if isinstance(e, NestedAssertionError):
+                        for kerr, verr in e.nested.items():
+                            errors[f'{k}->{kerr}'] = verr
+                    else:
+                        errors[k] = e.args[0]
+        elif isinstance(b, (units.Quantity, units.QuantityArray)):
+            assert isinstance(a, type(b))
+            assert a.units == b.units
+            assert_allclose(a.value, b.value, **kwargs)
+        elif isinstance(b, np.ndarray):
+            assert_allclose(a, b, **kwargs)
+        else:
+            assert a == b
+        if errors:
+            raise NestedAssertionError(errors)
+
+    return _assert_nested_allclose
+
+
+@pytest.fixture(scope="session")
 def patch_equality():
     def patch_equality_w(obj, method):
         class EqualityWrapper:
@@ -329,7 +397,7 @@ def compare_approx_csv(compare_approx):
 
     """
 
-    def _compare_approx_csv(actual, expected):
+    def _compare_approx_csv(actual, expected, **kwargs):
         flag = 'HEADER_JSON'
         if flag in expected:
             assert flag in actual
@@ -338,13 +406,13 @@ def compare_approx_csv(compare_approx):
             assert actual_keys == expected_keys
             expected = {k: v for k, v in expected.items() if k != flag}
             actual = {k: v for k, v in actual.items() if k != flag}
-        compare_approx(actual, expected)
+        compare_approx(actual, expected, **kwargs)
 
     return _compare_approx_csv
 
 
 @pytest.fixture(scope="session")
-def compare_approx(assert_equal_approx):
+def compare_approx(assert_nested_allclose):
     r"""Compare two objects using approximate equality for floats.
 
     Args:
@@ -352,11 +420,9 @@ def compare_approx(assert_equal_approx):
         expected (object): Expected object.
 
     """
-
-    def _compare_approx(actual, expected):
-        assert_equal_approx(actual, expected, nan_ok=True)
-
-    return _compare_approx
+    # def _compare_approx(actual, expected, nan_ok=True, **kwargs):
+    #     assert_equal_approx(actual, expected, nan_ok=nan_ok, **kwargs)
+    return assert_nested_allclose
 
 
 @pytest.fixture(scope="session")
