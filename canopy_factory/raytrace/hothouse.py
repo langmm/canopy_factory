@@ -65,15 +65,13 @@ class HothouseRayTracer(RayTracerBase):
             kws = dict(
                 vertices=mesh_dict['vertex'],
                 indices=mesh_dict['face'].astype('i4'),
-                attributes=mesh_dict['vertex_colors'],
-                triangles=triangles,
+                attributes={'vertex_colors': mesh_dict['vertex_colors']},
             )
+            plant = Model(**kws)
             if shift is None:
                 shift = np.zeros((3,), 'f8')
             else:
-                for k in ['vertices', 'triangles']:
-                    kws[k] = np.round(kws[k] + shift, decimals=6)
-            plant = Model(**kws)
+                plant.translate(shift)
             if plant_type == 'real':
                 self._plantid2geomID[plantid] = {
                     'real': geomID,
