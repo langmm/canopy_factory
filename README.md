@@ -31,7 +31,6 @@ There are several packages that may need to be install via source or from a pack
 - [hothouse](https://github.com/cropsinsilico/hothouse) for using the embree ray tracer to calculate the light intercepted by generated geometries. Must be built from source until a release is available on PyPI (ETA late spring or summer 2026).
 - [OpenAlea PlantGL](https://github.com/openalea/plantgl) for creating virtual plant geometry meshes (required by LPy). Must be built from source if conda not used.
 - [OpenAlea LPy](https://lpy.readthedocs.io/en/latest/index.html) for procedural generation of 3D plant geometries. Must be built from source if conda not used.
-.
 - [ffmpeg](https://github.com/ffmpeg/ffmpeg) for creating animations. Must be installed via a package manager for your OS (e.g. homebrew, apt, vcpkg) if conda is not used.
 
 
@@ -104,7 +103,7 @@ These commands are provided by the `build_lpy.sh` script.
 
 ## Install canopy_factory
 
-*After* installing the non-PyPI dependencies via one of the two methods below, `canopy_factory` can be installed in development mode via:
+*After* installing the non-PyPI dependencies via one of the methods above, `canopy_factory` can be installed in development mode via:
 
 ```
 python -m pip install -e '.[dev]'
