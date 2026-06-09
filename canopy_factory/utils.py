@@ -22,6 +22,12 @@ import yggdrasil_rapidjson as rapidjson
 from yggdrasil_rapidjson import units
 from yggdrasil_rapidjson.geometry import Ply as PlyDict
 from yggdrasil_rapidjson.geometry import ObjWavefront as ObjDict
+try:
+    from openalea.lpy import Lsystem
+    import openalea.plantgl.all as pgl
+    _openalea_installed = Lsystem
+except ImportError:
+    _openalea_installed = False
 
 
 functools_cached_property = getattr(functools, "cached_property", None)
@@ -76,6 +82,34 @@ _axis_map = {
 class NoDefault(object):
     r"""Stand-in for identifying if a default is passed."""
     pass
+
+
+class MissingOpenAleaError(RuntimeError):
+    r"""Error to raise when OpenAlea libraries are required, but could
+    not be found."""
+    pass
+
+
+def check_openalea(msg=None):
+    r"""Check if OpenAlea dependencies are installed.
+
+    Args:
+        msg (str, optional): Error message to raise.
+
+    Raises:
+        MissingOpenAleaError: If openalea dependencies are not installed.
+
+    """
+    if not _openalea_installed:
+        if msg is None:
+            msg = (
+                "OpenAlea dependencies are not installed so some "
+                "features will not be available (e.g. plant "
+                "generation). These dependencies can be installed via "
+                "conda from the \"openalea3\" conda channel:\n"
+                "    \"conda install -c openalea3 openalea.lpy\""
+            )
+        raise MissingOpenAleaError(msg)
 
 
 class ClassRegistry(object):
@@ -1338,7 +1372,7 @@ def create_organ_symbol(name, fname, scale=None):
         PlantGL.FaceSet: Geometry.
 
     """
-    import openalea.plantgl.all as pgl
+    check_openalea()
     mesh = read_3D(fname)
     mins = np.array([1e6, 1e6, 1e6])
     maxs = np.array([-1e6, -1e6, -1e6])

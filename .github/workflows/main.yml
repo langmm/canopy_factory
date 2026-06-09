@@ -10,7 +10,7 @@ on:
     - cron: 0 10 * * 1  # 3AM PST
 
 env:
-  PYTHONVERSION_STD: "3.12"
+  PYTHONVERSION_STD: "3.13"
 
 jobs:
   tests:
@@ -23,21 +23,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", 3.11, 3.12, 3.13, 3.14]
+        # No OpenAlea LPy for 3.14 yet
+        python-version: ["3.10", 3.11, 3.12, 3.13]
         os: [ubuntu-latest]
+        with-lpy: [true]
         include:
-          - python-version: 3.14
+          - python-version: 3.13
             os: macos-latest
-          - python-version: 3.14
+            with-lpy: true
+          - python-version: 3.13
             os: windows-latest
+            with-lpy: true
+          - python-version: 3.13
+            os: ubuntu-latest
+            with-lpy: false
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: (CONDA) Set up miniconda base environment
+      - name: Install conda dependencies
         uses: conda-incubator/setup-miniconda@v3
+        if: matrix.with-lpy == true
         with:
           activate-environment: canopy
           auto-update-conda: true
@@ -45,11 +53,16 @@ jobs:
           channels: msys,conda-forge,openalea3
           channel-priority: strict
           environment-file: environment.yml
+      - name: Install Python w/o conda
+        uses: actions/setup-python@v6
+        if: matrix.with-lpy == false
+        with:
+          python-version: ${{ matrix.python-version }}
 
       # Build & install dependencies
-      - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
-        run: |
-          pip install yggdrasil-python-rapidjson
+      # - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available in order to install ePhotosynthesis from source
+      #   run: |
+      #     pip install yggdrasil-python-rapidjson
       # - name: Install embree & hothouse build dependencies
       #   run: |
       #     conda env update -n canopy --file environment_raytrace.yml
@@ -82,9 +95,14 @@ jobs:
         run: |
           pip install -v '.[dev]'
 
-      - name: Show installed packages
+      - name: Show packages installed via conda
+        if: matrix.with-lpy == true
         run: |
           conda list
+
+      - name: Show packages installed via pip
+        run: |
+          pip list
 
       - name: Check syntax
         run: |
@@ -125,9 +143,6 @@ jobs:
         channels: msys,conda-forge,fredboudon
         channel-priority: strict
         environment-file: environment.yml
-    - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
-      run: |
-        pip install yggdrasil-python-rapidjson
     - name: Install canopy_factory
       run: |
         pip install -v -e '.[dev]'

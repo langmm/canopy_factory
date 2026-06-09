@@ -20,12 +20,6 @@ dynamic = [
 #   "yggdrasil",
 #   "ePhotosynthesis_C", (or "sundials>=5.7.0" if building),
 # ]
-# pyembree_dependencies = [
-#   "cmake",
-#   "cython",
-#   "tbb",
-#   "tbb-devel",
-# ]
 dependencies = [
   "hothouse>=0.1.0",
   "imageio",

@@ -8,7 +8,7 @@ import time
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
-    cfg, get_class_registry,
+    cfg, get_class_registry, check_openalea,
     parse_quantity,
     cached_property, cached_args_property, readonly_cached_args_property,
     # Geometry
@@ -45,6 +45,7 @@ def generate_rays(ray_origins, ray_directions,
             for the generation process.
 
     """
+    check_openalea()
     from openalea.lpy import Lsystem
     param = {
         'ORIGINS': ray_origins.astype(np.float64),

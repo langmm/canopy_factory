@@ -7,6 +7,9 @@ on:
   push:
     branches: ["master"]
 
+env:
+  PYTHONVERSION_STD: "3.13"
+
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -24,10 +27,15 @@ jobs:
     #   run: |
     #     git fetch --prune --unshallow
     #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
-    - name: Install Python
-      uses: actions/setup-python@v6
+    - name: (CONDA) Set up miniconda base environment
+      uses: conda-incubator/setup-miniconda@v3
       with:
-        python-version: "3.14"
+        activate-environment: canopy
+        auto-update-conda: true
+        python-version: ${{ env.PYTHONVERSION_STD }}
+        channels: msys,conda-forge,openalea3
+        channel-priority: strict
+        environment-file: environment.yml
     - name: Install
       run: |
         pip install -v -e '.[dev]'
