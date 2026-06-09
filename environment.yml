@@ -5,8 +5,9 @@ channels:
   # - fredboudon
 dependencies:
   # - embreex  # Not available on conda-forge, can be removed once hothouse is published
-  # - hothouse
+  # - hothouse # Not available on conda-forge
   - ffmpeg
+  - git-changelog
   - imageio
   - matplotlib
   - numpy  # Compatibility with pandas

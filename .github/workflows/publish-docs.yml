@@ -1,0 +1,67 @@
+name: Build & deploy docs to GitHub pages
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+  push:
+    branches: ["master"]
+
+env:
+  PYTHONVERSION_STD: "3.12"
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the Docs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+    - uses: actions/checkout@v6
+    # - name: Get tags required by setuptools_scm to generate version
+    #   run: |
+    #     git fetch --prune --unshallow
+    #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
+    - name: (CONDA) Set up miniconda base environment
+      uses: conda-incubator/setup-miniconda@v4
+      with:
+        activate-environment: canopy
+        auto-update-conda: true
+        python-version: ${{ env.PYTHONVERSION_STD }}
+        channels: msys,conda-forge,openalea3
+        channel-priority: strict
+        environment-file: environment.yml
+    - name: Install
+      run: |
+        pip install -v -e '.[dev]'
+    - name: Build the docs
+      run: |
+        cd docs
+        make autodoc
+        cd ../
+    - name: Upload static files as artifact
+      id: deployment
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/build/html/
+
+  deploy:
+    name: Deploy the docs to GitHub pages
+    permissions:
+      pages: write       # Added for GitHub Pages deployment
+      id-token: write    # Necessary for actions/deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

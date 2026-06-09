@@ -1,4 +1,4 @@
-name: Build, test and upload to PyPI
+name: Build and test
 
 on:
   push:
@@ -23,19 +23,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.12]  # ["3.10", 3.11, 3.12, 3.13]  # , 3.14]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # No OpenAlea LPy for 3.14 yet
+        python-version: ["3.10", 3.11, 3.12]  # , 3.13, 3.14]
+        os: [ubuntu-latest]
+        with-lpy: [true]
+        include:
+          - python-version: 3.12
+            os: macos-latest
+            with-lpy: true
+          - python-version: 3.12
+            os: windows-latest
+            with-lpy: true
+          # - python-version: 3.12
+          #   os: ubuntu-latest
+          #   with-lpy: false
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      # - name: (WINDOWS,CONDA) Set up MSVC Compiler
-      #   uses: ilammy/msvc-dev-cmd@v1
-      #   if: matrix.os == 'windows-latest'
-      - name: (CONDA) Set up miniconda base environment
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Install conda dependencies
+        uses: conda-incubator/setup-miniconda@v4
+        if: matrix.with-lpy == true
         with:
           activate-environment: canopy
           auto-update-conda: true
@@ -43,11 +53,16 @@ jobs:
           channels: msys,conda-forge,openalea3
           channel-priority: strict
           environment-file: environment.yml
+      - name: Install Python w/o conda
+        uses: actions/setup-python@v6
+        if: matrix.with-lpy == false
+        with:
+          python-version: ${{ matrix.python-version }}
 
       # Build & install dependencies
-      - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
-        run: |
-          pip install yggdrasil-python-rapidjson
+      # - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available in order to install ePhotosynthesis from source
+      #   run: |
+      #     pip install yggdrasil-python-rapidjson
       # - name: Install embree & hothouse build dependencies
       #   run: |
       #     conda env update -n canopy --file environment_raytrace.yml
@@ -71,18 +86,23 @@ jobs:
       #   run: |
       #     cd ..
       #     ./canopy_factory/build_pyembree.sh
-      - name: Install hothouse
-        run: |
-          cd ..
-          ./canopy_factory/build_hothouse.sh
+      # - name: Install hothouse
+      #   run: |
+      #     cd ..
+      #     ./canopy_factory/build_hothouse.sh
 
       - name: Install canopy_factory
         run: |
           pip install -v '.[dev]'
 
-      - name: Show installed packages
+      - name: Show packages installed via conda
+        if: matrix.with-lpy == true
         run: |
           conda list
+
+      - name: Show packages installed via pip
+        run: |
+          pip list
 
       - name: Check syntax
         run: |
@@ -100,6 +120,12 @@ jobs:
         run: |
           make -C docs doctest -e PYTHON=$(which python3)
 
+      # Disable this once it is verified to work on all jobs
+      - name: Install pypa/build
+        run: python -m pip install build
+      - name: Build a binary wheel and a source tarball
+        run: python -m build
+
   docs:
     name: Build the Docs
     runs-on: ubuntu-latest
@@ -115,7 +141,7 @@ jobs:
     #     git fetch --prune --unshallow
     #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
     - name: Set up miniconda environment w/ dependencies
-      uses: conda-incubator/setup-miniconda@v3
+      uses: conda-incubator/setup-miniconda@v4
       with:
         activate-environment: canopy
         auto-update-conda: true
@@ -123,33 +149,23 @@ jobs:
         channels: msys,conda-forge,fredboudon
         channel-priority: strict
         environment-file: environment.yml
-    - name: Install yggdrasil-python-rapidjson via pip until conda-forge feedstock available
-      run: |
-        pip install yggdrasil-python-rapidjson
-    # - name: Install embree & hothouse build dependencies
-    #   run: |
-    #     conda env update -n canopy --file environment_raytrace.yml
-    - name: Install hothouse
-      run: |
-        cd ..
-        ./canopy_factory/build_hothouse.sh
     - name: Install canopy_factory
       run: |
-        pip install -v '.[dev]'
+        pip install -v -e '.[dev]'
     - name: Build the docs
       run: |
         cd docs
         make autodoc
         cd ../
-    - name: Publish docs to Github pages
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-      uses: JamesIves/github-pages-deploy-action@3.7.1
-      with:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        BRANCH: gh-pages
-        FOLDER: docs/build/html/
+    # - name: Publish docs to Github pages
+    #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+    #   uses: JamesIves/github-pages-deploy-action@3.7.1
+    #   with:
+    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #     BRANCH: gh-pages
+    #     FOLDER: docs/build/html/
 
-  build_sdist:
+  build:
     name: Build sdist & wheel
     runs-on: ubuntu-latest
     steps:
@@ -164,74 +180,17 @@ jobs:
       - name: Install pypa/build
         run: python -m pip install build
       - name: Build a binary wheel and a source tarball
-        run: python -m build  # --sdist
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: sdist
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
+        run: python -m build
 
-  # build_wheels:
-  #   name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
-  #   runs-on: ${{ matrix.os }}
-  #   strategy:
-  #     matrix:
-  #       os: [ubuntu-latest, macos-latest, windows-latest, macos-15-intel]
-  #       arch: [auto]
-  #     fail-fast: false
-            
-  #   steps:
-  #     - name: Checkout sources
-  #       uses: actions/checkout@v6
-
-  #     - name: Install Python
-  #       uses: actions/setup-python@v6
-  #       with:
-  #         python-version: ${{ env.PYTHONVERSION_STD }}
-
-  #     - name: Install cibuildwheel
-  #       run: python -m pip install cibuildwheel==3.4.0
-
-  #     - name: Build wheels
-  #       run: python -m cibuildwheel --output-dir wheelhouse
-  #       env:
-  #         CIBW_ARCHS_LINUX: ${{ matrix.arch }}
-  #         CIBW_ARCHS_MACOS: ${{ matrix.arch }}
-  #         CIBW_ENABLE: cpython-prerelease
-
-  #     - name: Upload artifacts
-  #       uses: actions/upload-artifact@v6
-  #       with:
-  #         name: wheels-for-${{ matrix.os }}-${{ matrix.arch }}
-  #         path: ./wheelhouse/*.whl
-
-  upload_wheels:
-    name: Upload wheels to PyPI
-    needs: [build_sdist]  # , build_wheels]
+  all_tests_passed:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-
-    # Upload only for release
-    if: github.event_name == 'release'
-
-    # Upload to PyPI on every tag starting with 'v'
-    # if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
-
+    name: All tests passed
+    needs: [tests, docs, build]
+    if: always()
     steps:
-      # - uses: actions/download-artifact@v6
-      #   with:
-      #     path: dist
-      #     pattern: wheels-for-*
-      #     merge-multiple: true
-      - uses: actions/download-artifact@v6
-        with:
-          path: dist
-          pattern: sdist
-          merge-multiple: true
-
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: All tests ok
+        if: ${{ !(contains(needs.*.result, 'failure')) }}
+        run: exit 0
+      - name: Some tests failed
+        if: ${{ contains(needs.*.result, 'failure') }}
+        run: exit 1
