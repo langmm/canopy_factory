@@ -5,7 +5,7 @@ on:
     types: [created]
   workflow_dispatch:
   push:
-    branches: ["master"]
+    branches: ["main"]
 
 env:
   PYTHONVERSION_STD: "3.12"

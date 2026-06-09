@@ -32,7 +32,7 @@ dependencies = [
   "scipy",
   "yggdrasil-python-rapidjson",
 ]
-description = "Tool for generating & utilizing 3D meshes for simulated canopies"
+description = "Tool for generating and utilizing 3D meshes for simulated canopies"
 license-files = ["LICEN[CS]E*"]
 license = "GPL-3.0-or-later"
 keywords = [
@@ -85,7 +85,7 @@ include-package-data = true
 packages = ["canopy_factory"]
 
 [tool.setuptools.dynamic]
-readme = {file = ["README.md"]}
+readme = {file = "README.md", content-type = "text/markdown"}
 
 [tool.setuptools_scm]
 version_file = "canopy_factory/_version.py"
