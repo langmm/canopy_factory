@@ -10,7 +10,7 @@ import contextlib
 import yggdrasil_rapidjson as rapidjson
 from canopy_factory.cli import SubparserBase
 from canopy_factory.utils import (
-    RegisteredMetaClass, get_class_registry, check_openalea,
+    RegisteredMetaClass, get_class_registry, check_optional_dependency,
     NoDefault, jsonschema2argument, format_list_for_help, UnitSet,
     cached_property, DataProcessor,
     DictWrapper, DictSet, PrefixedDict, SimpleWrapper, temporary_prefix,
@@ -1833,10 +1833,11 @@ class SimplePlantParameter(PlantParameterBase):
                         missing_errors.append(out[k].initialization_error)
                     out.pop(k)
             if missing:
+                missing_errors_str = "\n".join(missing_errors)
                 raise rapidjson.NormalizationError(
                     f'Failed to initialized child parameter '
                     f'instance(s): {missing}\n'
-                    f'{"\n".join(missing_errors)}'
+                    f'{missing_errors_str}'
                 )
             # Update parameters on the class
             self.log(f"ADDING:\n{pprint.pformat(out)}")
@@ -2674,7 +2675,7 @@ class ColorPlantParameter(SimplePlantParameter):
             turtle (plantgl.PglTurtle): Turtle to update.
 
         """
-        check_openalea()
+        check_optional_dependency("openalea")
         import openalea.plantgl.all as pgl
         c0 = self.get('')
         c1 = self.get('Final', None)
@@ -3162,7 +3163,7 @@ class CurvePlantParameter(SimplePlantParameter):
             NurbsCurve: Curve instance.
 
         """
-        check_openalea()
+        check_optional_dependency("openalea")
         import openalea.plantgl.math as pglmath
         from openalea.plantgl.math import Vector2, Vector3, Vector4
         from openalea.plantgl.scenegraph import NurbsCurve2D, NurbsCurve
@@ -3297,7 +3298,7 @@ class CurvePatchPlantParameter(SimplePlantParameter):
             NurbsCurve2D: Curve corresponding to value t.
 
         """
-        check_openalea()
+        check_optional_dependency("openalea")
         from openalea.plantgl.scenegraph import NurbsCurve2D
         if tnorm is not None:
             t = t / tnorm
@@ -3333,7 +3334,7 @@ class CurvePatchPlantParameter(SimplePlantParameter):
             NurbsPatch: Curve instance.
 
         """
-        check_openalea()
+        check_optional_dependency("openalea")
         import openalea.plantgl.all as pgl
         from openalea.plantgl.scenegraph import NurbsPatch
         # nbcurves = len(curves)

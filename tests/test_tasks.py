@@ -132,9 +132,9 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         return instance._testing_default_files[output]
 
     @pytest.fixture
-    def requires_openalea(self, output):
-        r"""bool: True if the test requires the OpenAlea dependencies."""
-        return False
+    def requires_optional_dependencies(self, output):
+        r"""list: Names of required optional dependencies."""
+        return []
 
     @pytest.fixture(scope="class")
     def tolerance_approx(self):
@@ -154,7 +154,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
                     create_missing_data, overwrite_existing_data,
                     compare_approx, compare_bytes,
                     compare_approx_csv, compare_bytes_csv,
-                    tolerance_approx, requires_openalea):
+                    tolerance_approx,
+                    requires_optional_dependencies):
         r"""Test creating output."""
         if fname_expected.endswith(('.png', '.gif')):
             # Don't compare png binaries
@@ -163,8 +164,9 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
                 or os.path.isfile(fname_expected)):
             raise AssertionError(f'Expected \"{output}\" output '
                                  f'does not exist: {fname_expected}')
-        if requires_openalea and not utils._openalea_installed:
-            with pytest.raises(utils.MissingOpenAleaError):
+        if not all(utils._optional_dependencies[x] for x in
+                   requires_optional_dependencies):
+            with pytest.raises(utils.MissingOptionalDependencyError):
                 instance.get_output(output)
             return
         data_actual = instance.get_output(output)
@@ -279,11 +281,11 @@ class TestGenerateTask(TestTask):
     # _compare_methods = {'generate': 'approx'}
 
     @pytest.fixture
-    def requires_openalea(self, output, instance_kwargs):
-        r"""bool: True if the test requires the OpenAlea dependencies."""
+    def requires_optional_dependencies(self, output, instance_kwargs):
+        r"""list: Names of required optional dependencies."""
         if instance_kwargs.get("canopy", None) == "tile":
-            return False
-        return True
+            return []
+        return ["openalea"]
 
     @pytest.fixture
     def compare_method(self, output, arguments):
@@ -452,6 +454,11 @@ class TestAnimateTask(TestTask):
             ],
         },
     }
+
+    @pytest.fixture
+    def requires_optional_dependencies(self, output):
+        r"""list: Names of required optional dependencies."""
+        return ["ffmpeg"]
 
 
 class TestMatchQueryTask(TestTask):

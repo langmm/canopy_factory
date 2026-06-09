@@ -12,6 +12,7 @@ import contextlib
 import itertools
 import re
 import glob
+import shutil
 from canopy_factory.config import PackageConfig
 from abc import abstractmethod
 from collections import OrderedDict
@@ -22,12 +23,15 @@ import yggdrasil_rapidjson as rapidjson
 from yggdrasil_rapidjson import units
 from yggdrasil_rapidjson.geometry import Ply as PlyDict
 from yggdrasil_rapidjson.geometry import ObjWavefront as ObjDict
+_optional_dependencies = {}
 try:
     from openalea.lpy import Lsystem
     import openalea.plantgl.all as pgl
-    _openalea_installed = Lsystem
+    _optional_dependencies["openalea"] = Lsystem
+    _optional_dependencies["openalea"] = False
 except ImportError:
-    _openalea_installed = False
+    _optional_dependencies["openalea"] = False
+_optional_dependencies["ffmpeg"] = shutil.which("ffmpeg")
 
 
 functools_cached_property = getattr(functools, "cached_property", None)
@@ -84,24 +88,28 @@ class NoDefault(object):
     pass
 
 
-class MissingOpenAleaError(RuntimeError):
-    r"""Error to raise when OpenAlea libraries are required, but could
-    not be found."""
+class MissingOptionalDependencyError(RuntimeError):
+    r"""Error to raise when an optional dependency is required, but not
+    installed."""
     pass
 
 
-def check_openalea(msg=None):
-    r"""Check if OpenAlea dependencies are installed.
+def check_optional_dependency(name, msg=None):
+    r"""Check if an optional dependency is installed.
 
     Args:
+        name (str): Name of the optional dependency to check.
         msg (str, optional): Error message to raise.
 
     Raises:
-        MissingOpenAleaError: If openalea dependencies are not installed.
+        MissingOptionalDependencyError: If the optional dependency is
+            not installed.
 
     """
-    if not _openalea_installed:
-        if msg is None:
+    if _optional_dependencies[name]:
+        return
+    if msg is None:
+        if name == "openalea":
             msg = (
                 "OpenAlea dependencies are not installed so some "
                 "features will not be available (e.g. plant "
@@ -109,7 +117,15 @@ def check_openalea(msg=None):
                 "conda from the \"openalea3\" conda channel:\n"
                 "    \"conda install -c openalea3 openalea.lpy\""
             )
-        raise MissingOpenAleaError(msg)
+        else:
+            msg = (
+                f"{name} is not installed so some features will not be "
+                f"available. This dependency can be "
+                f"installed by a OS package manager (e.g. homebrew, "
+                f"apt, vcpkg) or conda:\n"
+                f"    \"conda install {name}\""
+            )
+        raise MissingOptionalDependencyError(msg)
 
 
 class ClassRegistry(object):
@@ -929,6 +945,7 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
         verbose (bool, optional): If True, log messages will be emitted.
 
     """
+    check_optional_dependency("ffmpeg")
     if not frames:
         if verbose:
             print(f'No frames provided for creating movie \"{fname}\". '
@@ -1372,7 +1389,7 @@ def create_organ_symbol(name, fname, scale=None):
         PlantGL.FaceSet: Geometry.
 
     """
-    check_openalea()
+    check_optional_dependency("openalea")
     mesh = read_3D(fname)
     mins = np.array([1e6, 1e6, 1e6])
     maxs = np.array([-1e6, -1e6, -1e6])
@@ -1483,6 +1500,7 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
         cls: 3D geometry mesh for the scene.
 
     """
+    check_optional_dependency("openalea")
     if d is None:
         from openalea.plantgl.all import Tesselator
         d = Tesselator()
@@ -1561,6 +1579,7 @@ def shape2dict(shape, d=None, conversion=1.0, as_obj=False,
         dict: Dictionary of 3D geometry components.
 
     """
+    check_optional_dependency("openalea")
     if d is None:
         from openalea.plantgl.all import Tesselator
         d = Tesselator()

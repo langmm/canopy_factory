@@ -3,7 +3,7 @@ import os
 import copy
 import numpy as np
 from canopy_factory.utils import (
-    get_class_registry, DataProcessor, units, cfg, _openalea_installed
+    get_class_registry, DataProcessor, units, cfg
 )
 
 
@@ -199,18 +199,6 @@ def create_missing_data(request):
 @pytest.fixture(scope="session")
 def overwrite_existing_data(request):
     return request.config.getoption("--overwrite-existing-data")
-
-
-@pytest.fixture
-def requires_openalea():
-    if not _openalea_installed:
-        pytest.skip("OpenAlea dependencies are not installed")
-
-
-@pytest.fixture
-def requires_no_openalea():
-    if _openalea_installed:
-        pytest.skip("OpenAlea dependencies are installed")
 
 
 @pytest.fixture(scope="session")

@@ -5,7 +5,7 @@ import yggdrasil_rapidjson as rapidjson
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
-    check_openalea,
+    check_optional_dependency,
     parse_units, parse_quantity, parse_axis, parse_color,
     get_class_registry, UnitSet,
     cached_property,
@@ -1506,7 +1506,7 @@ class GenerateTask(TaskBase):
             ObjDict: Generated mesh.
 
         """
-        check_openalea()
+        check_optional_dependency("openalea")
         from openalea.lpy import Lsystem
         x = self.args.x
         y = self.args.y
