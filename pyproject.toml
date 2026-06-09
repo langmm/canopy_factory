@@ -27,8 +27,7 @@ dynamic = [
 #   "tbb-devel",
 # ]
 dependencies = [
-  "embreex",  # Can be removed once hothouse added as no direct dependence
-  # "hothouse>=0.1.0",  # should be installed from source on maize branch
+  "hothouse>=0.1.0",
   "imageio",
   "matplotlib>=3.10.0",
   "numpy>=1.13.0",
