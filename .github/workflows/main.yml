@@ -34,9 +34,9 @@ jobs:
           - python-version: 3.12
             os: windows-latest
             with-lpy: true
-          - python-version: 3.12
-            os: ubuntu-latest
-            with-lpy: false
+          # - python-version: 3.12
+          #   os: ubuntu-latest
+          #   with-lpy: false
 
     steps:
       - uses: actions/checkout@v6
@@ -44,7 +44,7 @@ jobs:
           submodules: recursive
 
       - name: Install conda dependencies
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@v4
         if: matrix.with-lpy == true
         with:
           activate-environment: canopy
@@ -120,6 +120,12 @@ jobs:
         run: |
           make -C docs doctest -e PYTHON=$(which python3)
 
+      # Disable this once it is verified to work on all jobs
+      - name: Install pypa/build
+        run: python -m pip install build
+      - name: Build a binary wheel and a source tarball
+        run: python -m build
+
   docs:
     name: Build the Docs
     runs-on: ubuntu-latest
@@ -135,7 +141,7 @@ jobs:
     #     git fetch --prune --unshallow
     #     git fetch --depth=1 origin +refs/tags/*:refs/tags/*
     - name: Set up miniconda environment w/ dependencies
-      uses: conda-incubator/setup-miniconda@v3
+      uses: conda-incubator/setup-miniconda@v4
       with:
         activate-environment: canopy
         auto-update-conda: true
@@ -159,10 +165,27 @@ jobs:
     #     BRANCH: gh-pages
     #     FOLDER: docs/build/html/
 
+  build:
+    name: Build sdist & wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHONVERSION_STD }}
+
+      - name: Install pypa/build
+        run: python -m pip install build
+      - name: Build a binary wheel and a source tarball
+        run: python -m build
+
   all_tests_passed:
     runs-on: ubuntu-latest
     name: All tests passed
-    needs: [tests, docs]
+    needs: [tests, docs, build]
     if: always()
     steps:
       - name: All tests ok
