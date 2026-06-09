@@ -53,7 +53,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
+  # "Programming Language :: Python :: 3.13",
   # "Programming Language :: Python :: 3.14",
 ]
 requires-python = ">= 3.10"
@@ -73,6 +73,7 @@ Changelog = "https://github.com/langmm/canopy_factory/blob/main/HISTORY.rst"
 
 [project.optional-dependencies]
 dev = [
+  'git-changelog',
   'pytest>=8.4',
   'pytest-cov',
   'sphinx',
@@ -151,7 +152,7 @@ manylinux-x86_64-image = "manylinux_2_28"
 
 [tool.black]
 line-length = 88
-target-version = ['py310', 'py311', 'py312', 'py313']  #, 'py314']
+target-version = ['py310', 'py311', 'py312']  # , 'py313']  #, 'py314']
 exclude = '''
 /(
     \.eggs
@@ -168,3 +169,8 @@ exclude = '''
 )/
 '''
 
+[tool.git-changelog]
+template = "keepachangelog"
+bump = "auto"
+output = "CHANGELOG.md"
+in-place = true
