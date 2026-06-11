@@ -69,7 +69,7 @@ Homepage = "https://github.com/langmm/canopy_factory"
 Documentation = "https://github.com/langmm/canopy_factory"
 Repository = "https://github.com/langmm/canopy_factory"
 Issues = "https://github.com/langmm/canopy_factory/issues"
-Changelog = "https://github.com/langmm/canopy_factory/blob/main/HISTORY.rst"
+Changelog = "https://github.com/langmm/canopy_factory/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
