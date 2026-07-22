@@ -50,19 +50,22 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
     _compare_methods = {}
 
     @pytest.fixture(scope="class")
-    def task_name(self):
+    @classmethod
+    def task_name(cls):
         r"""str: Name of the task being tested."""
-        if self._registry_name is None:
+        if cls._registry_name is None:
             pytest.skip()
-        return self._registry_name
+        return cls._registry_name
 
     @pytest.fixture(scope="class")
-    def task_class(self, task_name):
+    @classmethod
+    def task_class(cls, task_name):
         r"""type: Task class."""
         return utils.get_class_registry().get('task', task_name)
 
     @pytest.fixture(scope="class")
-    def crop_class(self, crop):
+    @classmethod
+    def crop_class(cls, crop):
         r"""type: Crop generator class."""
         return utils.get_class_registry().get('crop', crop)
 
@@ -72,11 +75,12 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         return self._compare_methods.get(output, 'bytes')
 
     @pytest.fixture(scope="class")
-    def instance_kwargs(self, task_class, crop_class,
+    @classmethod
+    def instance_kwargs(cls, task_class, crop_class,
                         crop, id, data_year, arguments, test_output_dir):
         r"""dict: Keyword arguments for creating the instance."""
         out = {'output_dir': test_output_dir}
-        for k in ['crop'] + self._params_data:
+        for k in ['crop'] + cls._params_data:
             x = eval(k)
             if arguments.get(k, x) != x:
                 pytest.skip(f'{k} specified by arguments')
@@ -87,7 +91,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         return out
 
     @pytest.fixture(scope="class")
-    def instance(self, task_class, instance_kwargs, test_output_dir,
+    @classmethod
+    def instance(cls, task_class, instance_kwargs, test_output_dir,
                  add_step_output):
         r"""TaskBase: Task instance for testing."""
         out = task_class.from_kwargs(instance_kwargs)
@@ -137,7 +142,8 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         return []
 
     @pytest.fixture(scope="class")
-    def tolerance_approx(self):
+    @classmethod
+    def tolerance_approx(cls):
         r"""Method to determine tolerance to use for approximate
         comparison based on the type of output."""
 
@@ -153,7 +159,7 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
                     fname_actual, fname_expected, approx_nested,
                     create_missing_data, overwrite_existing_data,
                     compare_approx, compare_bytes,
-                    compare_approx_csv, compare_bytes_csv,
+                    compare_approx_data, compare_bytes_csv,
                     tolerance_approx,
                     requires_optional_dependencies):
         r"""Test creating output."""
@@ -237,7 +243,8 @@ class TestLayoutTask(TestTask):
     }
 
     @pytest.fixture(scope="class")
-    def instance_kwargs(self, task_class, arguments, test_output_dir):
+    @classmethod
+    def instance_kwargs(cls, task_class, arguments, test_output_dir):
         r"""dict: Keyword arguments for creating the instance."""
         out = dict(
             arguments,
@@ -342,8 +349,7 @@ class TestRayTraceTask(TestTask):
         },
     }
     _compare_methods = {
-        # 'raytrace': 'bytes_csv',
-        'raytrace': 'approx_csv',
+        'raytrace': 'approx_data',
         'raytrace_limits': 'approx',
         'raytrace_stats': 'approx',
         'traced_mesh': False,

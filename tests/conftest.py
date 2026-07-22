@@ -388,7 +388,7 @@ def approx_nested(apply_nested):
 
 
 @pytest.fixture(scope="session")
-def compare_approx_csv(compare_approx):
+def compare_approx_data(compare_approx):
     r"""Compare two objects using approximate equality for floats.
 
     Args:
@@ -397,7 +397,7 @@ def compare_approx_csv(compare_approx):
 
     """
 
-    def _compare_approx_csv(actual, expected, **kwargs):
+    def _compare_approx_data(actual, expected, **kwargs):
         flag = 'HEADER_JSON'
         if flag in expected:
             assert flag in actual
@@ -408,7 +408,7 @@ def compare_approx_csv(compare_approx):
             actual = {k: v for k, v in actual.items() if k != flag}
         compare_approx(actual, expected, **kwargs)
 
-    return _compare_approx_csv
+    return _compare_approx_data
 
 
 @pytest.fixture(scope="session")

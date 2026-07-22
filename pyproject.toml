@@ -30,6 +30,7 @@ dependencies = [
   "pyshp",
   "pyyaml",
   "scipy",
+  "simulatr",
   "yggdrasil-python-rapidjson",
 ]
 description = "Tool for generating and utilizing 3D meshes for simulated canopies"
@@ -50,13 +51,12 @@ classifiers = [
   "Natural Language :: English",
   "Topic :: Scientific/Engineering",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   # "Programming Language :: Python :: 3.13",
   # "Programming Language :: Python :: 3.14",
 ]
-requires-python = ">= 3.10"
+requires-python = ">= 3.11"
 
 # [project.scripts]
 # canopy_factory = "canopy_factory.cli:parse_args"
@@ -108,6 +108,11 @@ filterwarnings = [
   "ignore:((.|\n)*)was set from the constructor((.\n)*)",
   # Error from pvlib import
   "ignore:((.|\n)*)Implicit None on return values is deprecated and will raise KeyErrors((.\n)*)",
+  # Error from pandas use of tzinfo
+  "ignore:((.|\n)*)datetime\\.datetime\\.utcfromtimestamp((.|\n)*):DeprecationWarning:pytz.*",
+  "ignore:((.|\n)*)datetime\\.datetime\\.utcfromtimestamp((.|\n)*):DeprecationWarning:pandas.*",
+  "ignore:((.|\n)*)datetime\\.datetime\\.utcfromtimestamp((.|\n)*):DeprecationWarning:dateutil.*",
+  "ignore:((.|\n)*)will be accessed as an attribute((.|\n)*):FutureWarning:earthaccess.*",
 ]
 
 [tool.coverage.run]
@@ -152,7 +157,7 @@ manylinux-x86_64-image = "manylinux_2_28"
 
 [tool.black]
 line-length = 88
-target-version = ['py310', 'py311', 'py312']  # , 'py313']  #, 'py314']
+target-version = ['py311', 'py312']  # , 'py313']  #, 'py314']
 exclude = '''
 /(
     \.eggs

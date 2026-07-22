@@ -3993,6 +3993,8 @@ class TaskBase(SubparserBase):
                     fd, datetime_mode=rapidjson.DM_ISO8601)
         elif ext == '.csv':
             return utils.read_csv(fname, verbose=args.verbose)
+        elif ext == '.hdf5':
+            return utils.read_hdf5(fname, verbose=args.verbose)
         elif ext in ['.obj', '.ply']:
             return utils.read_3D(
                 fname, file_format=getattr(args, 'mesh_format', None),
@@ -4050,6 +4052,9 @@ class TaskBase(SubparserBase):
             return
         elif ext == '.csv':
             utils.write_csv(output, fname, verbose=args.verbose)
+            return
+        elif ext == '.hdf5':
+            utils.write_hdf5(output, fname, verbose=args.verbose)
             return
         elif ext in ['.obj', '.ply']:
             utils.write_3D(output, fname,

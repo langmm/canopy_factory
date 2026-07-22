@@ -1,0 +1,84 @@
+[workspace]
+name = "canopy_factory"
+version = "0.1.0"
+description = "Tool for generating and utilizing 3D meshes for simulated canopies"
+authors = ["Meagan Lang <langmm.astro@gmail.com>"]
+license = "GPL-3.0-or-later"
+channels = ["conda-forge", "openalea3"]
+# openalea.lpy does not build for linux-aarch64
+# platforms = ["osx-64", "osx-arm64", "linux-64", "linux-aarch64", "win-64"]
+platforms = ["osx-64", "osx-arm64", "linux-64", "win-64"]
+
+[dependencies]
+python = ">=3.11"
+ffmpeg = "*"
+git-changelog = "*"
+imageio = "*"
+matplotlib = ">=3.10.0"
+numpy = ">=1.13.0"
+"openalea.lpy" = "*"
+pandas = "*"
+pvlib = ">=0.7.2"
+pyshp = "*"
+pyyaml = "*"
+scipy = "*"
+simulatr = "*"
+yggdrasil-rapidjson = "*"
+yggdrasil-python-rapidjson = "*"
+# yggdrasil
+# yggdrasil dependencies
+# ePhotosynthesis_C  # Once this is released
+# sundials = ">=5.7.0"  # For building ePhotosynthesis_C
+
+[pypi-dependencies]
+hothouse = ">=0.1.0"
+canopy_factory = { path = ".", editable = true }
+
+[feature.dev.dependencies]
+conda-index = "*"
+flake8 = "*"
+git-changelog = "*"
+myst-parser = "*"
+pytest = "*"
+pytest-cov = "*"
+python-build = "*"
+sphinx = "*"
+
+[feature.dev.tasks]
+test = { cmd = "pytest", description = "Run the test suite" }
+lint = { cmd = "flake8 simulatr tests", description = "Lint the codebase" }
+docs = { cmd = "sphinx-build docs docs/_build", description = "Build the documentation" }
+changelog = {
+    cmd = "git-changelog",
+    description = "Update the change log"
+}
+build-conda = {
+    cmd = "pixi publish --path recipe --target-dir build",
+    description = "Build the conda package with pixi publish"
+}
+
+[feature.apsimx.dependencies]
+dotnet = ">=8.0.0,<9.0.0"
+gtk3 = "*"
+git = "*"
+
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
+[feature.py313.dependencies]
+python = "3.13.*"
+
+# [feature.py314.dependencies]
+# python = "3.14.*"
+
+[environments]
+py311 = ["dev", "py311", "apsimx"]
+py312 = ["dev", "py312", "apsimx"]
+py313 = ["dev", "py313", "apsimx"]
+# py314 = ["dev", "py314", "apsimx"]
+default = ["dev", "py313", "apsimx"]
+dev = ["dev", "py313", "apsimx"]
+prod = ["py313", "apsimx"]

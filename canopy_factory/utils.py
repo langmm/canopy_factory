@@ -988,6 +988,92 @@ def write_movie(frames, fname, frame_rate=1, verbose=False):
         print(f'Wrote movie with {len(frames)} frames to \"{fname}\"')
 
 
+def read_hdf5(fname, select=None, verbose=False, include_units=True):
+    r"""Read data from a HDF5 file.
+
+    Args:
+        fname (str): Path to file that should be read.
+        select (str, list, optional): One or more fields that should be
+            selected.
+        verbose (bool, optional): If True, log messages will be emitted.
+        include_units (bool, optional): If True, units contained in the
+            header names will be added to the returned columns.
+
+    Returns:
+        dict: HDF5 contents with colums as key/value pairs.
+
+    """
+    if verbose:
+        print(f'Reading HDF5 from \"{fname}\"')
+    out = {}
+    with pd.HDFStore(fname, mode='r') as store:
+        if 'HEADER_JSON' in store:
+            header = store.get('HEADER_JSON')
+            out['HEADER_JSON'] = rapidjson.loads(header.iloc[0][0])
+        df = store.get("DATA")
+    for k in df.columns:
+        out[k] = df[k].to_numpy()
+        if len(out[k]) == 0 and out[k].dtype == object:
+            out[k] = np.zeros((0, ), dtype='float64')
+    for k in list(out.keys()):
+        if ' (' in k:
+            k_name, k_units = k.split(' (', 1)
+            k_units = k_units.rsplit(')', 1)[0]
+            if include_units:
+                out[k_name] = units.QuantityArray(out.pop(k), k_units)
+            else:
+                out[k_name] = out.pop(k)
+    if isinstance(select, str):
+        out = out[select]
+    elif isinstance(select, list):
+        out = {k: out[k] for k in select}
+    if verbose:
+        print(f'Read HDF5 from \"{fname}\"')
+    return out
+
+
+def write_hdf5(data, fname, verbose=False):
+    r"""Write columns to a HDF5 file.
+
+    Args:
+        data (dict): Table columns.
+        fname (str): Path to file where the HDF5 should be saved.
+        verbose (bool, optional): If True, log messages will be emitted.
+
+    """
+    if verbose:
+        print(f"Writing HDF5 to \"{fname}\"")
+    header_json = None
+    if 'HEADER_JSON' in data:
+        header_json = pd.DataFrame([rapidjson.dumps(data['HEADER_JSON'])])
+        data = {k: v for k, v in data.items() if k != 'HEADER_JSON'}
+    data_units = {
+        k: (v.units if isinstance(v, units.QuantityArray)
+            else '')
+        for k, v in data.items()
+    }
+    if any(data_units.values()):
+        data = {
+            (f'{k} ({data_units[k]}' if data_units[k]
+             else k): v
+            for k, v in data.items()
+        }
+    try:
+        df = pd.DataFrame(data)
+    except ValueError:
+        print(data)
+        print(data.keys())
+        print({k: type(v) for k, v in data.items()})
+        pdb.set_trace()
+        raise
+    with pd.HDFStore(fname, mode='w') as store:
+        store.put("DATA", df)
+        if header_json is not None:
+            store.put("HEADER_JSON", header_json)
+    if verbose:
+        print(f"Wrote HDF5 to \"{fname}\"")
+
+
 def read_csv(fname, select=None, verbose=False, include_units=True):
     r"""Read data from a CSV file.
 
