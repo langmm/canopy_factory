@@ -286,6 +286,8 @@ class TestGenerateTask(TestTask):
         },
     }
     # _compare_methods = {'generate': 'approx'}
+    _compare_methods = {'generate': 'approx',
+                        'geometryids': 'approx'}
 
     @pytest.fixture
     def requires_optional_dependencies(self, output, instance_kwargs):

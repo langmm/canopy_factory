@@ -1340,9 +1340,9 @@ class SimplePlantParameter(PlantParameterBase):
         """
         strip_units = kwargs.pop('strip_units', False)
         kws_index = {
-            k.lower(): kwargs.pop(k.lower()) for k in
+            kidx.lower(): kwargs.pop(kidx.lower()) for kidx in
             ParameterIndex.parameter_names
-            if k.lower() in kwargs
+            if kidx.lower() in kwargs
         }
         kws_index['unit_system'] = self.unit_system
         with self.temporary_index(*args, **kws_index):
@@ -2361,6 +2361,7 @@ class FunctionPlantParameter(OptionPlantParameter):
             variables = {
                 k: self.get(k, None) for k in self.variable_parameters
             }
+            variables["self"] = self
             return eval(expression, globals={}, locals=variables)
         v = self.get(self.namevar)
         if func == 'alias':
@@ -2812,29 +2813,45 @@ class ScalarPlantParameter(SimplePlantParameter):
             _help=('Dependence of {parents[0]} on the {component} '
                    'branch level'),
         ),
+        'MassFunc': FunctionPlantParameter.specialize(
+            'mass_func',
+            _help='Dependence of {parents[0]} on the {component} mass',
+            component_properties=['Density', 'MassPartitioned'],
+            # _default='expression',
+            # defaults={
+            #     'Expression': 'self.component.MassFraction()',
+            # },
+        ),
     }
     _required = ['']
     _modifiers = [
         'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc', 'BFunc',
+        'MassFunc',
     ]
     _property_dependencies = dict(
         SimplePlantParameter._property_dependencies,
         **{k: {'': True} for k in [
             'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
-            'BFunc',
+            'BFunc', 'MassFunc',
         ]}
     )
     _property_dependencies_defaults = dict(
         SimplePlantParameter._property_dependencies_defaults,
-        **{'': {
-            'value': 1.0,
-            'conditions': {
-                k: True for k in [
-                    'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
-                    'BFunc',
-                ]
+        **{
+            '': {
+                'value': 1.0,
+                'conditions': {
+                    k: True for k in [
+                        'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc',
+                        'WFunc', 'BFunc', 'MassFunc',
+                    ]
+                },
             },
-        }}
+            'AgeFunc': {
+                'value': 'one',
+                'conditions': {'MassFunc': True},
+            },
+        }
     )
 
     @cached_property
@@ -3542,24 +3559,37 @@ class ComponentBase(SimplePlantParameter):
     def production_check_remove(self, production=False):
         r"""list: Lsystem production rule lines to remove component if
         n or b are outside the limits for the component."""
-        out = []
-        for k in ['n', 'b']:
+        # out = []
+        # for k in ['n', 'b']:
+        #     out += [
+        #         f'{k}min = generator.{self.name}{k.upper()}First()',
+        #         f'{k}max = generator.{self.name}{k.upper()}Last()',
+        #         f'{k}period = generator.{self.name}{k.upper()}Period()',
+        #         f'if (({k} < {k}min',
+        #         f'     or ({k}max != -1 and {k} > {k}max)',
+        #         f'     or ((({k} - {k}min) % {k}period) != 0))):',
+        #     ]
+        #     if production:
+        #         out += [
+        #             '    produce *',
+        #         ]
+        #     else:
+        #         out += [
+        #             '    produce [/(0)]',
+        #         ]
+        args = self.lsystem_args(for_rule=production)
+        out = [
+            f'if not generator.CheckProduceComponent'
+            f'("{self.name}",{args}):'
+        ]
+        if production:
             out += [
-                f'{k}min = generator.{self.name}{k.upper()}First()',
-                f'{k}max = generator.{self.name}{k.upper()}Last()',
-                f'{k}period = generator.{self.name}{k.upper()}Period()',
-                f'if (({k} < {k}min',
-                f'     or ({k}max != -1 and {k} > {k}max)',
-                f'     or ((({k} - {k}min) % {k}period) != 0))):',
+                '    produce *',
             ]
-            if production:
-                out += [
-                    '    produce *',
-                ]
-            else:
-                out += [
-                    '    produce [/(0)]',
-                ]
+        else:
+            out += [
+                '    produce [/(0)]',
+            ]
         return out
 
     @property
@@ -3572,14 +3602,9 @@ class ComponentBase(SimplePlantParameter):
         r"""list: Lsystem production rule lines."""
         args = self.lsystem_args(for_rule=True)
         args_inc = self.lsystem_args(ageinc=True, for_rule=True)
-        prefix = f'generator.{self.name}'
         out = self.production_check_remove(production=True)
         out += [
-            f'if age >= {prefix}AgeRemove():',
-            '    if generator.verbose_lpy:',
-            f'        print(f"Removing {self.name}[{{age}},{{n}}]")',
-            '    produce *',
-            'elif (time + age) >= OUTPUT_TIME:',
+            'if (time + age) >= OUTPUT_TIME:',
             f'    produce {self.name}({args})',
         ]
         out += self.additional_production_conditions
@@ -3617,6 +3642,43 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
             constants={
                 'Min': 0,
             },
+            property_dependencies_defaults={
+                'MassFunc': {
+                    'value': 'expression',
+                    'conditions': {
+                        'Density': True,
+                        'MassPartitioned': True,
+                    },
+                },
+                'MassFuncExpression': {
+                    'value': 'self.component.MassFraction()',
+                    'conditions': {
+                        'Density': True,
+                        'MassPartitioned': True,
+                    },
+                },
+                # 'AgeFunc': {
+                #     'value': 'linear',
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
+                # 'AgeFuncIntercept': {
+                #     'value': 0.0,
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
+                # 'AgeFuncSlope': {
+                #     'value': 1.0,
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
+            },
             defaults={
                 'AgeFunc': 'linear',
                 'AgeFuncSlope': 1.0,
@@ -3629,6 +3691,43 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
             _unit_dimension='length',
             constants={
                 'Min': 0,
+            },
+            property_dependencies_defaults={
+                'MassFunc': {
+                    'value': 'expression',
+                    'conditions': {
+                        'Density': True,
+                        'MassPartitioned': True,
+                    },
+                },
+                'MassFuncExpression': {
+                    'value': 'self.component.MassFraction()',
+                    'conditions': {
+                        'Density': True,
+                        'MassPartitioned': True,
+                    },
+                },
+                # 'AgeFunc': {
+                #     'value': 'linear',
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
+                # 'AgeFuncIntercept': {
+                #     'value': 0.0,
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
+                # 'AgeFuncSlope': {
+                #     'value': 1.0,
+                #     'conditions': {
+                #         'Density': False,
+                #         'MassPartitioned': False,
+                #     },
+                # },
             },
             defaults={
                 'AgeFunc': 'linear',
@@ -3689,14 +3788,18 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         ),
         Density={
             'type': 'scalar', 'subtype': 'float', 'units': 'g/cm**3',
-            'description': ('Density of the component tissue that '
-                            'should be used to calculate the component '
-                            'mass based on its volume.'),
+            'description': (
+                'Density of the component tissue that '
+                'should be used to calculate the component '
+                'mass based on its volume.'
+            ),
         },
-        # AvailableCarbon={
-        #     'type': 'scalar', 'subtype': 'float', 'units': 'g',
-        #     'description': (
-        # },
+        MassPartitioned={
+            'type': 'scalar', 'subtype': 'float', 'units': 'g',
+            'description': (
+                "Mass allocated to {component} components."
+            )
+        },
     )
     _defaults = dict(
         OptionPlantParameter._defaults,
@@ -3775,8 +3878,25 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
                 else:
                     area = np.pi
                 return length * area * (r ** 2)
+        elif method == "sphere":
+            r = self.get('Width') / 2
+            return 4.0 * np.pi * (r ** 3) / 3.0
+        # elif method == "template2d":
+        #     area = TEMPLATE AREA
+        #     return self.get('Thickness') * area
+        # elif method == "template3d":
+        #     return TEMPLATE VOLUME
         else:
             raise NotImplementedError(method)
+
+    def Mass(self):
+        r"""units.Quantity: The mass contained within the component."""
+        return self.get("Density") * self.Volume()
+
+    def MassFraction(self):
+        r"""float: Fraction of mass available."""
+        return self.root.mass_regulated_growth(
+            self.name, self.current_index)
 
     def produce_geometry(self, for_rule=False):
         r"""Get the LSystem lines for producing the geometry.
@@ -4294,6 +4414,7 @@ class PlantGenerator(ParameterCollection):
         param = ParameterDict(param, logger=self)
         self.context = context
         self._cache = ParameterCache()
+        self._component_ledger = {}
         super(PlantGenerator, self).__init__(
             '', param, None, required=True,
         )
@@ -4445,3 +4566,75 @@ class PlantGenerator(ParameterCollection):
             print(traceback.format_exc())
             raise
         return '\n'.join(out)
+
+    def CheckProduceComponent(self, name, *args, **kwargs):
+        kwargs["unit_system"] = self.unit_system
+        idx = ParameterIndex(*args, **kwargs)
+        component = self.parameters[name]
+        for var in ["N", "B"]:
+            x = idx[var]
+            xmin = component.get(f"{var}First", 0)
+            xmax = component.get(f"{var}Max", -1)
+            xperiod = component.get(f"{var}Period", 1)
+            if ((x < xmin
+                 or (xmax != -1 and x > xmax)
+                 or (((x - xmin) % xperiod) != 0))):
+                return False
+        if idx["Age"] >= component.get("AgeRemove"):
+            if self.verbose_lpy:
+                print(f"Removing {name}[{idx}]")
+            self.RemoveComponent(name, idx)
+            return False
+        self.ProduceComponent(name, idx)
+        return True
+
+    def ProduceComponent(self, name, idx):
+        self._component_ledger.setdefault(name, {})
+        idx0 = copy.copy(idx)
+        idx0["Time"] = None
+        idx0["Age"] = None
+        self._component_ledger[name].setdefault(idx0, idx)
+        self._component_ledger[name][idx0]["Age"] = idx["Age"]
+
+    def RemoveComponent(self, name, idx):
+        # TODO: Trace separately
+        self.ProduceComponent(name, idx)
+
+    def mass_regulated_growth(self, component, idx):
+        if component not in self.component_cohorts:
+            return None
+        cohorts = self.component_cohorts[component]
+        idx0 = copy.copy(idx)
+        idx0["Time"] = None
+        idx0["Age"] = None
+        idx0["X"] = None
+        tcohort = self._component_ledger[component][idx0]["Time"]
+        return cohorts[tcohort][idx0]["fraction"]
+
+    @cached_property
+    def component_cohorts(self):
+        out = {}
+        for k, v in self._component_ledger.items():
+            component = self.parameters[k]
+            available_mass = component.get("MassPartitioned", None)
+            density = component.get("Density", None)
+            if available_mass is None or density is None:
+                continue
+            out[k] = {}
+            for kidx, vidx in v.items():
+                out[k].setdefault(vidx["Time"], {})
+                with self.cache.temporary_index(kidx):
+                    out[k][vidx["Time"]][kidx] = {
+                        "required": component.Mass(),
+                    }
+            for kt in sorted(out[k].keys()):
+                mreq = sum(x["required"] for x in
+                           out[k][kt].values())
+                mava = (available_mass if available_mass < mreq else mreq)
+                for kidx, kmass in out[k][kt].keys():
+                    kmass["cohort_fraction"] = kmass["required"] / mreq
+                    kmass["available"] = mava * kmass["cohort_fraction"]
+                    kmass["fraction"] = (
+                        kmass["available"] / kmass["required"])
+                available_mass = available_mass - mava
+        return out

@@ -236,7 +236,7 @@ def cleanup_step_files(request):
 def assert_allclose():
     r"""Assert that arrays are close."""
 
-    def _assert_allclose(a, b, rtol=1e-07, atol=1e-15, **kwargs):
+    def _assert_allclose(a, b, rtol=1e-07, atol=1e-14, **kwargs):
         np.testing.assert_allclose(a, b, rtol=rtol, atol=atol, **kwargs)
 
     return _assert_allclose

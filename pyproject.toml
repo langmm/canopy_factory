@@ -113,6 +113,8 @@ filterwarnings = [
   "ignore:((.|\n)*)datetime\\.datetime\\.utcfromtimestamp((.|\n)*):DeprecationWarning:pandas.*",
   "ignore:((.|\n)*)datetime\\.datetime\\.utcfromtimestamp((.|\n)*):DeprecationWarning:dateutil.*",
   "ignore:((.|\n)*)will be accessed as an attribute((.|\n)*):FutureWarning:earthaccess.*",
+  # Error from matplotlib use of timedelta
+  "ignore:((.|\n)*)unit for NumPy timedelta is deprecated((.|\n)*):DeprecationWarning:matplotlib.*",
 ]
 
 [tool.coverage.run]

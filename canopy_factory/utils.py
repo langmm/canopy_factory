@@ -28,7 +28,7 @@ try:
     from openalea.lpy import Lsystem
     import openalea.plantgl.all as pgl
     _optional_dependencies["openalea"] = Lsystem
-    _optional_dependencies["openalea"] = False
+    _optional_dependencies["openalea"] = True
 except ImportError:
     _optional_dependencies["openalea"] = False
 _optional_dependencies["ffmpeg"] = shutil.which("ffmpeg")
@@ -1858,8 +1858,8 @@ def scale_mesh(mesh, scale, from_units=None, to_units=None):
     if scale == 1.0:
         return mesh
     mesh_dict = mesh.as_array_dict()
-    if isinstance(mesh, ObjDict):
-        mesh_dict['face'] -= 1
+    # if isinstance(mesh, ObjDict):
+    #     mesh_dict['face'] -= 1
     mesh_dict['vertex'] *= scale
     return type(mesh).from_array_dict(mesh_dict)
 
@@ -1890,8 +1890,8 @@ def shift_mesh(mesh, x, y, axis_up=np.array([0, 0, 1], dtype=np.float64),
 
     """
     mesh_dict = mesh.as_array_dict()
-    if isinstance(mesh, ObjDict) and 'face' in mesh_dict:
-        mesh_dict['face'] -= 1
+    # if isinstance(mesh, ObjDict) and 'face' in mesh_dict:
+    #     mesh_dict['face'] -= 1
     if 'vertex' in mesh_dict:
         axis_y = np.cross(axis_up, axis_x)
         mesh_dict['vertex'] += x * axis_x
@@ -3089,8 +3089,9 @@ def get_mesh_dict(x):
     out.setdefault('face', np.empty((0,), dtype=np.int64))
     out.setdefault('vertex', np.empty((0, 3), dtype=np.double))
     out.setdefault('vertex_colors', np.empty((0, 3), dtype=np.int32))
-    if isinstance(x, ObjDict):
-        out['face'] -= 1
+    # Not required for yggdrasil_rapidjson 1.23.0.1
+    # if isinstance(x, ObjDict):
+    #     out['face'] -= 1
     return out
 
 

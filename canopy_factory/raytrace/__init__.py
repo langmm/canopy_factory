@@ -5,6 +5,7 @@ import itertools
 import pprint
 import copy
 import time
+import simulatr
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
@@ -1776,6 +1777,14 @@ class TotalsTask(TemporalTaskBase):
                 'outputs': ['totals_plot'],
             },
         }),
+        (('--crop-model', ), {
+            'type': str, 'choices': simulatr.registered_simulators(
+                only_installed=True),
+            'help': (
+                'Name of a crop model that should be coupled to '
+                'the canopy model'
+            ),
+        }),
     ]
 
     @classmethod
@@ -1820,6 +1829,33 @@ class TotalsTask(TemporalTaskBase):
         return self.axes.axvline(x=self.args.start_time.time,
                                  color=(0, 0, 0),
                                  alpha=0.5, linewidth=10)
+
+    @cached_property
+    def crop_model_engine(self):
+        r"""simulatr.BaseEngine: Simulator engined."""
+        if not self.args.crop_model:
+            return None
+        out = simulatr.run(
+            self.args.crop_model,
+            crop_name=self.args.crop_name,
+            start_time=self.args.start_time.planting_date,
+            end_time=self.args.end_time.time,
+            latitude=self.args.latitude,
+            longitude=self.args.longitude,
+            timestep=utils.quantity2timedelta(self.args.step_interval),
+            actions={},
+            param={
+                "Area": 1.0,  # ha
+                "RowSpacing": self.args.row_spacing.to("mm").value,
+                "Population": 1.0 / (
+                    (self.args.row_spacing
+                     * self.args.plant_spacing).to("m**2").value  # /m2,
+                ),
+            },
+            # TODO: output_vars, param
+        )
+        out.fast_forward(self.args.start_time.time)
+        return out
 
     def mark_time(self, time):
         r"""Mark a time with a vertical line on the figure.
@@ -2001,6 +2037,47 @@ class TotalsTask(TemporalTaskBase):
 
         """
         value = x.get_output('raytrace_stats')
+        if self.crop_model_engine:
+            # TODO: Get intercepted light for next step
+            #   - Set LAI
+            #   - Resume simulation to next step
+            #   - Get mass allocated to each component
+            # TODO: Select from this based on the crop generator
+            component_map = {
+                "Internode": "Stem",
+                "Leaf": "Leaf",
+                "Petiole": "Petiole",
+                # "Fruit": "Grain",
+            }
+            # TODO: LAI per canopy layer or light profile?
+            self.crop_model_engine.set(
+                "[PLANT].Leaf.LAI", value["LAI"]
+            )
+            self.crop_model_engine.resume()
+            # TODO: Scale weight by plants/area to get weight per plant
+            # TODO: Get live vs. dead wt? (e.g. [PLANT].Leaf.Live.Wt)
+            # crop_model_area = units.Quantity(1.0, "ha")
+            # canopy_model_area = (
+            #     self.args.plot_length * self.args.plot_width)
+            plant_area = (
+                self.args.row_spacing * self.args.plant_spacing)
+            # mass_per_plant = plant_area / crop_model_area
+            parameters = {
+                k: f"[PLANT].{v}.Wt" for k, v in component_map.items()
+            }
+            components = self.crop_model_engine.getvars(
+                list(parameters.values()))
+            # TODO: Disable age dependency when carbon dependency in
+            #   effect
+            # TODO: Need to add suffix indicating that the parameters
+            #   are different
+            self.args_overwrite.update(**{
+                f"{k}.MassPartitioned": (
+                    plant_area
+                    * units.Quantity(components[v], "g/m^2")
+                )
+                for k, v in parameters.items()
+            })
         return (x.args.time.time, value)
 
     def join_steps(self, xlist):

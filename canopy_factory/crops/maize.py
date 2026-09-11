@@ -47,6 +47,7 @@ class MaizeGenerator(MonocotGenerator):
             0.27, 0.30, 0.42, 0.73, 0.88, 1.0, 0.91, 0.76, 0.55, 0,
             # 0.09, 0.1, 0.14, 0.24, 0.29, 0.33, 0.3, 0.25, 0.18, 0
         ]),
+        LeafDensity=0.25,
         InternodeMethod='cylinder',
         InternodeNDivide=10,
         InternodeLength=8.5,

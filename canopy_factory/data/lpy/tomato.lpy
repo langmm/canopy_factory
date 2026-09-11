@@ -44,25 +44,9 @@ derivation length: DERIVATION_LENGTH
 production:
 
 Apex(time,age,n,b):
-    nmin = generator.ApexNFirst()
-    nmax = generator.ApexNLast()
-    nperiod = generator.ApexNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Apex",time,age,n,b):
         produce *
-    bmin = generator.ApexBFirst()
-    bmax = generator.ApexBLast()
-    bperiod = generator.ApexBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.ApexAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Apex[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Apex(time,age,n,b)
     elif ((age >= PLASTOCHRON and n < NMax)
           or ((time + age) == 0 and n == 0)):
@@ -83,25 +67,9 @@ Apex(time,age,n,b):
         produce Apex(time,age+ageinc,n,b)
 
 Internode(time,age,n,b):
-    nmin = generator.InternodeNFirst()
-    nmax = generator.InternodeNLast()
-    nperiod = generator.InternodeNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Internode",time,age,n,b):
         produce *
-    bmin = generator.InternodeBFirst()
-    bmax = generator.InternodeBLast()
-    bperiod = generator.InternodeBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.InternodeAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Internode[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Internode(time,age,n,b)
     else:
         if generator.verbose_lpy:
@@ -122,25 +90,9 @@ Node(time,age,n,b):
     produce [/(0)]
 
 Leaf(time,age,n,b,w):
-    nmin = generator.LeafNFirst()
-    nmax = generator.LeafNLast()
-    nperiod = generator.LeafNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Leaf",time,age,n,b,w):
         produce *
-    bmin = generator.LeafBFirst()
-    bmax = generator.LeafBLast()
-    bperiod = generator.LeafBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.LeafAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Leaf[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Leaf(time,age,n,b,w)
     else:
         if generator.verbose_lpy:
@@ -150,25 +102,9 @@ Leaf(time,age,n,b,w):
         produce Leaf(time,age+ageinc,n,b,w)
 
 Petiole(time,age,n,b):
-    nmin = generator.PetioleNFirst()
-    nmax = generator.PetioleNLast()
-    nperiod = generator.PetioleNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Petiole",time,age,n,b):
         produce *
-    bmin = generator.PetioleBFirst()
-    bmax = generator.PetioleBLast()
-    bperiod = generator.PetioleBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.PetioleAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Petiole[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Petiole(time,age,n,b)
     else:
         if generator.verbose_lpy:
@@ -178,25 +114,9 @@ Petiole(time,age,n,b):
         produce Petiole(time,age+ageinc,n,b)
 
 Cotyledon(time,age,n,b,w):
-    nmin = generator.CotyledonNFirst()
-    nmax = generator.CotyledonNLast()
-    nperiod = generator.CotyledonNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Cotyledon",time,age,n,b,w):
         produce *
-    bmin = generator.CotyledonBFirst()
-    bmax = generator.CotyledonBLast()
-    bperiod = generator.CotyledonBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.CotyledonAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Cotyledon[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Cotyledon(time,age,n,b,w)
     else:
         if generator.verbose_lpy:
@@ -206,25 +126,9 @@ Cotyledon(time,age,n,b,w):
         produce Cotyledon(time,age+ageinc,n,b,w)
 
 Branch(time,age,n,b,w):
-    nmin = generator.BranchNFirst()
-    nmax = generator.BranchNLast()
-    nperiod = generator.BranchNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Branch",time,age,n,b,w):
         produce *
-    bmin = generator.BranchBFirst()
-    bmax = generator.BranchBLast()
-    bperiod = generator.BranchBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.BranchAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Branch[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Branch(time,age,n,b,w)
     elif age >= PLASTOCHRON and n < NMax:
         time = time + age
@@ -243,25 +147,9 @@ Branch(time,age,n,b,w):
         produce Branch(time,age+ageinc,n,b,w)
 
 Pedicel(time,age,n,b):
-    nmin = generator.PedicelNFirst()
-    nmax = generator.PedicelNLast()
-    nperiod = generator.PedicelNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Pedicel",time,age,n,b):
         produce *
-    bmin = generator.PedicelBFirst()
-    bmax = generator.PedicelBLast()
-    bperiod = generator.PedicelBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.PedicelAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Pedicel[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Pedicel(time,age,n,b)
     else:
         if generator.verbose_lpy:
@@ -271,25 +159,9 @@ Pedicel(time,age,n,b):
         produce Pedicel(time,age+ageinc,n,b)
 
 Fruit(time,age,n,b,w):
-    nmin = generator.FruitNFirst()
-    nmax = generator.FruitNLast()
-    nperiod = generator.FruitNPeriod()
-    if ((n < nmin
-         or (nmax != -1 and n > nmax)
-         or (((n - nmin) % nperiod) != 0))):
+    if not generator.CheckProduceComponent("Fruit",time,age,n,b,w):
         produce *
-    bmin = generator.FruitBFirst()
-    bmax = generator.FruitBLast()
-    bperiod = generator.FruitBPeriod()
-    if ((b < bmin
-         or (bmax != -1 and b > bmax)
-         or (((b - bmin) % bperiod) != 0))):
-        produce *
-    if age >= generator.FruitAgeRemove():
-        if generator.verbose_lpy:
-            print(f"Removing Fruit[{age},{n}]")
-        produce *
-    elif (time + age) >= OUTPUT_TIME:
+    if (time + age) >= OUTPUT_TIME:
         produce Fruit(time,age,n,b,w)
     else:
         if generator.verbose_lpy:
@@ -307,19 +179,7 @@ Apex(time,age,n,b):
 Internode(time,age,n,b):
     component = generator.parameters["Internode"]
     with component.temporary_index(time,age,n,b):
-        nmin = generator.InternodeNFirst()
-        nmax = generator.InternodeNLast()
-        nperiod = generator.InternodeNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.InternodeBFirst()
-        bmax = generator.InternodeBLast()
-        bperiod = generator.InternodeBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Internode",time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Internode[{age},{n}]")
@@ -343,19 +203,7 @@ Internode(time,age,n,b):
 Leaf(time,age,n,b,w):
     component = generator.parameters["Leaf"]
     with component.temporary_index(time,age,n,b,w=w):
-        nmin = generator.LeafNFirst()
-        nmax = generator.LeafNLast()
-        nperiod = generator.LeafNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.LeafBFirst()
-        bmax = generator.LeafBLast()
-        bperiod = generator.LeafBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Leaf",time,age,n,b,w=w):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Leaf[{age},{n}]")
@@ -382,19 +230,7 @@ Leaf(time,age,n,b,w):
 Petiole(time,age,n,b):
     component = generator.parameters["Petiole"]
     with component.temporary_index(time,age,n,b):
-        nmin = generator.PetioleNFirst()
-        nmax = generator.PetioleNLast()
-        nperiod = generator.PetioleNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.PetioleBFirst()
-        bmax = generator.PetioleBLast()
-        bperiod = generator.PetioleBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Petiole",time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Petiole[{age},{n}]")
@@ -416,19 +252,7 @@ Petiole(time,age,n,b):
 Cotyledon(time,age,n,b,w):
     component = generator.parameters["Cotyledon"]
     with component.temporary_index(time,age,n,b,w=w):
-        nmin = generator.CotyledonNFirst()
-        nmax = generator.CotyledonNLast()
-        nperiod = generator.CotyledonNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.CotyledonBFirst()
-        bmax = generator.CotyledonBLast()
-        bperiod = generator.CotyledonBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Cotyledon",time,age,n,b,w=w):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Cotyledon[{age},{n}]")
@@ -458,19 +282,7 @@ Branch(time,age,n,b,w):
 Pedicel(time,age,n,b):
     component = generator.parameters["Pedicel"]
     with component.temporary_index(time,age,n,b):
-        nmin = generator.PedicelNFirst()
-        nmax = generator.PedicelNLast()
-        nperiod = generator.PedicelNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.PedicelBFirst()
-        bmax = generator.PedicelBLast()
-        bperiod = generator.PedicelBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Pedicel",time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Pedicel[{age},{n}]")
@@ -492,19 +304,7 @@ Pedicel(time,age,n,b):
 Fruit(time,age,n,b,w):
     component = generator.parameters["Fruit"]
     with component.temporary_index(time,age,n,b,w=w):
-        nmin = generator.FruitNFirst()
-        nmax = generator.FruitNLast()
-        nperiod = generator.FruitNPeriod()
-        if ((n < nmin
-             or (nmax != -1 and n > nmax)
-             or (((n - nmin) % nperiod) != 0))):
-            produce [/(0)]
-        bmin = generator.FruitBFirst()
-        bmax = generator.FruitBLast()
-        bperiod = generator.FruitBPeriod()
-        if ((b < bmin
-             or (bmax != -1 and b > bmax)
-             or (((b - bmin) % bperiod) != 0))):
+        if not generator.CheckProduceComponent("Fruit",time,age,n,b,w=w):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Fruit[{age},{n}]")
