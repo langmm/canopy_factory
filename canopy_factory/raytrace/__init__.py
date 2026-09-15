@@ -1723,6 +1723,7 @@ class TotalsTask(TemporalTaskBase):
     _name = 'totals'
     _help = 'Get canopy properties over a period of time'
     _step_task = RayTraceTask
+    _step_outputs_write = ['raytrace_stats']
     _output_info = {
         'totals': {
             'base_prefix': True,
@@ -1752,6 +1753,7 @@ class TotalsTask(TemporalTaskBase):
                 },
                 'periodic_canopy': {
                     'append_choices': ['all'],
+                    'default': 'scene',
                 },
             },
         },
@@ -1798,6 +1800,8 @@ class TotalsTask(TemporalTaskBase):
                 parent class's method.
 
         """
+        if args.crop_model:
+            args.nproc = 1
         if args.canopy == 'single':
             args.per_plant = False
         iterating = [
@@ -2026,8 +2030,9 @@ class TotalsTask(TemporalTaskBase):
         self.plot_query(query, x, y, label=label,
                         reset=reset, **kwargs)
 
-    def finalize_step(self, x):
-        r"""Finalize the output from a step.
+    @classmethod
+    def finalize_step_remote(cls, x):
+        r"""Finalize the output from a step on a remote process.
 
         Args:
             x (object): Result of step.
@@ -2036,49 +2041,62 @@ class TotalsTask(TemporalTaskBase):
             object: Finalized step result.
 
         """
-        value = x.get_output('raytrace_stats')
-        if self.crop_model_engine:
-            # TODO: Get intercepted light for next step
-            #   - Set LAI
-            #   - Resume simulation to next step
-            #   - Get mass allocated to each component
-            # TODO: Select from this based on the crop generator
-            component_map = {
-                "Internode": "Stem",
-                "Leaf": "Leaf",
-                "Petiole": "Petiole",
-                # "Fruit": "Grain",
-            }
-            # TODO: LAI per canopy layer or light profile?
-            self.crop_model_engine.set(
-                "[PLANT].Leaf.LAI", value["LAI"]
+        return (x.args.time.time, x.get_output('raytrace_stats'))
+
+    def finalize_step_local(self, x):
+        r"""Finalize the output from a remote step locally.
+
+        Args:
+            x (object): Result of remote step.
+
+        Returns:
+            object: Finalized step result.
+
+        """
+        if not self.crop_model_engine:
+            return x
+        value = x[1]
+        # TODO: Get intercepted light for next step
+        #   - Set LAI
+        #   - Resume simulation to next step
+        #   - Get mass allocated to each component
+        # TODO: Select from this based on the crop generator
+        component_map = {
+            "Internode": "Stem",
+            "Leaf": "Leaf",
+            "Petiole": "Petiole",
+            # "Fruit": "Grain",
+        }
+        # TODO: LAI per canopy layer or light profile?
+        self.crop_model_engine.set(
+            "[PLANT].Leaf.LAI", value["LAI"]
+        )
+        self.crop_model_engine.resume()
+        # TODO: Scale weight by plants/area to get weight per plant
+        # TODO: Get live vs. dead wt? (e.g. [PLANT].Leaf.Live.Wt)
+        # crop_model_area = units.Quantity(1.0, "ha")
+        # canopy_model_area = (
+        #     self.args.plot_length * self.args.plot_width)
+        plant_area = (
+            self.args.row_spacing * self.args.plant_spacing)
+        # mass_per_plant = plant_area / crop_model_area
+        parameters = {
+            k: f"[PLANT].{v}.Wt" for k, v in component_map.items()
+        }
+        components = self.crop_model_engine.getvars(
+            list(parameters.values()))
+        # TODO: Disable age dependency when carbon dependency in
+        #   effect
+        # TODO: Need to add suffix indicating that the parameters
+        #   are different
+        self.args_overwrite.update(**{
+            f"{k}.MassPartitioned": (
+                plant_area
+                * units.Quantity(components[v], "g/m^2")
             )
-            self.crop_model_engine.resume()
-            # TODO: Scale weight by plants/area to get weight per plant
-            # TODO: Get live vs. dead wt? (e.g. [PLANT].Leaf.Live.Wt)
-            # crop_model_area = units.Quantity(1.0, "ha")
-            # canopy_model_area = (
-            #     self.args.plot_length * self.args.plot_width)
-            plant_area = (
-                self.args.row_spacing * self.args.plant_spacing)
-            # mass_per_plant = plant_area / crop_model_area
-            parameters = {
-                k: f"[PLANT].{v}.Wt" for k, v in component_map.items()
-            }
-            components = self.crop_model_engine.getvars(
-                list(parameters.values()))
-            # TODO: Disable age dependency when carbon dependency in
-            #   effect
-            # TODO: Need to add suffix indicating that the parameters
-            #   are different
-            self.args_overwrite.update(**{
-                f"{k}.MassPartitioned": (
-                    plant_area
-                    * units.Quantity(components[v], "g/m^2")
-                )
-                for k, v in parameters.items()
-            })
-        return (x.args.time.time, value)
+            for k, v in parameters.items()
+        })
+        return x
 
     def join_steps(self, xlist):
         r"""Join the output form all of the steps.
@@ -2157,6 +2175,7 @@ class AnimateTask(TemporalTaskBase):
     )
     _step_task = RenderTask
     _step_args_preserve = ['render_colormap']
+    _step_outputs_write = ['render']
     _output_info = {
         'animate': {
             'base_output': 'render',
@@ -2275,8 +2294,9 @@ class AnimateTask(TemporalTaskBase):
         r"""TotalsTask: Totals instance."""
         return self.external_tasks['totals']
 
-    def finalize_step(self, x):
-        r"""Finalize the output from a step.
+    @classmethod
+    def finalize_step_remote(cls, x):
+        r"""Finalize the output from a step on a remote process.
 
         Args:
             x (object): Result of step.
@@ -2286,13 +2306,25 @@ class AnimateTask(TemporalTaskBase):
 
         """
         assert isinstance(x.output_file('render'), str)
+        return (x.args.time.time, x.output_file('render'),
+                x.get_output('render'))
+
+    def finalize_step_local(self, x):
+        r"""Finalize the output from a remote step locally.
+
+        Args:
+            x (object): Result of remote step.
+
+        Returns:
+            object: Finalized step result.
+
+        """
+        tframe, old_frame, old_data = x[:]
         if not self.args.inset_totals:
-            return x.output_file('render')
-        old_frame = x.output_file('render')
+            return old_frame
         new_suffix = self._arguments['inset_totals'].generate_suffix(
             self.args, 'animate')
         new_frame = f'_{new_suffix}'.join(os.path.splitext(old_frame))
-        old_data = x.get_output('render')
         if self._inset_figure is None:
             self._inset_figure = self.totals_task.generate_output(
                 'totals_plot')
@@ -2301,7 +2333,7 @@ class AnimateTask(TemporalTaskBase):
             dpi = self._inset_figure.get_dpi()
             figsize = ((width_px + 1) / dpi, (height_px + 1) / dpi)
             self._inset_figure.set_size_inches(*figsize)
-        self.totals_task.mark_time(x.args.time.time)
+        self.totals_task.mark_time(tframe)
         add_data = self.totals_task.raw_figure_data
         add_data = add_data[:, :old_data.shape[1], :]
         new_data = np.concatenate([old_data, add_data], axis=0)

@@ -3682,7 +3682,7 @@ class TaskBase(SubparserBase):
     def copy_external_args(cls, args=None, args_overwrite=None,
                            args_external=None, set_defaults=False,
                            initialize=False, return_dict=False,
-                           verbose=False):
+                           verbose=False, for_serialization=False):
         r"""Extract arguments for this task from a set for another task.
 
         Args:
@@ -3699,6 +3699,8 @@ class TaskBase(SubparserBase):
                 of argparse.Namespace.
             verbose (bool, optional): If True, write copied arguments
                 to a log message.
+            for_serialization (bool, optional): If True, don't include
+                external arguments that can't be serialized.
 
         Returns:
             argparse.Namespace: Arguments.
@@ -3723,7 +3725,7 @@ class TaskBase(SubparserBase):
                     x for x in v.argument_names(include='prefixed')
                     if x not in args_changing
                 ]
-        if 'id' not in args_changing:
+        if 'id' not in args_changing and not for_serialization:
             args_external += ['_parameter_inst_function']
         out = {cls._registry_key: args_overwrite[cls._registry_key]}
         for arg in cls._arguments.flatten():
@@ -3747,6 +3749,8 @@ class TaskBase(SubparserBase):
                         continue
                     out[kk] = vv
                 continue
+            elif isinstance(v, SubparserBase) and for_serialization:
+                out[k] = v._name
         missing = []
         for k in args_overwrite.keys():
             if k not in out:
@@ -4681,6 +4685,9 @@ class TaskBase(SubparserBase):
             object: Output.
 
         """
+        if name == 'instance':
+            return self
+
         def _get_output(task, name):
             if name in task._outputs:
                 return task._outputs[name]
@@ -4851,7 +4858,6 @@ class TaskBase(SubparserBase):
         output_names = self.enabled_outputs()
         if output_name is None:
             output_name = self._name
-        assert output_name in ['instance'] + self._outputs_local
         for k in output_names:
             assert getattr(self.args, f'overwrite_{k}') is False
             if not self.output_exists(k):
@@ -4859,6 +4865,10 @@ class TaskBase(SubparserBase):
                 assert self.output_exists(k)
         if output_name == 'instance':
             return self
+        if isinstance(output_name, list):
+            assert all(x in self._outputs_local for x in output_name)
+        else:
+            assert output_name in self._outputs_local
         return self.get_output(output_name)
 
     def run_iteration(self, cls=None, **kwargs):
@@ -4878,6 +4888,30 @@ class TaskBase(SubparserBase):
             cls = type(self)
         kwargs.setdefault('cached_outputs', self._cached_outputs)
         return cls.run_iteration_class(self.args, **kwargs)
+
+    def run_iterations(self, iter_kwargs, cls=None, nproc=None, **kwargs):
+        r"""Run a set of iterations over the list of iteration keyword
+        arguments, regenerating output file names.
+
+        Args:
+            iter_kwargs (list): Iteration keyword arguments.
+            cls (type, optional): Task class that should be run in
+                iteration. Defaults to the type of the current task.
+            nproc (int, optional): Number of processors to split the
+                iterations between.
+            **kwargs: Additional keyword arguments are passed to
+                run_iterations_class.
+
+        Returns:
+            object: Result of the run.
+
+        """
+        if cls is None:
+            cls = type(self)
+        # TODO: Use cached outputs? Need to balance cost of serialization
+        # kwargs.setdefault('cached_outputs', self._cached_outputs)
+        return cls.run_iterations_class(self.args, iter_kwargs,
+                                        nproc=nproc, **kwargs)
 
     @classmethod
     def run_iteration_class(cls, args, **kwargs):
@@ -4900,6 +4934,112 @@ class TaskBase(SubparserBase):
                 kwargs['args_overwrite'] = dict(
                     kwargs.get('args_overwrite', {}),
                     **e.args_overwrite)
+
+    @classmethod
+    def run_iterations_class(cls, args, iter_kwargs, nproc=None,
+                             remote_callback=None, local_callback=None,
+                             copy_outputs_from=None, args_preserve=None,
+                             **kwargs):
+        r"""Run an iteration, regenerating output file names.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            iter_kwargs (list): Iteration keyword arguments to overwrite
+                for each iteration.
+            nproc (int, optional): Number of processors to split the
+                iterations between.
+            remote_callback (callable, optional): Iteration wrapper
+                that should be called by the remote process on the
+                returned result of the iteration.
+            local_callback (callable, optional): Iteration wrapper
+                that should be called after the remote process returns.
+            copy_outputs_from (TaskBase, optional): Existing instance
+                that matching outputs should be copied from.
+            args_preserve (list, optional): Set of argument names to
+                preserve following a run.
+            **kwargs: Additional keyword arguments are passed to
+                run_class.
+
+        Returns:
+            object: Result of the run (defaults to the task instance).
+
+        """
+        if nproc is None or nproc == 1 or remote_callback:
+            kwargs.setdefault('output_name', 'instance')
+        else:
+            kwargs.setdefault('output_name', cls._name)
+        first_inst = None
+        first_result = None
+        if args_preserve or copy_outputs_from is True:
+            first_kwargs = iter_kwargs[0]
+            iter_kwargs = iter_kwargs[1:]
+            first_inst = cls.run_iteration_class(
+                args, args_overwrite=first_kwargs,
+                args_preserve=args_preserve,
+                **dict(kwargs, output_name="instance"))
+            first_result = first_inst.get_output(kwargs['output_name'])
+            if copy_outputs_from is True:
+                copy_outputs_from = first_inst
+            if remote_callback is not None:
+                first_result = remote_callback(first_result)
+            if local_callback is not None:
+                first_result = local_callback(first_result)
+        if nproc is None or nproc == 1 or len(iter_kwargs) <= 1:
+            out = [
+                cls.run_iteration_class(
+                    args, args_overwrite=ikwargs,
+                    copy_outputs_from=copy_outputs_from,
+                    args_preserve=args_preserve, **kwargs)
+                for ikwargs in iter_kwargs
+            ]
+            if remote_callback is not None:
+                out = [remote_callback(x) for x in out]
+            if local_callback is not None:
+                out = [local_callback(x) for x in out]
+            if first_result is not None:
+                out.insert(0, first_result)
+            return out
+        from multiprocessing import Pool
+        if remote_callback is not None:
+            kwargs["remote_callback"] = remote_callback
+        else:
+            assert kwargs['output_name'] != 'instance'
+        if copy_outputs_from:
+            kwargs["matching_outputs"] = copy_outputs_from.get_matching_output(
+                iter_kwargs[0],
+                allow_read=True
+            )
+        args_list = [
+            (cls.copy_external_args(args, args_overwrite=ikwargs,
+                                    set_defaults=True, return_dict=True,
+                                    for_serialization=True),
+             copy.deepcopy(kwargs))
+            for ikwargs in iter_kwargs
+        ]
+        with Pool(nproc) as p:
+            results = p.map(cls._run_iteration_wrap, args_list)
+        if local_callback is not None:
+            results = [local_callback(x) for x in results]
+        if first_result is not None:
+            results.insert(0, first_result)
+        return results
+
+    @classmethod
+    def _run_iteration_wrap(cls, args_tuple):
+        args_dict, kwargs = args_tuple[:]
+        remote_callback = kwargs.pop("remote_callback", None)
+        output_name = kwargs.pop("output_name", None)
+        matching_outputs = kwargs.pop("matching_outputs", None)
+        args = arguments.ArgumentDescription.kwargs2args(args_dict)
+        inst = cls(args, **kwargs)
+        if matching_outputs:
+            inst.copy_matching_outputs(matching_outputs)
+        out = inst.get_output(output_name)
+        if remote_callback is not None:
+            out = remote_callback(out)
+        del inst
+        gc.collect()
+        return out
 
     @classmethod
     def run_class(cls, args, output_name=None, args_preserve=None,
@@ -4934,29 +5074,93 @@ class TaskBase(SubparserBase):
             self.cache_output(cache_outputs)
         return out
 
-    def copy_matching_outputs(self, other):
+    def get_matching_output(self, args_overwrite, **kwargs):
+        r"""Get a dictionary of outputs that would be the same with
+        the specified argument modifications.
+
+        Args:
+            args_overwrite (dict): Argument modifications.
+            \*\*kwargs: Additional keyword arguments are passed to
+                select_matching_outputs.
+
+        Returns:
+            dict: Mapping between output name and the data associated
+                with it for the files that match.
+
+        """
+        other = self.from_external_args(
+            self.args, args_overwrite=args_overwrite)
+        return other.select_matching_outputs(self, **kwargs)
+
+    def select_matching_outputs(self, other, existing=None,
+                                allow_read=False):
         r"""Copy existing outputs from another task to prevent repeated
         I/O when the files match.
 
         Args:
             other (TaskBase): Instance to copy from.
+            existing (dict, optional): Dictionary that matching outputs
+                should be added to.
+            allow_read (bool, optional): If True, allow an output to be
+                read from an existing file.
+
+        Returns:
+            dict: Mapping between output name and the data associated
+                with it for the files that match.
 
         """
-        assert isinstance(other, type(self))
-        copied = []
+        if existing is None:
+            existing = {}
+        assert isinstance(other, (dict, type(self)))
         for k in self._outputs_local:
             self_fname = self.output_file(k, return_disabled=True)
-            other_fname = other.output_file(k, return_disabled=True)
-            if (((not self_fname)
+            if isinstance(other, dict):
+                if k not in other:
+                    continue
+                other_fname, other_output = other[k][:]
+            else:
+                other_fname = other.output_file(k, return_disabled=True)
+                other_output = other._outputs.get(k, None)
+                if ((other_output is None and allow_read
+                     and other.output_exists(k))):
+                    other_output = other.get_output(k)
+            if (((not self_fname) or (not other_fname)
                  or self_fname != other_fname
-                 or k in self._outputs
-                 or k not in other._outputs)):
+                 or other_output is None)):
                 continue
-            self._outputs[k] = other._outputs[k]
-            copied.append(k)
+            existing[k] = (other_fname, other_output)
         for k, v in self.external_tasks.items():
-            vother = other.external_tasks[k]
-            v.copy_matching_outputs(vother)
+            vother = (
+                other if isinstance(other, dict)
+                else other.external_tasks[k]
+            )
+            v.select_matching_outputs(vother, existing=existing,
+                                      allow_read=allow_read)
+        return existing
+
+    def copy_matching_outputs(self, other, matches=None, **kwargs):
+        r"""Copy existing outputs from another task to prevent repeated
+        I/O when the files match.
+
+        Args:
+            other (TaskBase): Instance to copy from.
+            matches (dict, optional): Existing set of matching file data
+                that should be copied.
+            \*\*kwargs: Additional keyword arguments are passed to
+                select_matching_outputs if matches it not provided.
+
+        """
+        if matches is None:
+            matches = self.select_matching_outputs(other, **kwargs)
+        for k in self._outputs_local:
+            if k in matches and k not in self._outputs:
+                self._outputs[k] = matches[k][1]
+        for k, v in self.external_tasks.items():
+            vother = (
+                other if isinstance(other, dict)
+                else other.external_tasks[k]
+            )
+            v.copy_matching_outputs(vother, matches=matches)
 
     def run_series(self, cls=None, **kwargs):
         r"""Run the process for a series of arguments.
@@ -5072,6 +5276,8 @@ class IterationTaskBase(TaskBase):
     _step_task = None
     _step_vary = None
     _step_args_preserve = None
+    _steps_independent = True
+    _step_outputs_write = []
 
     def __init__(self, *args, **kwargs):
         self._step_results = []
@@ -5092,6 +5298,26 @@ class IterationTaskBase(TaskBase):
             cls._output_info.setdefault(cls._name, {})
             cls._output_info[cls._name].setdefault(
                 'base_output', cls._step_task._name)
+            if cls._steps_independent:
+                cls._arguments.append(
+                    (('--nproc', ), {
+                        'type': int, 'default': 1,
+                        'help': (
+                            'Number of processes to split the iterations'
+                            ' between'
+                        ),
+                    })
+                )
+            cls._arguments.append(
+                (('--save-step-outputs', ), {
+                    'nargs': '?', 'action': 'extend', 'const': [True],
+                    'help': (
+                        'The names of step outputs that should be '
+                        'saved to disk for step iterations'
+                    ),
+                    'default': cls._step_outputs_write,
+                })
+            )
         TaskBase._on_registration(cls)
 
     def overwrite_outputs(self, downstream=None, wildcards=None,
@@ -5143,6 +5369,8 @@ class IterationTaskBase(TaskBase):
             iargs_overwrite = copy.deepcopy(args_overwrite)
             for k, v in self.args_overwrite.items():
                 iargs_overwrite.setdefault(k, v)
+            for k in ["nproc", "save_step_outputs"]:
+                iargs_overwrite.pop(k, None)
             yield iargs_overwrite
 
     def step_args(self):
@@ -5155,6 +5383,31 @@ class IterationTaskBase(TaskBase):
         """
         raise NotImplementedError
 
+    @classmethod
+    def finalize_step_remote(cls, x):
+        r"""Finalize the output from a step on a remote process.
+
+        Args:
+            x (object): Result of step.
+
+        Returns:
+            object: Finalized step result.
+
+        """
+        return x
+
+    def finalize_step_local(self, x):
+        r"""Finalize the output from a remote step locally.
+
+        Args:
+            x (object): Result of remote step.
+
+        Returns:
+            object: Finalized step result.
+
+        """
+        return x
+
     def finalize_step(self, x):
         r"""Finalize the output from a step.
 
@@ -5165,7 +5418,7 @@ class IterationTaskBase(TaskBase):
             object: Finalized step result.
 
         """
-        return x
+        return self.finalize_step_local(self.finalize_step_remote(x))
 
     def join_steps(self, xlist):
         r"""Join the output form all of the steps.
@@ -5187,6 +5440,29 @@ class IterationTaskBase(TaskBase):
         #             for k in self._step_task._outputs_total}
         return {}
 
+    @classmethod
+    def adjust_args_internal(cls, args, **kwargs):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
+
+        """
+        if not cls._steps_independent:
+            args.nproc = 1
+        dont_save_step_outputs = []
+        if True not in args.save_step_outputs:
+            dont_save_step_outputs += [
+                k for k in cls._step_task._outputs_total
+                if k not in args.save_step_outputs
+            ]
+        for k in dont_save_step_outputs:
+            setattr(args, f"dont_write_{k}", True)
+        super().adjust_args_internal(args, **kwargs)
+
     def run_steps(self, output_name='instance'):
         r"""Run the steps.
 
@@ -5199,6 +5475,19 @@ class IterationTaskBase(TaskBase):
 
         """
         self._step_results = []
+        if self.args.nproc > 1:
+            args_list = list(self.step_args_full())
+            self._step_results = self.run_iterations(
+                args_list,
+                cls=self._step_task,
+                output_name=output_name,
+                copy_outputs_from=True,
+                args_preserve=self._step_args_preserve,
+                nproc=self.args.nproc,
+                remote_callback=self.finalize_step_remote,
+                local_callback=self.finalize_step_local,
+            )
+            return self._step_results
         x_prev = None
         for iargs_overwrite in self.step_args_full():
             self.log(f'STEP:\n{pprint.pformat(iargs_overwrite)}')
@@ -5243,6 +5532,7 @@ class IterationTaskBase(TaskBase):
 class OptimizationTaskBase(IterationTaskBase):
     r"""Base class for tasks that iterate to achieve a result."""
 
+    _steps_independent = False
     _final_outputs = []
     _arguments = [
         (('--goal', ), {

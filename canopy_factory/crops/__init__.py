@@ -1779,25 +1779,29 @@ class GenerateTask(TaskBase):
 
         # Remainder of field
         if self.args.canopy == 'unique':
-            inst_prev = inst
+            kwargs_pool = []
             for i in range(self.args.nrows):
                 ix = i * self.args.row_spacing
                 for j in range(self.args.ncols):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
-                    inst = self.run_iteration(
-                        args_overwrite={
-                            'x': ix + posdev(), 'y': iy + posdev(),
-                            'plantid': plantid, 'canopy': 'single',
-                            'nrows': 1, 'ncols': 1,
-                        },
-                        copy_outputs_from=inst_prev,
-                    )
-                    mesh.append(inst.get_output('generate'))
-                    geometryids.append(inst.get_output('geometryids'))
+                    kwargs_pool.append({
+                        'x': ix + posdev(), 'y': iy + posdev(),
+                        'plantid': plantid, 'canopy': 'single',
+                        'nrows': 1, 'ncols': 1,
+                    })
                     plantid += 1
-                    inst_prev = inst
+            # 45.3042 seconds for serial
+            # 81.7037 seconds for parallel due to IO
+            results = self.run_iterations(
+                kwargs_pool, nproc=None,
+                output_name=["generate", "geometryids"],
+                copy_outputs_from=inst,
+            )
+            for iresult in results:
+                mesh.append(iresult["generate"])
+                geometryids.append(iresult["geometryids"])
         elif self.args.canopy == 'tile':
             mesh_single = type(mesh)(mesh)
             for i in range(self.args.nrows):

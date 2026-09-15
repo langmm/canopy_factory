@@ -13,6 +13,7 @@ import itertools
 import re
 import glob
 import shutil
+import time
 from canopy_factory.config import PackageConfig
 from abc import abstractmethod
 from collections import OrderedDict
@@ -461,6 +462,25 @@ _class_registry = ClassRegistry()
 
 def get_class_registry():
     return _class_registry
+
+
+@contextlib.contextmanager
+def timer_context(pdb_on_completion=False):
+    r"""Context for timing actions performed within the context.
+
+    Args:
+        pdb_on_completion (bool, optional): If True, start the Python
+            debugger on context exit.
+
+    """
+    start_time = time.perf_counter()
+    yield
+    end_time = time.perf_counter()
+    execution_time = end_time - start_time
+    print(f"Code took {execution_time:.4f} seconds to run.")
+    if pdb_on_completion:
+        import pdb
+        pdb.set_trace()
 
 
 def readonly_cached_property(method, args=None, **kwargs):

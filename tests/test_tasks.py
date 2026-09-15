@@ -416,7 +416,8 @@ class TestTotalsTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                dict(x, start_time='noon', duration='1 hr')
+                dict(x, start_time='noon', duration='1 hr',
+                     periodic_canopy=x.get("periodic_canopy", False))
                 for x in TestRayTraceTask._params['arguments']['values']
                 if x.get('canopy', None) != 'single' and 'time' not in x
             ],
