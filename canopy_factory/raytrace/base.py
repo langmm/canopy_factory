@@ -51,16 +51,12 @@ class RayTracerBase(RegisteredClassBase):
     _registry_key = 'raytracer'
     _area_min = np.finfo(np.float32).resolution
 
-    def __init__(self, args, mesh, geometryids=None):
+    def __init__(self, args, mesh):
         super(RayTracerBase, self).__init__()
-        if args.output_generate.generated:
-            assert geometryids is not None
         self.args = args
         self.mesh = mesh
-        self.geometryids = geometryids
         self.verbose = self.args.verbose
-        self.mesh_dict = utils.get_mesh_dict(self.mesh)
-        self.areas = np.array(self.mesh.areas)
+        self.areas = np.array(self.mesh.areas.value)
         self.area_mask = (self.areas > self._area_min)
         if self.args.include_units:
             self.areas = parse_quantity(
@@ -91,12 +87,16 @@ class RayTracerBase(RegisteredClassBase):
         r"""list: Set of IDs that should be used to split the geometry
         into parts."""
         out = []
-        if self.geometryids is not None:
-            if self.args.separate_plants:
-                out.append('plantids')
-            if self.args.separate_components:
-                out.append('componentids')
+        if self.args.separate_plants and self.mesh.plantids is not None:
+            out.append('plantids')
+        if ((self.args.separate_components
+             and self.mesh.componentids is not None)):
+            out.append('componentids')
         return out
+
+    @property
+    def mesh_dict(self):
+        return self.mesh.mesh_dict
 
     def mesh_keys(self):
         r"""Get the set of keys splitting up the mesh geometry into
@@ -106,7 +106,7 @@ class RayTracerBase(RegisteredClassBase):
             list: Keys.
 
         """
-        keys = [list(np.unique(self.geometryids[k])) for k in
+        keys = [list(np.unique(self.mesh.get_face_property(k))) for k in
                 self.geometryid_order]
         if not keys:
             return [None]
@@ -128,7 +128,7 @@ class RayTracerBase(RegisteredClassBase):
         assert len(key) == len(self.geometryid_order)
         idx = np.zeros(self.areas.shape, dtype=np.uint8)
         for k, v in zip(self.geometryid_order, key):
-            idx += (self.geometryids[k] == v)
+            idx += self.mesh.face_property_mask(k, v)
         return self.select_faces(self.mesh_dict, (idx == len(key)),
                                  continuous=(key == ('plantids', )))
 
@@ -370,8 +370,8 @@ class RayTracerBase(RegisteredClassBase):
     @cached_args_property
     def field_scene_model(self):
         r"""SceneModel: Field scene properties."""
-        mins = self.geometryids['HEADER_JSON']['field_mins']
-        maxs = self.geometryids['HEADER_JSON']['field_maxs']
+        mins = self.mesh.field_mins
+        maxs = self.mesh.field_maxs
         if self.args.canopy.startswith('virtual'):
             shifts = utils.project_onto_ground(
                 np.vstack([

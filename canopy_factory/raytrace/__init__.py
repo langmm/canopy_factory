@@ -358,11 +358,8 @@ class RayTraceTask(TaskBase):
         r"""RayTracerBase: Ray tracer."""
         print("Re-creating ray tracer", self.args.time.value,
               self.args.age.value)
-        assert self.geometryids is not None
         return get_class_registry().get(
-            'raytracer', self.args.raytracer)(
-                self.args, self.mesh,
-                geometryids=self.geometryids)
+            'raytracer', self.args.raytracer)(self.args, self.mesh)
 
     @cached_args_property
     def nvirtual(self):
@@ -402,22 +399,18 @@ class RayTraceTask(TaskBase):
         return self.get_output('generate')
 
     @cached_property
-    def geometryids(self):
-        return self.get_output('geometryids')
-
-    @cached_property
     def component_order(self):
-        return self.geometryids['HEADER_JSON']['component_order']
+        return self.mesh.component_order
 
     @cached_property
     def componentids(self):
         r"""np.ndarray: Component IDs for each face in the mesh."""
-        return self.geometryids['componentids']
+        return self.mesh.componentids
 
     @cached_property
     def plantids(self):
         r"""np.ndarray: Plant IDs for each face in the mesh."""
-        return self.geometryids['plantids']
+        return self.mesh.plantids
 
     @classmethod
     def adjust_args_internal(cls, args, skip=None, **kwargs):
@@ -459,8 +452,9 @@ class RayTraceTask(TaskBase):
 
         """
         if name == 'traced_mesh':
-            return cls._outputs_external['generate']._output_ext(
-                args, 'generate', wildcards=wildcards, skipped=skipped)
+            if not args.mesh_format:
+                args.mesh_format = 'obj'
+            return utils._inv_geom_ext[args.mesh_format]
         return None
 
     @classmethod
@@ -488,7 +482,7 @@ class RayTraceTask(TaskBase):
         for k in self._query_options_adm:
             if k in values:
                 continue
-            out = self.geometryids[k]
+            out = self.mesh.get_face_property(k)
             if self.args.canopy == 'virtual':
                 out = [out]
                 if k == 'plantids':
@@ -1009,7 +1003,7 @@ class RayTraceTask(TaskBase):
             highlight_color=self.args.highlight_color.value,
         )
         mesh.add_colors('vertex', vertex_colors)
-        return mesh
+        return mesh.mesh
 
     def raytrace_scene(self, query=None):
         r"""Run the ray tracer on the selected geometry.
@@ -1078,7 +1072,7 @@ class RayTraceTask(TaskBase):
         )
         output = self.calculate_query(query, per_plant=per_plant)
         output['coverage'] = self.raytracer.coverage()
-        leaf_area = self.geometryids['HEADER_JSON']['leaf_area']
+        leaf_area = self.mesh.leaf_area
         if not self.args.canopy.startswith('virtual'):
             leaf_area = leaf_area / (self.args.nrows * self.args.ncols)
         output['LAI'] = leaf_area * self.planting_density
@@ -1261,7 +1255,7 @@ class RayTraceTask(TaskBase):
         assert self.args.id != 'all'
         if name == 'raytrace':
             out = self.raytrace_scene()
-            # Prevent saving redundant info store in geometryids
+            # Prevent saving redundant info stored or calculated by mesh
             for k in self._query_options_adm:
                 out.pop(k, None)
             return out
@@ -1731,6 +1725,7 @@ class TotalsTask(TemporalTaskBase):
             'description': 'raytraced query totals',
             'composite_param': RayTraceTask._output_info[
                 'raytrace']['composite_param'],
+            'incremental_results': True,
         },
         'totals_plot': {
             'ext': '.png',

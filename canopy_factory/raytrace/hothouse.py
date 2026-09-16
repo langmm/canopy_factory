@@ -340,8 +340,8 @@ class HothouseRayTracer(RayTracerBase):
             np.ndarray: Ray tracer results for each face.
 
         """
-        if self.geometryids and query in self.geometryids:
-            out = self.geometryids[query]
+        if query in self.mesh.face_properties:
+            out = self.mesh.get_face_property(query)
             if self.args.canopy == 'virtual':
                 out = [out]
                 if query == 'plantids':

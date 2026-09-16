@@ -948,6 +948,10 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
 
     _registry_key = 'argument'
     _is_factory_class = False
+    _class_factory_args = (
+        arguments.RegisteredArgumentClassDict._class_factory_args
+        + ['description', 'ignore', 'registry_name']
+    )
     _name = None
     _name_as_suffix = False
     _name_as_prefix = False
@@ -1423,6 +1427,11 @@ class OutputArgument(CompositeArgument):
     r"""Container for output arguments."""
 
     _name = 'output'
+    _class_factory_args = (
+        CompositeArgument._class_factory_args
+        + ["incremental_results"]
+    )
+    incremental_results = False
     _defaults = {
         'output': False,
         'overwrite': False,
@@ -2105,6 +2114,29 @@ class OutputArgument(CompositeArgument):
         if not (self.make_test or self.record_tests(fname)):
             return
         self.create_test(fname, overwrite=created)
+
+    @classmethod
+    def class_factory(cls, name, registry_name=None,
+                      incremental_results=None, **kwargs):
+        r"""Create a new class for a modified version of the arguments.
+
+        Args:
+            name (str): Composite argument name.
+            registry_name (str, optional): Name that should be used to
+                register the generated class. If not provided, one will be
+                generated.
+            **kwargs: Additional keyword arguments are used to modify
+                the set of arguments for the new class.
+
+        Returns:
+            type: Composite argument class.
+
+        """
+        out = super().class_factory(name, registry_name=registry_name,
+                                    **kwargs)
+        if incremental_results is not None:
+            setattr(out, "incremental_results", incremental_results)
+        return out
 
 
 class ColorArgument(CompositeArgument):
@@ -4939,7 +4971,7 @@ class TaskBase(SubparserBase):
     def run_iterations_class(cls, args, iter_kwargs, nproc=None,
                              remote_callback=None, local_callback=None,
                              copy_outputs_from=None, args_preserve=None,
-                             **kwargs):
+                             chunksize=None, **kwargs):
         r"""Run an iteration, regenerating output file names.
 
         Args:
@@ -4957,6 +4989,9 @@ class TaskBase(SubparserBase):
                 that matching outputs should be copied from.
             args_preserve (list, optional): Set of argument names to
                 preserve following a run.
+            chunksize (int, optional): Number of iterations that should
+                be included in each chunk provided to a multiprocessing
+                pool.
             **kwargs: Additional keyword arguments are passed to
                 run_class.
 
@@ -5005,6 +5040,7 @@ class TaskBase(SubparserBase):
         else:
             assert kwargs['output_name'] != 'instance'
         if copy_outputs_from:
+            # TODO: Check save_step_outputs
             kwargs["matching_outputs"] = copy_outputs_from.get_matching_output(
                 iter_kwargs[0],
                 allow_read=True
@@ -5017,7 +5053,8 @@ class TaskBase(SubparserBase):
             for ikwargs in iter_kwargs
         ]
         with Pool(nproc) as p:
-            results = p.map(cls._run_iteration_wrap, args_list)
+            results = p.map(cls._run_iteration_wrap, args_list,
+                            chunksize=chunksize)
         if local_callback is not None:
             results = [local_callback(x) for x in results]
         if first_result is not None:
@@ -5278,6 +5315,7 @@ class IterationTaskBase(TaskBase):
     _step_args_preserve = None
     _steps_independent = True
     _step_outputs_write = []
+    _default_chunksize = None
 
     def __init__(self, *args, **kwargs):
         self._step_results = []
@@ -5299,15 +5337,23 @@ class IterationTaskBase(TaskBase):
             cls._output_info[cls._name].setdefault(
                 'base_output', cls._step_task._name)
             if cls._steps_independent:
-                cls._arguments.append(
+                cls._arguments += [
                     (('--nproc', ), {
                         'type': int, 'default': 1,
                         'help': (
                             'Number of processes to split the iterations'
                             ' between'
                         ),
-                    })
-                )
+                    }),
+                    (('--chunksize', ), {
+                        'type': int, 'default': cls._default_chunksize,
+                        'help': (
+                            'Number of iterations that should be '
+                            'included in each chunk when using a '
+                            'multiprocessing pool'
+                        ),
+                    }),
+                ]
             cls._arguments.append(
                 (('--save-step-outputs', ), {
                     'nargs': '?', 'action': 'extend', 'const': [True],
@@ -5369,7 +5415,7 @@ class IterationTaskBase(TaskBase):
             iargs_overwrite = copy.deepcopy(args_overwrite)
             for k, v in self.args_overwrite.items():
                 iargs_overwrite.setdefault(k, v)
-            for k in ["nproc", "save_step_outputs"]:
+            for k in ["nproc", "chunksize", "save_step_outputs"]:
                 iargs_overwrite.pop(k, None)
             yield iargs_overwrite
 
@@ -5453,6 +5499,7 @@ class IterationTaskBase(TaskBase):
         """
         if not cls._steps_independent:
             args.nproc = 1
+            args.chunksize = None
         dont_save_step_outputs = []
         if True not in args.save_step_outputs:
             dont_save_step_outputs += [
@@ -5484,6 +5531,7 @@ class IterationTaskBase(TaskBase):
                 copy_outputs_from=True,
                 args_preserve=self._step_args_preserve,
                 nproc=self.args.nproc,
+                chunksize=self.args.chunksize,
                 remote_callback=self.finalize_step_remote,
                 local_callback=self.finalize_step_local,
             )
@@ -5757,6 +5805,8 @@ class TemporalTaskBase(IterationTaskBase):
 
     _step_task = None
     _step_vary = 'time'
+    # Prevent harder later tasks from being dumped on a single processor
+    _default_chunksize = 4
     _arguments = [
         arguments.CompositeArgumentDescription(
             'start_time', 'time',
@@ -5836,6 +5886,10 @@ class TemporalTaskBase(IterationTaskBase):
                     - utils.quantity2timedelta(args.duration)
                 )
         elif not stop_set:
+            if ((args.start_age == "planting"
+                 and args.start_time is None
+                 and args.start_hour is None)):
+                args.start_time = "noon"
             cls._arguments['start_time'].adjust_args(args)
             if args.start_time.crop_age_string == 'planting':
                 assert not args.dont_age

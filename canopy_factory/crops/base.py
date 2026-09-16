@@ -282,6 +282,43 @@ class ParameterValues(DictSet):
         r"""str: Current parameter being generated."""
         return self.instance.current_param
 
+    def set(self, k, value):
+        r"""Set a parameter value.
+
+        Args:
+            k (str): Name of parameter to set, without any prefixes.
+            value (object): Value to set parameter to.
+
+        """
+        if k in ParameterIndex.parameter_names:
+            self.index[k] = value
+            return
+        try:
+            self[k] = value
+            return
+        except KeyError:
+            if k in self.instance.component_parameters:
+                try:
+                    self.instance.component.set(k, value)
+                    return
+                except KeyError:
+                    pass
+            if k in self.instance.external_parameters:
+                if k in self.instance.component.parameters:
+                    src = self.instance.component
+                else:
+                    src = self.instance.root
+                try:
+                    src.set(k, value)
+                    return
+                except KeyError:
+                    pass
+            for kk, vv in self.nested.items():
+                if vv.prefixes(k):
+                    vv.set(k, value)
+                    return
+        raise KeyError(k)
+
     def get(self, k, default=NoDefault, return_other=None,
             return_container=False, **kwargs):
         r"""Get a parameter value.
@@ -1055,6 +1092,8 @@ class SimplePlantParameter(PlantParameterBase):
                 class_dict[kattr].update(**v)
             else:
                 raise TypeError(type(v))
+        if '' in class_dict.get('_defaults', {}):
+            class_dict.setdefault('_default', class_dict['_defaults'][''])
         return RegisteredMetaClass(f'Created{name}', (cls,), class_dict)
 
     @property
@@ -1351,16 +1390,6 @@ class SimplePlantParameter(PlantParameterBase):
             out = self.unit_system.convert(out, strip=True)
         return out
 
-    def set(self, k, value):
-        r"""Set a parameter value.
-
-        Args:
-            k (str): Name of parameter to set, without any prefixes.
-            value (object): Value to set parameter to.
-
-        """
-        raise NotImplementedError
-
     @property
     def children(self):
         r"""iterable: Child parameter instances."""
@@ -1430,6 +1459,8 @@ class SimplePlantParameter(PlantParameterBase):
     def all_parameters(self):
         r"""dict: Set of all parameters, including children."""
         out = PrefixedDict({}, prefix=self.prefix)
+        if isinstance(self, PlantGenerator) and self._plant_name:
+            out["crop"] = self._plant_name
         for k, v in self.parameters.items():
             if isinstance(v, PlantParameterBase):
                 assert v.initialized
@@ -1494,6 +1525,16 @@ class SimplePlantParameter(PlantParameterBase):
             except KeyError:
                 pass
         raise KeyError(k)
+
+    def set(self, k, value):
+        r"""Set a parameter value.
+
+        Args:
+            k (str): Name of parameter to set, without any prefixes.
+            value (object): Value to set parameter to.
+
+        """
+        self.parameters.set(k, value)
 
     def get(self, k, default=NoDefault, **kwargs):
         r"""Get a parameter value.
@@ -2224,7 +2265,7 @@ class FunctionPlantParameter(OptionPlantParameter):
         },
         'Exp': {
             'type': 'scalar', 'subtype': 'float',
-            'description': 'Exponent',
+            'description': 'Exponent (or base for exp function)',
         },
         'XVals': {
             'oneOf': [
@@ -2271,7 +2312,8 @@ class FunctionPlantParameter(OptionPlantParameter):
         'cos': ['Amplitude', 'Period', 'XOffset', 'YOffset'],
         'tan': ['Amplitude', 'Period', 'XOffset', 'YOffset'],
         'pow': ['Amplitude', 'Exp', 'XOffset', 'YOffset'],
-        'logistic': ['Amplitude', 'Exp', 'XOffset', 'YOffset'],
+        'exp': ['Amplitude', 'Exp', 'XOffset', 'YOffset'],
+        'logistic': ['Amplitude', 'XOffset', 'YOffset'],
         'interp': ['XVals', 'YVals'],
         'curve': ['Curve'],
         'curve_patch': ['CurvePatch'],
@@ -2389,6 +2431,12 @@ class FunctionPlantParameter(OptionPlantParameter):
             xoffset = self.get('XOffset')
             yoffset = self.get('YOffset')
             out = (A * pow(v + xoffset, exp)) + yoffset
+        elif func == 'exp':
+            A = self.get('Amplitude')
+            exp = self.get('Exp')
+            xoffset = self.get('XOffset')
+            yoffset = self.get('YOffset')
+            out = (A * pow(exp, v + xoffset)) + yoffset
         elif func == 'logistic':
             A = self.get('Amplitude')
             xoffset = self.get('XOffset')
@@ -2621,17 +2669,32 @@ class ColorPlantParameter(SimplePlantParameter):
             _help=('Function to map between parameter values and the '
                    'distance along the color map or between the initial '
                    'and final colors '),
-            _default='linear',
             defaults={
                 'VarName': 'Age',
-                'VarMin': 'AgeSenesce',
-                'VarMax': 'AgeRemove',
-                'Slope': 1.0,
-                'Intercept': 0.0,
+                'VarMin': 'AgeMature',
+                'VarMax': 'AgeSenesce',
+                '': 'pow',
+                'Amplitude': 1.0,
+                'Exp': 8,
+                'XOffset': 0.0,
+                'Yoffset': 0.0,
             },
         ),
+        'DataVarNorm': {
+            'type': 'string',
+            'default': 'AgeSenesce',
+            'description': (
+                'Name of the variable that should be used to normalize '
+                'the function variables for encoding as data'
+            ),
+        },
     }
     _required = ['']
+    _defaults = dict(
+        SimplePlantParameter._defaults,
+        DataVarNorm='AgeSenesce',
+    )
+    _variables = ['DataVarNorm']
 
     def __init__(self, *args, **kwargs):
         self._starting_color_idx = None
@@ -2650,24 +2713,46 @@ class ColorPlantParameter(SimplePlantParameter):
         """
         if self._starting_color_idx is None:
             self.initialize_lpy_turtle(self.root.context.turtle)
-        v = self.get('Func', **kwargs)
-        c0 = self.get('')
-        c1 = self.get('Final', None)
-        out = self._starting_color_idx
-        if isinstance(c0, str) or c1 is not None:
-            out += int(255 * v)
-        return out
+        vnorm = self.get('DataVarNorm', None)
+        if vnorm is None:
+            v = self.get('Func', None, **kwargs)
+        else:
+            vnorm_val = self.get(vnorm)
+            v = self.get(self.get('FuncVarName'), **kwargs)
+            v = min(v, vnorm_val) / vnorm_val
+        if v > 1.0:
+            raise ValueError("Color function failed to create output "
+                             "from 0 to 1")
+        return self._starting_color_idx + int(255 * v)
 
-    def initialize_lpy_context(self, context):
-        r"""Initialize the lpy context for this instance.
+    @classmethod
+    def create_colorlist_actual(cls, c0, c1, name="temporary"):
+        cmap = None
+        if isinstance(c0, str):
+            import matplotlib as mpl
+            cmap = mpl.colormaps[c0]
+        elif c1 is not None:
+            from matplotlib.colors import LinearSegmentedColormap
+            cmap = LinearSegmentedColormap.from_list(name, [c0, c1])
+        return [
+            (c0 if cmap is None else
+             tuple(int(255 * x) for x in cmap(v)[:-1]))
+            for v in np.linspace(0, 1, 256)
+        ]
 
-        Args:
-            context (lpy.LsysContext): Context to initialize.
+    def create_colorlist_data(cls):
+        return [
+            tuple(int(v) for _ in range(3))
+            for v in range(256)
+        ]
 
-        """
-        if self.initialized_lpy_context:
-            return
-        super(ColorPlantParameter, self).initialize_lpy_context(context)
+    def create_colorlist(self):
+        vnorm = self.get('DataVarNorm', None)
+        if vnorm is None:
+            c0 = self.get('')
+            c1 = self.get('Final', None)
+            return self.create_colorlist_actual(c0, c1, name=self.fullname)
+        return self.create_colorlist_data()
 
     def initialize_lpy_turtle(self, turtle):
         r"""Initialize a PglTurtle instance.
@@ -2678,20 +2763,7 @@ class ColorPlantParameter(SimplePlantParameter):
         """
         check_optional_dependency("openalea")
         import openalea.plantgl.all as pgl
-        c0 = self.get('')
-        c1 = self.get('Final', None)
-        cmap = None
-        if isinstance(c0, str):
-            import matplotlib as mpl
-            cmap = mpl.colormaps[c0]
-        elif c1 is not None:
-            from matplotlib.colors import LinearSegmentedColormap
-            cmap = LinearSegmentedColormap.from_list(
-                self.fullname, [c0, c1])
-        colors = [c0] if cmap is None else [
-            tuple(int(255 * x) for x in cmap(v)[:-1])
-            for v in np.linspace(0, 1, 256)
-        ]
+        colors = self.create_colorlist()
         self._starting_color_idx = len(turtle.getColorList())
         for i, color in enumerate(colors):
             idx = len(turtle.getColorList())
@@ -2713,14 +2785,64 @@ class ColorPlantParameter(SimplePlantParameter):
         return f'{component}_{idx}'
 
     @classmethod
-    def colorname2component(cls, name):
-        r"""Extract the component name from a color name.
+    def parse_colorname(cls, name):
+        r"""Extract the component name and color index from a color name.
 
         Args:
             name (str): Color name.
 
         """
-        return name.rsplit('_', 1)[0]
+        component, idx = name.rsplit('_', 1)
+        if component == "Color":
+            return (None, None)
+        idx = int(idx)
+        return (component, idx)
+
+    @classmethod
+    def coloridx2data(cls, component, idx, parameters):
+        r"""Convert a color index into the raw data stored in it.
+
+        Args:
+            component (str): Component name.
+            idx (int): Color index.
+            parameters (dict): Color parameters.
+
+        """
+        if component == "Color" or idx is None or not parameters:
+            return {}
+        parameters = PlantGenerator.from_dict(parameters)
+        vnorm = parameters.get(f"{component}ColorDataVarNorm", None)
+        if vnorm is None:
+            return {}
+        name = parameters.get(f"{component}ColorFuncVarName")
+        v = float(idx) / 255
+        vnorm = parameters.get(f"{component}{vnorm}")
+        return {name: v * vnorm}
+
+    @classmethod
+    def coloridx2color(cls, component, idx, parameters):
+        r"""Convert a color index into a color.
+
+        Args:
+            component (str): Component name.
+            idx (int): Color index.
+            parameters (dict): Color parameters.
+
+        """
+        if component == "Color" or idx is None or not parameters:
+            return None
+        parameters = PlantGenerator.from_dict(parameters)
+        data = cls.coloridx2data(component, idx, parameters)
+        self = parameters.parameters[component].parameters["Color"]
+        c0 = self.parameters[""]  # Bypass check for current parameter
+        c1 = self.get("Final", None)
+        colors = cls.create_colorlist_actual(c0, c1)
+        if not data:
+            return colors[idx]
+        for k, v in data.items():
+            parameters.set(k, v)
+        vcolor = self.get('Func')
+        return colors[int(255 * vcolor)]
 
 
 class ScalarPlantParameter(SimplePlantParameter):
@@ -4341,8 +4463,9 @@ class PlantGenerator(ParameterCollection):
         ParameterCollection._defaults,
         Plastocron=rapidjson.units.Quantity(3.0, 'days'),
         AgeInc=rapidjson.units.Quantity(1.0, 'days'),
-        AgeMature=rapidjson.units.Quantity(20.0, 'days'),
-        AgeSenesce=rapidjson.units.Quantity(30.0, 'days'),
+        # Need to be set based on NMax & Plastocron
+        AgeMature=rapidjson.units.Quantity(60.0, 'days'),
+        AgeSenesce=rapidjson.units.Quantity(120.0, 'days'),
         AgeRemove=rapidjson.units.Quantity(np.inf, 'days'),
         NMax=20,
     )
@@ -4385,11 +4508,13 @@ class PlantGenerator(ParameterCollection):
         ParameterCollection._on_registration(cls)
         cls._add_parameter_arguments(cls, cls)
 
-    def __init__(self, param=None, seed=0, verbose=False,
+    def __init__(self, param=None, seed=0, crop=None, verbose=False,
                  verbose_lpy=False, debug=False, debug_param=None,
                  debug_param_prefix=None, unit_system=None,
                  no_class_defaults=False,
                  context=None, **kwargs):
+        if crop is not None:
+            assert crop == self._plant_name
         self.seed = seed
         if debug_param is None:
             debug_param = []
@@ -4425,6 +4550,13 @@ class PlantGenerator(ParameterCollection):
             if kname.startswith(k):
                 return k
         return None
+
+    @classmethod
+    def from_dict(cls, parameters):
+        if isinstance(parameters, cls):
+            return parameters
+        out_cls = get_class_registry().get("crop", parameters["crop"])
+        return out_cls(**parameters)
 
     @classmethod
     def parameters_from_file(cls, args, parameters):
@@ -4470,6 +4602,8 @@ class PlantGenerator(ParameterCollection):
             else:
                 mods['default'] = ids[0]
             dst._arguments['id'].modify(**mods)
+        else:
+            dst._arguments['id'].modify(default='default')
         years = DataProcessor.available_years(cls._name)
         if years:
             mods = {'append_choices': years}
@@ -4574,17 +4708,17 @@ class PlantGenerator(ParameterCollection):
         for var in ["N", "B"]:
             x = idx[var]
             xmin = component.get(f"{var}First", 0)
-            xmax = component.get(f"{var}Max", -1)
+            xmax = component.get(f"{var}Last", -1)
             xperiod = component.get(f"{var}Period", 1)
             if ((x < xmin
                  or (xmax != -1 and x > xmax)
                  or (((x - xmin) % xperiod) != 0))):
                 return False
-        if idx["Age"] >= component.get("AgeRemove"):
-            if self.verbose_lpy:
-                print(f"Removing {name}[{idx}]")
-            self.RemoveComponent(name, idx)
-            return False
+        # if idx["Age"] >= component.get("AgeRemove"):
+        #     if self.verbose_lpy:
+        #         print(f"Removing {name}[{idx}]")
+        #     self.RemoveComponent(name, idx)
+        #     return False
         self.ProduceComponent(name, idx)
         return True
 

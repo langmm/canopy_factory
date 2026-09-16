@@ -5,6 +5,7 @@ import numpy as np
 from canopy_factory.utils import (
     get_class_registry, DataProcessor, units, cfg
 )
+from canopy_factory.crops import PlantMesh
 
 
 _param_args = ['crop', 'id', 'data_year']
@@ -281,6 +282,26 @@ def assert_nested_allclose(assert_allclose):
             assert_allclose(a.value, b.value, **kwargs)
         elif isinstance(b, np.ndarray):
             assert_allclose(a, b, **kwargs)
+        elif isinstance(b, PlantMesh):
+            assert isinstance(a, PlantMesh)
+            a_header = a.header
+            b_header = b.header
+            a_header.pop('mesh_file')
+            b_header.pop('mesh_file')
+            for k in ['header', 'body', 'mesh_dict']:
+                v_a = getattr(a, k)
+                v_b = getattr(b, k)
+                if k == 'header':
+                    v_a.pop('mesh_file')
+                    v_b.pop('mesh_file')
+                try:
+                    _assert_nested_allclose(v_a, v_b, **kwargs)
+                except AssertionError as e:
+                    if isinstance(e, NestedAssertionError):
+                        for kerr, verr in e.nested.items():
+                            errors[f'{k}->{kerr}'] = verr
+                    else:
+                        errors[k] = e.args[0]
         else:
             assert a == b
         if errors:

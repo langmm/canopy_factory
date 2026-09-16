@@ -285,9 +285,7 @@ class TestGenerateTask(TestTask):
             ],
         },
     }
-    # _compare_methods = {'generate': 'approx'}
-    _compare_methods = {'generate': 'approx',
-                        'geometryids': 'approx'}
+    _compare_methods = {'generate': 'approx'}
 
     @pytest.fixture
     def requires_optional_dependencies(self, output, instance_kwargs):
@@ -302,25 +300,6 @@ class TestGenerateTask(TestTask):
         if arguments.get('canopy', 'single') in ['unique', 'tile']:
             return False  # Large
         return self._compare_methods.get(output, 'bytes')
-
-    @classmethod
-    def prepare_comparison_data(cls, output, actual, expected):
-        r"""Perform an actions necessary to modify the data prior to
-        comparison.
-
-        Args:
-            output (str): Type of output being compared.
-            actual (object): Actual object.
-            expected (object): Expected object.
-
-        Returns:
-            tuple: Update actual & expected objects for comparison.
-
-        """
-        if output == 'generate' and not isinstance(expected, (str, bytes)):
-            expected = utils.get_mesh_dict(expected)
-            actual = utils.get_mesh_dict(actual)
-        return actual, expected
 
 
 class TestRayTraceTask(TestTask):

@@ -2140,9 +2140,8 @@ class CompositeArgumentDescription(ArgumentDescriptionSet):
             cls_base = get_class_registry().get(
                 'argument', composite_type)
             kwargs_cls = {
-                k: kwargs.pop(k) for k in [
-                    'description', 'ignore', 'registry_name'
-                ] if k in kwargs
+                k: kwargs.pop(k) for k in cls_base._class_factory_args
+                if k in kwargs
             }
             cls = cls_base.class_factory(name, **kwargs_cls)
         if arguments is None:
@@ -2248,6 +2247,7 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
     _default = None
     _arguments = ArgumentDescriptionSet()
     _args_type = 'namespace'
+    _class_factory_args = []
 
     def __init__(self, args=None, args_overwrite=None):
         # self.adjust_args(args, skip_root=True)

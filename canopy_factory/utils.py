@@ -1585,7 +1585,8 @@ def prune_empty_faces(mesh, area_min=None):
 
 
 def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
-               components=None, **kwargs):
+               colormap_target=None, components=None,
+               plant_parameters=None, **kwargs):
     r"""Convert a PlantGL scene to a 3D geometry mesh.
 
     Args:
@@ -1597,8 +1598,11 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
             tasks.
         colormap (str, dict, optional): Name of matplotlib colormap or
             a dictionary mapping IDs to colors for each scene ID.
+        colormap_target (str, optional): Value to use colormap on.
         components (dict, optional): Dictionary that component face
             face ranges should be added to.
+        plant_parameters (dict, optional): Dictionary containing plant
+            parameters used to generate the scene.
         **kwargs: Additional keyword arguments are passed to shape2dict
             for each shape in the scene.
 
@@ -1621,36 +1625,58 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
         print(f'scene2geom: Converting scene with {len(scene_dict)} '
               f'components')
     cmap = None
+    kmax = max(scene_dict.keys())
+    if colormap_target is None:
+        if components is not None:
+            colormap_target = "component_idx"
+        else:
+            colormap_target = "shape"
     if isinstance(colormap, str):
         import matplotlib as mpl
-        kmax = max(scene_dict.keys())
 
         def fcmap(x):
             return tuple([
                 int(255 * i) for i in
-                mpl.colormaps['viridis'](x/kmax)[:-1]
+                mpl.colormaps[colormap](x)[:-1]
             ])
 
         cmap = fcmap
-
     elif isinstance(colormap, dict):
         cmap = colormap.get
     for k, shapes in scene_dict.items():
-        if cmap is not None:
-            kwargs['color'] = cmap(k)
+        color = None
+        if cmap is not None and colormap_target == "shape":
+            color = cmap(k/kmax)
         for shape in shapes:
             d.clear()
-            shapedict = shape2dict(shape, d=d, as_obj=as_obj,
-                                   verbose=verbose, **kwargs)
+            component = None
+            component_data = None
+            if ((components is not None or color is None
+                 and not shape.appearance.name.startswith("Color"))):
+                from canopy_factory.crops.base import ColorPlantParameter
+                component, color_idx = ColorPlantParameter.parse_colorname(
+                    shape.appearance.name)
+                if plant_parameters is not None:
+                    component_data = ColorPlantParameter.coloridx2data(
+                        component, color_idx, plant_parameters)
+                if color is None and color_idx is not None:
+                    if ((cmap is not None
+                         and colormap_target == "component_idx")):
+                        color = cmap(float(color_idx) / 256.0)
+                    elif plant_parameters is not None:
+                        color = ColorPlantParameter.coloridx2color(
+                            component, color_idx, plant_parameters)
+            shapedict = shape2dict(
+                shape, d=d, as_obj=as_obj, color=color,
+                verbose=verbose, **kwargs
+            )
             igeom = cls.from_dict(shapedict)
             if igeom is not None:
                 igeom = prune_empty_faces(igeom)
-                if components is not None:
-                    from canopy_factory.crops.base import ColorPlantParameter
-                    component = ColorPlantParameter.colorname2component(
-                        shape.appearance.name)
+                if components is not None and component is not None:
                     components.setdefault(component, [])
-                    components[component].append((out.nface, igeom.nface))
+                    components[component].append((out.nface, igeom.nface,
+                                                  component_data))
                 out.append(igeom)
             d.clear()
     if verbose:
@@ -1884,9 +1910,28 @@ def scale_mesh(mesh, scale, from_units=None, to_units=None):
     return type(mesh).from_array_dict(mesh_dict)
 
 
+def select_faces(mesh, mask):
+    r"""Select a specific set of faces from the mesh.
+
+    Args:
+        mesh (ObjDict): Mesh to select faces from.
+        mask (np.array): Boolean mask of faces that should be selected.
+
+    Returns:
+        ObjDict: Mesh with only the selected faces.
+
+    """
+    mesh_dict = mesh.as_array_dict()
+    mesh_dict["faces"] = mesh_dict["faces"][mask, :]
+    # TODO: Prune unused vertices
+    raise NotImplementedError("Prune unused vertices")
+    # return type(mesh).from_array_dict(mesh_dict)
+
+
 def shift_mesh(mesh, x, y, axis_up=np.array([0, 0, 1], dtype=np.float64),
                axis_x=np.array([1, 0, 0], dtype=np.float64),
-               plantids_in_blue=False, plantid=None):
+               plantids_in_blue=False, plantid=None,
+               vertex_mask=None, face_mask=None):
     r"""Shift a 3D mesh.
 
     Args:
@@ -1904,20 +1949,37 @@ def shift_mesh(mesh, x, y, axis_up=np.array([0, 0, 1], dtype=np.float64),
             shifted.
         plantid (int, optional): Amount that colors should be shifted in
             the blue channel to account for plant ID.
+        vertex_mask (np.ndarray, optional): Boolean mask for the vertices
+            that should be shifted.
+        face_mask (np.ndarray, otpional): Boolean mask for the faces that
+            should be shifted.
 
     Returns:
         ObjDict: Shifted mesh.
 
     """
-    mesh_dict = mesh.as_array_dict()
+    return_dict = False
+    if isinstance(mesh, dict):
+        mesh_dict = mesh
+        return_dict = True
+    else:
+        mesh_dict = mesh.as_array_dict()
     # if isinstance(mesh, ObjDict) and 'face' in mesh_dict:
     #     mesh_dict['face'] -= 1
+    if ((face_mask is not None and vertex_mask is None
+         and 'face' in mesh_dict and 'vertex' in mesh_dict)):
+        vertex_mask = np.zeros((mesh_dict['vertex'].shape[0], ), bool)
+        vertex_mask[mesh_dict['face'][face_mask, :].flatten()] = 1
+    if vertex_mask is None and 'vertex' in mesh_dict:
+        vertex_mask = np.ones((mesh_dict['vertex'].shape[0], ), bool)
     if 'vertex' in mesh_dict:
         axis_y = np.cross(axis_up, axis_x)
-        mesh_dict['vertex'] += x * axis_x
-        mesh_dict['vertex'] += y * axis_y
+        mesh_dict['vertex'][vertex_mask, :] += x * axis_x
+        mesh_dict['vertex'][vertex_mask, :] += y * axis_y
     if plantid and plantids_in_blue and 'vertex_colors' in mesh_dict:
-        mesh_dict['vertex_colors'][:, 2] += plantid
+        mesh_dict['vertex_colors'][vertex_mask, 2] += plantid
+    if return_dict:
+        return mesh_dict
     out = type(mesh).from_array_dict(mesh_dict)
     return out
 

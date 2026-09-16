@@ -2,6 +2,8 @@ import os
 import copy
 import numpy as np
 import yggdrasil_rapidjson as rapidjson
+import argparse
+from collections import OrderedDict
 from yggdrasil_rapidjson import units
 from canopy_factory import utils, arguments
 from canopy_factory.utils import (
@@ -334,7 +336,10 @@ class ParametrizeCropTask(TaskBase):
         out.update(
             output_units.as_dict(suffix='_units', as_strings=True)
         )
-        return out
+        out_sorted = OrderedDict()
+        for k in sorted(out.keys()):
+            out_sorted[k] = out[k]
+        return out_sorted
 
     @cached_property
     def defaults(self):
@@ -566,7 +571,7 @@ class LayoutTask(TaskBase):
         arguments.ArgumentDescriptionSet([
             (('--periodic-canopy', ), {
                 'nargs': '?', 'const': 'scene', 'default': False,
-                'choices': [False, 'scene', 'plants', 'rays'],
+                'choices': [False, 'False', 'scene', 'plants', 'rays'],
                 'help': (
                     'Make the canopy periodic for ray tracing so '
                     'that is infinitely wide'
@@ -690,6 +695,8 @@ class LayoutTask(TaskBase):
         args.plot_length = args.ncols * args.plant_spacing
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
+        if args.periodic_canopy == "False":
+            args.periodic_canopy = False
         if args.periodic_canopy is True:
             args.periodic_canopy = 'scene'
         if args.canopy == 'single':
@@ -1084,6 +1091,547 @@ class LayoutTask(TaskBase):
         return super(LayoutTask, self)._generate_output(name)
 
 
+class FieldPositionGenerator:
+
+    def __init__(self, args):
+        self.args = args
+        self.generator = None
+        self.current_plantid = None
+        self.reset()
+
+    def reset(self):
+        self.generator = np.random.default_rng(seed=self.args.plantid)
+        self.current_plantid = self.args.plantid
+
+    def _generate(self):
+        if self.current_plantid == self.args.plantid:
+            out = tuple([
+                parse_quantity(0.0, self.args.plant_spacing.units)
+                for _ in range(2)
+            ])
+        else:
+            out = tuple([
+                parse_quantity(
+                    self.generator.normal(
+                        0.0,
+                        self.args.location_stddev
+                        * self.args.plant_spacing.value
+                    ),
+                    self.args.plant_spacing.units
+                )
+                for _ in range(2)
+            ])
+        self.current_plantid += 1
+        return out
+
+    def __call__(self, plantid):
+        assert plantid >= self.args.plantid
+        if self.current_plantid > plantid:
+            self.reset()
+        while self.current_plantid < plantid:
+            self._generate()
+        assert self.current_plantid == plantid
+        return self._generate()
+
+
+class PlantMesh(utils.RegisteredClassBase):
+
+    _registry_key = 'file'
+    _registry_name = 'plant'
+    _names_header = [
+        'component_order', 'mesh_file', 'field_info',
+    ]
+    _names_header_calc = [
+        'field_mins', 'field_maxs',
+        'planting_density', 'field_area', 'leaf_area', 'LAI',
+    ]
+    _names_optional = [
+        'mesh_file', 'field_info',
+    ]
+    _names_body = [
+        'plantids', 'componentids',
+    ]
+    _names_body_calc = [
+        'areas', 'height',
+    ]
+    _required_args = [
+        'canopy', 'plantid', 'mesh_units', 'mesh_format',
+        'ground_height', 'location_stddev',
+        'axis_up', 'axis_rows', 'axis_cols',
+        'plant_spacing', 'row_spacing',
+        'nrows', 'ncols',
+        'x', 'y',
+    ]
+    _required_args_match = [
+        'mesh_units', 'mesh_format',
+        'ground_height',
+        'axis_up', 'axis_rows', 'axis_cols',
+    ]
+
+    def __init__(self, args, mesh=None, componentdata=None, **kwargs):
+        if componentdata is None:
+            componentdata = {}
+        self.args = argparse.Namespace()
+        self._mesh = mesh
+        self.componentdata = componentdata
+        if isinstance(args, dict):
+            for k in self._required_args:
+                setattr(self.args, k, args[k])
+        else:
+            assert isinstance(args, argparse.Namespace)
+            for k in self._required_args:
+                setattr(self.args, k, getattr(args, k))
+        missing = []
+        for k in self._names_body + self._names_header:
+            if k not in kwargs:
+                setattr(self, k, None)
+                if k in self._names_optional:
+                    continue
+                missing.append(k)
+            setattr(self, k, kwargs.pop(k))
+        if kwargs or missing:
+            raise ValueError(f"Extra ({list(kwargs.keys())}) or "
+                             f"missing ({missing}) arguments")
+        if not (self._mesh or self.mesh_file):
+            raise ValueError("Either mesh or mesh_file must be provided")
+        if not self.args.mesh_format:
+            self.args.mesh_format = 'obj'
+        if isinstance(self.args.mesh_units, str):
+            self.args.mesh_units = units.Units(self.args.mesh_units)
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        clone = cls.__new__(cls)
+        memo[id(self)] = clone
+        for k in self._names_header + self._names_body + [
+                "args", "componentdata"]:
+            if k in ["mesh_file"]:
+                clone.mesh_file = None
+                continue
+            setattr(clone, k, copy.deepcopy(getattr(self, k), memo))
+        clone._mesh = type(self.mesh)(self.mesh)
+        return clone
+
+    @classmethod
+    def from_components(cls, args, mesh, components,
+                        mesh_file=None):
+        component_order = sorted(list(components.keys()))
+        plantids = args.plantid * np.ones(
+            (mesh.count_elements('face'), ), dtype=np.uint32)
+        componentids = np.zeros(
+            (mesh.count_elements('face'), ), dtype=np.uint32)
+        componentdata = {}
+        for i, k in enumerate(component_order):
+            for prev, count, data in components[k]:
+                componentids[prev:(prev + count)] = i
+                if not data:
+                    continue
+                for kdata, vdata in data.items():
+                    if kdata not in componentdata:
+                        componentdata[kdata] = np.zeros(
+                            (mesh.count_elements('face'), ),
+                            dtype=np.float64
+                        )
+                    if isinstance(vdata, units.Quantity):
+                        vdata = vdata.value
+                    componentdata[kdata][prev:(prev + count)] = vdata
+        out = cls(args, mesh=mesh, mesh_file=mesh_file,
+                  component_order=component_order,
+                  plantids=plantids, componentids=componentids,
+                  componentdata=componentdata)
+        # if out.args.x.value > 0 or out.args.y.value > 0:
+        #     out.shift(out.args.x, out.args.y)
+        return out
+
+    @classmethod
+    def from_file(cls, fname):
+        body = utils.read_csv(fname)
+        header = body.pop("HEADER_JSON")
+        args = header.pop("args")
+        componentdata = {}
+        for k in list(body.keys()):
+            if k not in cls._names_body:
+                componentdata[k] = body.pop(k)
+        body.update(header)
+        return cls(args, componentdata=componentdata, **body)
+
+    def write(self, fname):
+        if not self.mesh_file:
+            self.mesh_file = (
+                os.path.splitext(fname)[0]
+                + utils._inv_geom_ext[self.args.mesh_format]
+            )
+        utils.write_3D(self.mesh, self.mesh_file,
+                       file_format=self.args.mesh_format)
+        utils.write_csv(self.json, fname)
+
+    @property
+    def mesh(self):
+        if self._mesh is None:
+            self._mesh = utils.read_3D(self.mesh_file)
+        return self._mesh
+
+    @cached_property
+    def face_properties(self):
+        out = [k for k in self._names_body
+               if getattr(self, k) is not None]
+        out += list(self.componentdata.keys())
+        out += self._names_body_calc
+        return out
+
+    def get_face_property(self, name):
+        if name in self._names_body + self._names_body_calc:
+            return getattr(self, name)
+        return self.componentdata[name]
+
+    def face_property_mask(self, k, v):
+        assert k in self.face_properties
+        return (self.get_face_property(k) == v)
+
+    @cached_property
+    def mesh_dict(self):
+        return utils.get_mesh_dict(self.mesh)
+
+    @cached_property
+    def areas(self):
+        return parse_quantity(self.mesh.areas, self.args.mesh_units**2)
+
+    @cached_property
+    def vert_heights(self):
+        return (
+            np.dot(self.mesh_dict['vertex'], self.args.axis_up)
+            - self.args.ground_height.value
+        )
+
+    @cached_property
+    def vert_ground(self):
+        return utils.project_onto_ground(
+            self.mesh_dict['vertex'],
+            self.args.axis_rows, self.args.axis_cols,
+        )
+
+    @cached_property
+    def height(self):
+        if len(self.mesh_dict['face']) == 0:
+            face_heights = parse_quantity(
+                np.zeros((0, ), dtype=self.vert_heights.dtype),
+                self.args.mesh_units)
+        else:
+            face_heights = parse_quantity(
+                self.vert_heights[self.mesh_dict['face']].mean(axis=1),
+                self.args.mesh_units)
+        return face_heights
+
+    @cached_property
+    def field_mins(self):
+        return parse_quantity(
+            self.vert_ground.min(axis=0) if len(self.vert_ground)
+            else np.zeros((2, ), self.vert_ground.dtype),
+            self.args.mesh_units
+        )
+
+    @cached_property
+    def field_maxs(self):
+        return parse_quantity(
+            self.vert_ground.max(axis=0) if len(self.vert_ground)
+            else np.zeros((2, ), self.vert_ground.dtype),
+            self.args.mesh_units
+        )
+
+    @cached_property
+    def unique_plantids(self):
+        return sorted(np.unique(self.plantids))
+
+    @cached_property
+    def planting_density(self):
+        return 1.0 / (self.args.plant_spacing * self.args.row_spacing)
+
+    @cached_property
+    def field_area(self):
+        return utils.safe_op(
+            np.prod, (self.field_maxs - self.field_mins)
+        )
+
+    @cached_property
+    def leaf_area(self):
+        if 'Leaf' in self.component_order:
+            idx = (self.componentids
+                   == self.component_order.index('Leaf'))
+            # TODO: Calculate leaf area directly from the generator?
+            return utils.safe_op(np.sum, self.areas[idx]) / 2
+        else:
+            return units.Quantity(0.0, self.areas.units)
+
+    @cached_property
+    def LAI(self):
+        return self.leaf_area * self.planting_density
+
+    @property
+    def header(self):
+        out = {k: getattr(self, k) for k in self._names_header}
+        out['args'] = {
+            k: getattr(self.args, k) for k in self._required_args
+        }
+        return out
+
+    @property
+    def body(self):
+        out = {k: getattr(self, k) for k in self._names_body}
+        out.update(self.componentdata)
+        return out
+
+    @property
+    def json(self):
+        out = {
+            'HEADER_JSON': self.header
+        }
+        out.update(self.body)
+        return out
+
+    def set_units(self, new_units):
+        if new_units == self.args.mesh_units:
+            return
+        self._mesh = utils.scale_mesh(
+            self.mesh, 1.0,
+            from_units=self.args.mesh_units,
+            to_units=new_units
+        )
+        self.args.mesh_units = new_units
+        self.clear_cached_properties()
+
+    def in_units(self, new_units):
+        out = copy.deepcopy(self)
+        out.set_units(new_units)
+        return out
+
+    def add_colors(self, *args, **kwargs):
+        self.mesh.add_colors(*args, **kwargs)
+
+    def get_plant(self, plantid, mesh_file=None):
+        mask = (self.plantids == plantid)
+        mesh = utils.select_faces(self.mesh, mask)
+        kws = {k: getattr(self, k) for k in self._names_header
+               if k not in ['mesh_file', 'field_info']}
+        for k in self._names_body:
+            kws[k] = getattr(self, k)[mask]
+        kws["componentdata"] = {}
+        for k, v in self.componentdata.items():
+            kws["componentdata"][k] = v[mask]
+        args = copy.deepcopy(self.args)
+        args.ncol = 1
+        args.nrow = 1
+        args.plantid = plantid
+        return type(self)(args, mesh=mesh, **kws)
+
+    def append(self, other):
+        if isinstance(other, list):
+            for x in other:
+                self.append(x)
+            return
+        for k in self._required_args_match:
+            v_self = getattr(self.args, k)
+            v_other = getattr(other.args, k)
+            if isinstance(v_self, np.ndarray):
+                assert (v_other == v_self).all()
+            else:
+                try:
+                    assert v_other == v_self
+                except AssertionError:
+                    # TODO: This can be removed once fully debugged
+                    print("CONFLICTING", k, v_self, v_other)
+                    import pdb
+                    pdb.set_trace()
+                    raise
+        other_componentids = other.componentids
+        if other.component_order != self.component_order:
+            for i, name in enumerate(other.component_order):
+                assert name in self.component_order
+                other_componentids[other_componentids == i] = (
+                    self.component_order.index(name)
+                    + len(self.component_order)
+                )
+            other_componentids -= len(self.component_order)
+        for k in self._names_body:
+            if k == "componentids":
+                self.componentids = np.hstack([
+                    self.componentids, other_componentids])
+            else:
+                setattr(self, k, np.hstack([
+                    getattr(self, k), getattr(other, k)]))
+        assert (
+            list(self.componentdata.keys())
+            == list(other.componentdata.keys())
+        )
+        for k, v in other.componentdata.items():
+            self.componentdata[k] = np.hstack([
+                self.componentdata[k], v])
+        self.mesh.append(other.mesh)
+        self.clear_cached_properties()
+
+    @cached_property
+    def nplants(self):
+        out = (self.args.ncols * self.args.nrows)
+        if not self.field_info:
+            return out
+        for args in self.field_info:
+            out += (args.ncols * args.nrows)
+        return out
+
+    def append_plant(self, other, **kwargs):
+        if isinstance(other, list):
+            for x in other:
+                self.append_plant(x, **kwargs)
+            return
+        plantid = max(self.plantids) + 1
+        assert plantid < self.nplants
+        assert len(other.unique_plantids) == 1
+        x, y = self.plantpos(plantid, **kwargs)
+        self.append(
+            other.shifted(x, y, plantid=(plantid - min(other.plantids))),
+        )
+
+    @classmethod
+    def stack_plants(cls, meshes, nrows, ncols):
+        out = copy.deepcopy(meshes[0])
+        out.args.nrows = nrows
+        out.args.ncols = ncols
+        generator = FieldPositionGenerator(out.args)
+        for x in meshes[1:]:
+            out.append_plant(x, generator=generator)
+        return out
+
+    @classmethod
+    def stack(cls, meshes):
+        out = copy.deepcopy(meshes[0])
+        for x in meshes[1:]:
+            out.append(x)
+        return out
+
+    @classmethod
+    def field_offset(cls, args, row_spacing=None):
+        if row_spacing is None:
+            row_spacing = args.row_spacing
+        return args.x + args.row_spacing * (args.nrows + 2)
+
+    @cached_property
+    def field_edge(self):
+        out = self.field_offset(self.args)
+        if not self.field_info:
+            return out
+        for args in self.field_info:
+            out += self.field_offset(args)
+        return out
+
+    def append_field(self, other):
+        if isinstance(other, list):
+            for x in other:
+                self.append_field(x)
+            return
+        x = self.field_edge
+        y = 0.0 * self.args.plant_spacing
+        plantid = max(self.plantids) + 1
+        self.append(
+            other.shifted(x, y, plantid=(plantid - min(other.plantids))),
+        )
+        if self.field_info is None:
+            self.field_info = []
+        self.field_info.append(copy.deepcopy(other.args))
+
+    @classmethod
+    def stack_fields(cls, meshes):
+        out = copy.deepcopy(meshes[0])
+        for x in meshes[1:]:
+            out.append_field(x)
+        return out
+
+    def shift(self, x, y, plantid=None):
+        xo = x.to(self.args.mesh_units).value
+        yo = y.to(self.args.mesh_units).value
+        if plantid is not None:
+            self.plantids += plantid
+        self._mesh = utils.shift_mesh(
+            self.mesh, xo, yo, plantid=plantid,
+            axis_up=self.args.axis_up,
+            axis_x=self.args.axis_rows
+        )
+        self.args.x += x
+        self.args.y += y
+        if plantid is not None:
+            self.args.plantid += plantid
+        self.clear_cached_properties()
+
+    def shifted(self, *args, **kwargs):
+        out = copy.deepcopy(self)
+        out.shift(*args, **kwargs)
+        return out
+
+    def get_generator(self, args=None):
+        if args is None:
+            args = self.args
+        return FieldPositionGenerator(args)
+
+    def plantpos(self, plantid, args=None, generator=None,
+                 row_spacing=None, plant_spacing=None):
+        if args is None:
+            args = self.args
+        field_offset = 0.0 * args.row_spacing
+        if ((plantid < max(self.plantids)
+             and plantid > (args.nrows * args.ncols))):
+            assert self.field_info
+            for field_args in self.field_info:
+                if plantid < (args.nrows * args.ncols):
+                    break
+                field_offset += self.field_offset(
+                    args, row_spacing=row_spacing)
+                plantid -= args.nrows * args.ncols
+                args = field_args
+        if row_spacing is not None or plant_spacing is not None:
+            args = copy.deepcopy(args)
+            if row_spacing is not None:
+                args.row_spacing = row_spacing
+            if plant_spacing is not None:
+                args.plant_spacing = plant_spacing
+        if generator is not None and generator.args != args:
+            generator = None
+        if generator is None:
+            generator = FieldPositionGenerator(args)
+        i = int(np.floor(plantid / args.ncols))
+        j = plantid - (i * args.ncols)
+        posdev = generator(plantid)
+        out = (
+            field_offset + i * args.row_spacing + posdev[0],
+            j * args.plant_spacing + posdev[1]
+        )
+        return out
+
+    def respace_plants(self, plant_spacing, row_spacing):
+        print(f"{self.args.plant_spacing} -> {plant_spacing}")
+        print(f"{self.args.row_spacing} -> {row_spacing}")
+        mesh_dict = self.mesh.as_array_dict()
+        new_args = copy.deepcopy(self.args)
+        new_args.plant_spacing = plant_spacing
+        new_args.row_spacing = row_spacing
+        old_generator = FieldPositionGenerator(self.args)
+        new_generator = FieldPositionGenerator(new_args)
+        for plantid in self.unique_plantids:
+            old_loc = self.plantpos(plantid,
+                                    generator=old_generator)
+            new_loc = self.plantpos(plantid, args=new_args,
+                                    generator=new_generator)
+            x_shift = (new_loc[0] - old_loc[0]).value
+            y_shift = (new_loc[1] - old_loc[1]).value
+            mask = (self.plantids == plantid)
+            utils.shift_mesh(
+                mesh_dict, x_shift, y_shift,
+                axis_up=self.args.axis_up,
+                axis_x=self.args.axis_rows,
+                face_mask=mask,
+            )
+        self._mesh = type(self.mesh).from_array_dict(mesh_dict)
+        self.args = new_args
+        self.clear_cached_properties()
+
+
 class GenerateTask(TaskBase):
     r"""Class for generating 3D canopies."""
 
@@ -1091,20 +1639,11 @@ class GenerateTask(TaskBase):
     _help = 'Generate a canopy mesh'
     _output_info = {
         'generate': {
+            'ext': '.csv',
             'description': 'mesh',
             'upstream': ['parametrize', 'lpy_model'],
             'merge_all': 'all_combined',
             'composite_param': ['canopy'],
-        },
-        'geometryids': {
-            'ext': '.csv',
-            'base_output': 'generate',
-            'base_suffix': True,
-            'description': (
-                'the IDs of the plant/component each face '
-                'belongs to'
-            ),
-            'merge_all': 'all_combined',
         },
     }
     _external_tasks = {
@@ -1276,6 +1815,9 @@ class GenerateTask(TaskBase):
             import pdb
             pdb.set_trace()
             raise AssertionError('Reading the wrong file')
+        if name == "generate":
+            # TODO: Ensure that args match?
+            return PlantMesh.from_file(fname)
         return super(GenerateTask, cls)._read_output(args, name, fname)
 
     @classmethod
@@ -1290,6 +1832,10 @@ class GenerateTask(TaskBase):
 
         """
         if args.id == 'all':
+            return
+        if name == "generate":
+            assert isinstance(output, PlantMesh)
+            output.write(fname)
             return
         super(GenerateTask, cls)._write_output(args, name, fname, output)
 
@@ -1309,32 +1855,7 @@ class GenerateTask(TaskBase):
             args.verbose_lpy = True
         if args.plantid > 0 and not args.save_all_plantids:
             args.dont_write_generate = True
-            args.dont_write_geometryids = True
         super(GenerateTask, cls).adjust_args_internal(args, **kwargs)
-        if args.overwrite_generate:
-            args.overwrite_geometryids = True
-
-    @classmethod
-    def _output_ext(cls, args, name, wildcards=None, skipped=None):
-        r"""Determine the extension that should be used for output files.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            name (str): Base name for variable to set.
-            wildcards (list, optional): List of arguments that wildcards
-                should be used for in the generated output file name.
-            skipped (list, optional): List of arguments that should be
-                skipped in the generated output file name.
-
-        Returns:
-            str: Output file extension.
-
-        """
-        if name == 'generate':
-            if not args.mesh_format:
-                args.mesh_format = 'obj'
-            return utils._inv_geom_ext[args.mesh_format]
-        return None
 
     @cached_property
     def generator_class(self):
@@ -1374,58 +1895,6 @@ class GenerateTask(TaskBase):
         r"""UnitSet: Unit system used by parameters."""
         return UnitSet.from_kwargs(self.parameters, suffix='_units')
 
-    @classmethod
-    def shift_mesh(cls, args, mesh, x, y, plantid=None, geometryids=None):
-        r"""Shift a mesh.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            mesh (ObjDict): Mesh to shift.
-            x (float): Amount to shift the plant in the x direction.
-            y (float): Amount to shift the plant in the y direction.
-            plantid (int, optional): Amount that colors should be shifted
-                in the blue channel to account for plant ID.
-
-        Returns:
-            ObjDict: Shifted mesh.
-
-        """
-        xo = x.to(args.mesh_units).value
-        yo = y.to(args.mesh_units).value
-        if geometryids is not None:
-            xy = units.QuantityArray([x.value, y.value], x.units)
-            geometryids['HEADER_JSON']['field_mins'] += xy
-            geometryids['HEADER_JSON']['field_maxs'] += xy
-            if plantid is not None:
-                geometryids['plantids'] += plantid
-        return utils.shift_mesh(mesh, xo, yo, plantid=plantid,
-                                axis_up=args.axis_up,
-                                axis_x=args.axis_rows)
-
-    @classmethod
-    def merge_mesh(cls, args, output):
-        r"""Merge the output for multiple IDs.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            output (list): Set of meshes to merge according to args.
-
-        Returns:
-            object: Generated output.
-
-        """
-        mesh = output[0]
-        x = 0.0 * args.x
-        y = 0.0 * args.y
-        plantid = 0
-        for imesh in output[1:]:
-            x += args.row_spacing * (args.nrows + 2)
-            plantid += (args.nrows * args.ncols)
-            mesh.append(
-                cls.shift_mesh(args, imesh, x, y, plantid=plantid)
-            )
-        return mesh
-
     def _merge_output(self, name, output, merged_param):
         r"""Merge the output for multiple sets of parameters values.
 
@@ -1441,23 +1910,11 @@ class GenerateTask(TaskBase):
             object: Generated output.
 
         """
-        if name not in ['generate', 'geometryids']:
+        if name != 'generate':
             return super(GenerateTask, self)._merge_output(
                 name, output, merged_param)
         assert self.args.id == 'all_combined'
-        if name == 'generate':
-            return self.merge_mesh(self.args, list(output.values()))
-        elif name == 'geometryids':
-            values = list(output.values())
-            geometryids = []
-            plantid = self.args.plantid
-            assert plantid == 0
-            for x in values:
-                x['plantids'] += plantid
-                geometryids.append(x)
-                plantid += (self.args.nrows * self.args.ncols)
-            geometryids = self.stack_geometryids(geometryids)
-            return geometryids
+        return PlantMesh.stack_fields(list(output.values()))
 
     def _generate_output(self, name):
         r"""Generate the specified output value.
@@ -1470,18 +1927,11 @@ class GenerateTask(TaskBase):
 
         """
         assert self.args.id not in ['all', 'all_combined']
-        if name in ['generate', 'geometryids']:
+        if name == 'generate':
             if self.args.canopy in ['single', 'virtual', 'virtual_single']:
-                mesh, geometryids = self._generate_single_plant()
+                return self._generate_single_plant()
             else:
-                mesh, geometryids = self._generate_field()
-            # Store the unnamed output
-            if name == 'generate':
-                self.set_output('geometryids', geometryids)
-                return mesh
-            else:
-                self.set_output('generate', mesh)
-                return geometryids
+                return self._generate_field()
         return super(GenerateTask, self)._generate_output(name)
 
     def generate_single_plant(self, **kwargs):
@@ -1517,13 +1967,7 @@ class GenerateTask(TaskBase):
             inst = self.run_iteration(
                 args_overwrite={'x': 0.0, 'y': 0.0},
             )
-            geometryids = copy.deepcopy(inst.get_output('geometryids'))
-            mesh = self.shift_mesh(
-                self.args, inst.get_output('generate'), x, y, plantid,
-                geometryids=geometryids,
-            )
-            self.finalize_geometryids(geometryids)
-            return (mesh, geometryids)
+            return inst.get_output('generate').shifted(x, y)
         assert 'RUNTIME_PARAM' not in self.parameters
         assert self.args.age is not None
         if isinstance(self.args.age.crop_age_string, str):
@@ -1549,12 +1993,13 @@ class GenerateTask(TaskBase):
             ),
             'DERIVATION_LENGTH': derivation_length,
         }
+        geom_kws = {}
         if self.args.color.string == 'plantids':
-            color = [0, 255, plantid]
+            geom_kws["color"] = [0, 255, plantid]
         elif self.args.color.string == 'componentids':
             raise NotImplementedError
-        else:
-            color = self.args.color.value
+        elif self.args.color.value is not None:
+            geom_kws["color"] = self.args.color.value
         lpy_model = self.output_file('lpy_model')
         if not os.path.isfile(lpy_model):
             self.get_output('lpy_model')
@@ -1566,97 +2011,30 @@ class GenerateTask(TaskBase):
         scene = lsys.sceneInterpretation(tree)
         lsys_units = generator.unit_system
         components = {}
-        mesh = utils.scene2geom(
-            scene, self.args.mesh_format,
+        if not self.args.mesh_format:
+            self.args.mesh_format = 'obj'
+        raw_mesh = utils.scene2geom(
+            scene, cls=self.args.mesh_format,
             axis_up=self.args.axis_up,
             axis_x=self.args.axis_rows,
-            color=color,
             components=components,
+            plant_parameters=generator,
+            **geom_kws
         )
-        mesh = utils.scale_mesh(mesh, 1.0,
-                                from_units=lsys_units.length,
-                                to_units=self.args.mesh_units)
+        raw_mesh = utils.scale_mesh(
+            raw_mesh, 1.0,
+            from_units=lsys_units.length,
+            to_units=self.args.mesh_units,
+        )
         if x.value > 0 or y.value > 0:
-            mesh = self.shift_mesh(
-                self.args, mesh, x, y,
+            raw_mesh = utils.shift_mesh(
+                raw_mesh,
+                x.to(self.args.mesh_units).value,
+                y.to(self.args.mesh_units).value,
+                axis_up=self.args.axis_up,
+                axis_x=self.args.axis_rows,
             )
-        plantids = plantid * np.ones(
-            (mesh.count_elements('face'), ), dtype=np.uint32)
-        componentids = np.zeros(
-            (mesh.count_elements('face'), ), dtype=np.uint32)
-        component_order = sorted(list(components.keys()))
-        face_areas = parse_quantity(mesh.areas, self.args.mesh_units**2)
-        mesh_dict = utils.get_mesh_dict(mesh)
-        vert_heights = (
-            np.dot(mesh_dict['vertex'], self.args.axis_up)
-            - self.args.ground_height.value
-        )
-        vert_ground = utils.project_onto_ground(
-            mesh_dict['vertex'],
-            self.args.axis_rows, self.args.axis_cols,
-        )
-        if len(mesh_dict['face']) == 0:
-            face_heights = parse_quantity(
-                np.zeros((0, ), dtype=vert_heights.dtype),
-                self.args.mesh_units)
-        else:
-            face_heights = parse_quantity(
-                vert_heights[mesh_dict['face']].mean(axis=1),
-                self.args.mesh_units)
-        for i, k in enumerate(component_order):
-            for prev, count in components[k]:
-                componentids[prev:(prev + count)] = i
-        geometryids = {
-            'HEADER_JSON': {
-                'component_order': component_order,
-                'field_mins': parse_quantity(
-                    vert_ground.min(axis=0) if len(vert_ground)
-                    else np.zeros((2, ), vert_ground.dtype),
-                    self.args.mesh_units),
-                'field_maxs': parse_quantity(
-                    vert_ground.max(axis=0) if len(vert_ground)
-                    else np.zeros((2, ), vert_ground.dtype),
-                    self.args.mesh_units),
-                'planting_density': 1.0 / (
-                    self.args.plant_spacing * self.args.row_spacing),
-            },
-            'plantids': plantids, 'componentids': componentids,
-            'areas': face_areas,
-            'height': face_heights,
-        }
-        self.finalize_geometryids(geometryids)
-        return (mesh, geometryids)
-
-    @classmethod
-    def finalize_geometryids(cls, dst):
-        r"""Finalize the data in the JSON header, calculating derived
-        values.
-
-        Args:
-            dst (dict): Geometry ID data to finalize.
-
-        """
-        header = dst['HEADER_JSON']
-        field_area = utils.safe_op(
-            np.prod, (
-                header['field_maxs']
-                - header['field_mins']
-            ),
-        )
-        if 'Leaf' in header['component_order']:
-            idx = (dst['componentids']
-                   == header['component_order'].index('Leaf'))
-            # TODO: Calculate leaf area directly from the generator?
-            leaf_area = utils.safe_op(np.sum, dst['areas'][idx]) / 2
-        else:
-            leaf_area = units.Quantity(0.0, dst['areas'].units)
-        planting_density = header['planting_density']
-        LAI = leaf_area * planting_density
-        header.update(
-            field_area=field_area,
-            leaf_area=leaf_area,
-            LAI=LAI,
-        )
+        return PlantMesh.from_components(self.args, raw_mesh, components)
 
     def generate_field(self, **kwargs):
         r"""Generate a 3D mesh for a field of plants.
@@ -1673,57 +2051,6 @@ class GenerateTask(TaskBase):
         return self.run_iteration(args_overwrite=kwargs,
                                   output_name='generate')
 
-    @classmethod
-    def stack_geometryids(cls, geometryids):
-        r"""Combine geometry IDs during field creation.
-
-        Args:
-            geometryids (list): Set of geometry IDs for individual
-                plants/fields.
-
-        Returns:
-            dict: Geometry IDs.
-
-        """
-        out = {}
-        order = geometryids[0]['HEADER_JSON']['component_order']
-        for x in geometryids[1:]:
-            if len(x['HEADER_JSON']['component_order']) > len(order):
-                order = x['HEADER_JSON']['component_order']
-        for x in geometryids:
-            xorder = x['HEADER_JSON']['component_order']
-            if xorder == order:
-                continue
-            for i, name in enumerate(xorder):
-                assert name in order
-                x['componentids'][x['componentids'] == i] = (
-                    order.index(name) + len(order)
-                )
-            x['componentids'] -= len(order)
-            x['HEADER_JSON']['component_order'] = order
-        for k in geometryids[0].keys():
-            if k == 'HEADER_JSON':
-                out[k] = geometryids[0][k]
-                assert all(
-                    x['HEADER_JSON']['component_order']
-                    == out[k]['component_order']
-                    for x in geometryids[1:]
-                )
-            else:
-                out[k] = np.hstack([x[k] for x in geometryids])
-        out['HEADER_JSON']['field_mins'] = utils.safe_op(
-            np.min, np.vstack([
-                x['HEADER_JSON']['field_mins'] for x in geometryids
-            ]), axis=0,
-        )
-        out['HEADER_JSON']['field_maxs'] = utils.safe_op(
-            np.max, np.vstack([
-                x['HEADER_JSON']['field_mins'] for x in geometryids
-            ]), axis=0,
-        )
-        cls.finalize_geometryids(out)
-        return out
-
     def _generate_field(self):
         r"""Generate a 3D mesh for a field of plants.
 
@@ -1735,24 +2062,31 @@ class GenerateTask(TaskBase):
         x = self.args.x
         y = self.args.y
         plantid = self.args.plantid
-        geometryids = []
-        components = None
         self.log(f'generate_field: {x}, {y}, {plantid}')
+        # TODO: Read these from arguments
+        # default_plant_spacing = 18.3
+        # default_row_spacing = 76.2
         # Generate the unshifted field so it can be reused
+        # if ((x.value > 0 or y.value > 0 or plantid > 0
+        #      or self.args.plant_spacing.value != default_plant_spacing
+        #      or self.args.row_spacing.value != default_row_spacing)):
         if x.value > 0 or y.value > 0 or plantid > 0:
             inst = self.run_iteration(
-                args_overwrite={'x': 0.0, 'y': 0.0, 'plantid': 0},
+                args_overwrite={
+                    'x': 0.0, 'y': 0.0, 'plantid': 0,
+                    # 'plant_spacing': default_plant_spacing,
+                    # 'row_spacing': default_row_spacing,
+                },
             )
-            igeometryids = copy.deepcopy(inst.get_output('geometryids'))
-            mesh = self.shift_mesh(
-                self.args, inst.get_output('generate'), x, y, plantid,
-                geometryids=igeometryids,
-            )
-            if components is None:
-                components = igeometryids['HEADER_JSON']['component_order']
-            geometryids.append(igeometryids)
-            geometryids = self.stack_geometryids(geometryids)
-            return (mesh, geometryids)
+            mesh = inst.get_output('generate')
+            # if ((self.args.plant_spacing.value != default_plant_spacing
+            #      or self.args.row_spacing.value != default_row_spacing)):
+            #     mesh = self.respace_field(
+            #         self.args, mesh, default_plant_spacing,
+            #         default_row_spacing)
+            if x.value > 0 or y.value > 0 or plantid > 0:
+                mesh = mesh.shifted(x, y, plantid)
+            return mesh
 
         generator = np.random.default_rng(seed=plantid)
 
@@ -1770,11 +2104,13 @@ class GenerateTask(TaskBase):
                 'canopy': 'single', 'nrows': 1, 'ncols': 1,
             },
         )
-        mesh = inst.get_output('generate')
-        igeometryids = inst.get_output('geometryids')
-        if components is None:
-            components = igeometryids['HEADER_JSON']['component_order']
-        geometryids.append(igeometryids)
+        # TODO: Prime this in a systemic way
+        inst.get_output('parametrize')
+        single_mesh = inst.get_output('generate')
+        mesh = copy.deepcopy(single_mesh)
+        mesh.args.ncols = self.args.ncols
+        mesh.args.nrows = self.args.nrows
+        mesh.args.canopy = self.args.canopy
         plantid += 1
 
         # Remainder of field
@@ -1786,46 +2122,47 @@ class GenerateTask(TaskBase):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
-                    kwargs_pool.append({
+                    ikwargs = {
                         'x': ix + posdev(), 'y': iy + posdev(),
-                        'plantid': plantid, 'canopy': 'single',
-                        'nrows': 1, 'ncols': 1,
-                    })
+                        'plantid': plantid,
+                        'canopy': 'single', 'nrows': 1, 'ncols': 1,
+                    }
+                    kwargs_pool.append(ikwargs)
+                    # The performance of the single plant generation
+                    # needs improved
+                    imesh = self.run_iteration(
+                        args_overwrite=ikwargs,
+                        output_name="generate",
+                        copy_outputs_from=inst,
+                    )
+                    mesh.append(imesh)
                     plantid += 1
             # 45.3042 seconds for serial
             # 81.7037 seconds for parallel due to IO
-            results = self.run_iterations(
-                kwargs_pool, nproc=None,
-                output_name=["generate", "geometryids"],
-                copy_outputs_from=inst,
-            )
-            for iresult in results:
-                mesh.append(iresult["generate"])
-                geometryids.append(iresult["geometryids"])
+            # results = self.run_iterations(
+            #     kwargs_pool, nproc=None,
+            #     output_name="generate",
+            #     copy_outputs_from=inst,
+            # )
+            # mesh.append(results)
         elif self.args.canopy == 'tile':
-            mesh_single = type(mesh)(mesh)
             for i in range(self.args.nrows):
                 ix = i * self.args.row_spacing
                 for j in range(self.args.ncols):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
-                    igeometryids = copy.deepcopy(geometryids[0])
                     mesh.append(
-                        self.shift_mesh(
-                            self.args, mesh_single,
+                        single_mesh.shifted(
                             ix + posdev(), iy + posdev(),
                             plantid=plantid,
-                            geometryids=igeometryids,
                         )
                     )
-                    geometryids.append(igeometryids)
                     plantid += 1
         else:
             raise ValueError(
                 f"Unsupported canopy type: {self.args.canopy}")
-        geometryids = self.stack_geometryids(geometryids)
-        return (mesh, geometryids)
+        return mesh
 
 
 __all__ = ["monocot", "maize", "dicot", "tomato"]
