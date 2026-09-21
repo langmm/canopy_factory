@@ -1455,7 +1455,7 @@ class OutputArgument(CompositeArgument):
                 '\"--{prefix_arg}output{suffix_arg}\".'),
         }),
         (('--dont-write', ), {
-            'action': 'store_true',
+            'nargs': '?', 'const': True,
             'help': (
                 'Don\'t write any output to '
                 '{prefix_dst}output{suffix_dst} on disk (even if an '
@@ -1691,6 +1691,11 @@ class OutputArgument(CompositeArgument):
         r"""list: Set of parameters that the output is merged for."""
         return [k for k in self.composite_param if self.is_merged(k)]
 
+    def is_explicit_iteration(self, k):
+        if k not in self.composite_param:
+            return False
+        return isinstance(self._uncached_args[k], list)
+
     def is_iterating(self, k):
         r"""Check if a parameter's value indicates the output is an
         composite of other outputs.
@@ -1705,6 +1710,7 @@ class OutputArgument(CompositeArgument):
         if k not in self.composite_param:
             return False
         return (self._uncached_args[k] == 'all'
+                or self.is_explicit_iteration(k)
                 or (isinstance(self.merge_all, str)
                     and self._uncached_args[k] == self.merge_all))
 
@@ -1723,12 +1729,17 @@ class OutputArgument(CompositeArgument):
         if k not in self.composite_param:
             return False
         if self.merge_all is False:
-            return (self._uncached_args[k] == 'all')
+            return (self._uncached_args[k] == 'all'
+                    or self.is_explicit_iteration(k))
         elif self.merge_all is True:
             return False
+        elif self.is_explicit_iteration(k):
+            return self.merge_all != 'all'
         else:
-            return (self._uncached_args[k] == 'all'
-                    and self._uncached_args[k] != self.merge_all)
+            return (
+                self._uncached_args[k] == 'all'
+                and self._uncached_args[k] != self.merge_all
+            )
 
     def is_merged(self, k):
         r"""Check if a parameter's value indicates the output is an
@@ -1747,7 +1758,10 @@ class OutputArgument(CompositeArgument):
         if self.merge_all is False:
             return False
         elif self.merge_all is True:
-            return (self._uncached_args[k] == 'all')
+            return (self._uncached_args[k] == 'all'
+                    or self.is_explicit_iteration(k))
+        elif self.is_explicit_iteration(k) and self.merge_all == 'all':
+            return True
         else:
             return (self._uncached_args[k] == self.merge_all)
 
@@ -1795,8 +1809,6 @@ class OutputArgument(CompositeArgument):
             AssertionError: If the age string is not present.
 
         """
-        if args.age.string == 'maturity' or not self.path:
-            return
         if args.age.string not in self.path:
             raise AssertionError(f'\"{self.output_name}\" filename does '
                                  f'not contain age string '
@@ -2362,7 +2374,7 @@ class AxisArgument(CompositeArgument):
 #                 'also not provided, the camera will be centered '
 #                 'on the center of the scene facing down, '
 #                 'southeast at a distance that captures the entire '
-#                 'scene. If \"maturity\" is specified, the location will '
+#                 'scene. If \"mature\" is specified, the location will '
 #                 'be set for the mature plant (only valid for generated '
 #                 'meshes).'
 #             ),
@@ -2388,10 +2400,10 @@ class AgeArgument(CompositeArgument):
 
     _name = 'age'
     _defaults = {
-        'age': 'maturity',
+        'age': 'mature',
     }
     _age_strings = [
-        'planting', 'maturity', 'senesce', 'remove',
+        'planting', 'mature', 'senesce', 'remove',
     ]
     _arguments_prefixed = [
         (('--age', ), {
@@ -2479,8 +2491,8 @@ class AgeArgument(CompositeArgument):
         r"""str: String representation of the age."""
         if self.is_wildcard('age'):
             return '*'
-        if self.crop_age_string:
-            return self.crop_age_string
+        # if self.crop_age_string:
+        #     return self.crop_age_string
         if self.age is None:
             return None
         return f'{int(self.age.to("days"))}days'
@@ -2923,7 +2935,9 @@ class TimeArgument(AgeArgument):
             out += date_string + sep
         out += time_string
         if not (self.ignored('age') or self.ignore_age):
-            out += '_' + super(TimeArgument, self).string
+            age_string = super(TimeArgument, self).string
+            if age_string is not None:
+                out += '_' + age_string
         return out
 
     @cached_property
@@ -3022,6 +3036,22 @@ class TimeArgument(AgeArgument):
         if self.time is None or self.location is None:
             return None
         return self.location.create_solar_model(self.time)
+
+    def __add__(self, x):
+        if not isinstance(x, datetime.datetime):
+            x = utils.parse_timedelta(x, 'hrs')
+        return self.time + x
+
+    def __subtract__(self, x):
+        if not isinstance(x, datetime.datetime):
+            x = utils.parse_timedelta(x, 'hrs')
+        return self.time - x
+
+    # def __multiply__(self, x):
+    #     return self.time * x
+
+    # def __divide__(self, x):
+    #     return self.time / x
 
 
 class LocationArgument(CompositeArgument):
@@ -3505,7 +3535,18 @@ class TaskBase(SubparserBase):
     ]
     _lineprop_map = {
         'linestyle': {
-            'class': ['-', '--', ':', '-.'],
+            'class': [
+                '-', '--', ':', '-.',
+                (0, (3, 5, 1, 5, 1, 5)),
+                (0, (1, 10)),
+                (0, (5, 10)),
+                (0, (3, 10, 1, 10)),
+                (0, (3, 10, 1, 10, 1, 10)),
+                (0, (1, 1)),
+                (0, (5, 1)),
+                (0, (3, 1, 1, 1)),
+                (0, (3, 1, 1, 1, 1, 1)),
+            ],
             'idvar': {
                 'WT': '-',
                 'rdla': '--',
@@ -3520,7 +3561,11 @@ class TaskBase(SubparserBase):
             },
         },
         'color': {
-            'class': ['blue', 'orange', 'purple', 'teal'],
+            'class': [
+                'blue', 'orange', 'purple', 'teal',
+                'pink', 'olive',
+                'brown', 'cyan',
+            ],
             'idvar': {
                 'WT': 'blue',
                 'rdla': 'orange',
@@ -3882,6 +3927,7 @@ class TaskBase(SubparserBase):
             cls._outputs_local + list(cls._outputs_external.keys())
         )
         output_bases = {}
+        all_composite_param = set()
         for k, v in cls._output_info.items():
             if k in cls._outputs_external:
                 continue
@@ -3913,9 +3959,14 @@ class TaskBase(SubparserBase):
                 karg = arguments.CompositeArgumentDescription(
                     koutput, 'output', **v)
                 cls._arguments.append(karg)
+            all_composite_param |= set(v.get('composite_param', []))
         cls._arguments.modify(append_suffix_outputs=output_bases)
         cls._arguments.sort_by_suffix()
         cls._arguments.modify(suffix_index=0)
+        all_composite_param = sorted(list(all_composite_param))
+        for x in all_composite_param:
+            cls._arguments.getnested(x).modify(
+                action='extend_if_multiple')
 
     @staticmethod
     def _copy_external_arguments(dst, src, include=None, exclude=None,
@@ -3983,7 +4034,9 @@ class TaskBase(SubparserBase):
         if args.figure_linewidth:
             out['linewidth'] = args.figure_linewidth
         if '_' in id:
-            kws['idbase'], kws['idvar'] = id.split('_')
+            kws['idbase'], kws['idvar'] = id.split('_', 1)
+            if '_' in kws['idvar']:
+                kws['idvar'] = kws['idvar'].split('_', 1)[0]
         else:
             kws['idvar'] = id
         for k in ['color', 'linestyle']:
@@ -4778,29 +4831,62 @@ class TaskBase(SubparserBase):
             return utils.DataProcessor.available_years(self.args.crop)
         return [utils.DataProcessor.from_file(self.args.data).year]
 
-    def get_iteration_values(self, k):
+    def get_iteration_values(self, k, output, ignore_explicit=False):
         r"""Get the set of parameter values that should be iterated over
         when 'all' is specified.
 
         Args:
             k (str): Parameter name to get values for.
+            output (str): Name of the output to get iteration values for.
 
         Return:
             list: Iteration values.
 
         """
         if isinstance(k, list):
-            out = {kk: self.get_iteration_values(kk) for kk in k}
+            out = {kk: self.get_iteration_values(kk, output) for kk in k}
             if 'id' in k and 'data_year' in k:
                 for i in range(len(out['id'])):
-                    out['id'][i] = utils.DependentIterationParam(
-                        'id', out['id'][i],
-                        data_year=utils.DataProcessor.available_years(
-                            self.args.crop, id=out['id'][i]),
-                    )
+                    if out['id'][i] == 'default':
+                        out['id'][i] = utils.DependentIterationParam(
+                            'id', out['id'][i],
+                            data_year=[None],
+                        )
+                    else:
+                        out['id'][i] = utils.DependentIterationParam(
+                            'id', out['id'][i],
+                            data_year=utils.DataProcessor.available_years(
+                                self.args.crop, id=out['id'][i]),
+                        )
             return out
-        if k in ['id', 'data_year']:
+        if (not ignore_explicit) and output.is_explicit_iteration(k):
+            out = copy.deepcopy(output._uncached_args[k])
+            while any((isinstance(x, str) and x.startswith('all'))
+                      or isinstance(x, list)
+                      for x in out):
+                out_raw = out
+                out = []
+                for x in out_raw:
+                    if isinstance(x, list):
+                        out += [
+                            xx for xx in x if xx not in out
+                        ]
+                    elif isinstance(x, str) and x.startswith('all'):
+                        out += [
+                            xx for xx in self.get_iteration_values(
+                                k, output, ignore_explicit=True
+                            )
+                            if xx not in x
+                        ]
+                    elif x not in out:
+                        out.append(x)
+        elif k in ['id', 'data_year']:
             out = getattr(self, f'all_{k}s')
+            if output.is_unmerged(k):
+                if k == 'id':
+                    out.append('default')
+                else:
+                    out.append(None)
             if not out:
                 out = [None]
         elif k == 'canopy':
@@ -4824,7 +4910,8 @@ class TaskBase(SubparserBase):
         """
         output = getattr(self.args, f'output_{name}')
         if output.iterating_param:
-            over = self.get_iteration_values(output.iterating_param)
+            over = self.get_iteration_values(
+                output.iterating_param, output)
             merged_param = output.merged_param
             merge_all_output = output.merge_all_output
             if merge_all_output is None:
@@ -5260,7 +5347,7 @@ class TaskBase(SubparserBase):
             if not utils.DependentIterationParam.check_param(xparam):
                 continue
             iargs_overwrite = dict(args_overwrite, **per_iter)
-            iargs_overwrite[f'output_{cls._name}'] = True
+            iargs_overwrite[f'output_{cls._name}'] = None
             iargs_overwrite.update(**xparam)
             cls.log_class(
                 f'ITERATION:\n{pprint.pformat(iargs_overwrite)}')
@@ -5382,6 +5469,8 @@ class IterationTaskBase(TaskBase):
         """
         if wildcards is None:
             wildcards = []
+        # if self.args.vary not in wildcards:
+        #     wildcards = wildcards + [self.args.vary]
         if ((self._step_vary is not None
              and self._step_vary not in wildcards)):
             wildcards = wildcards + [self._step_vary]
@@ -5497,6 +5586,8 @@ class IterationTaskBase(TaskBase):
                 parent class's method.
 
         """
+        if cls._step_vary is not None:
+            args.vary = cls._step_vary
         if not cls._steps_independent:
             args.nproc = 1
             args.chunksize = None
@@ -5573,8 +5664,173 @@ class IterationTaskBase(TaskBase):
         if self._step_task is None:
             raise NotImplementedError
         if hasattr(self._step_task, 'adjust_args_step'):
-            self._step_task.adjust_args_step(self.args, self._step_vary)
+            self._step_task.adjust_args_step(self.args, self.args.vary)
         return self.join_steps(self.run_steps())
+
+
+class ExploreParametersTaskBase(IterationTaskBase):
+    r"""Base class for tasks that iterate over parameter space."""
+
+    _step_vary_default = None
+    _arguments = [
+        (('--vary', ), {
+            'type': str,
+            'help': (
+                'Name of the step argument that should be '
+                'varied'
+            ),
+            'suffix_param': {'prefix': 'vs_'},
+        }),
+        (('--values', ), {
+            'type': str,
+            'nargs': '+', 'action': 'extend',
+            'help': (
+                'Values to iterate over'
+            ),
+        }),
+        (('--start-value', ), {
+            'type': str,
+            'help': (
+                'Value to start the iteration at'
+            ),
+        }),
+        (('--stop-value', ), {
+            'type': str,
+            'help': (
+                'Value to stop the iteration at'
+            ),
+        }),
+        (('--value-range', ), {
+            'type': str,
+            'help': (
+                'Difference between the starting and '
+                'stopping value'
+            ),
+        }),
+        (('--step-count', ), {
+            'type': int,
+            'help': (
+                'The number of steps that should be taken '
+                'between the start and end values. If not '
+                'provided, the number of steps will be '
+                'determined from \"step_interval\"'
+            ),
+            'suffix_param': {},
+        }),
+        (('--step-interval', ), {
+            'help': (
+                'The interval that should be used '
+                'between steps. If not provided, '
+                '\"step_count\" will be used to calculate '
+                'the step interval.'
+            ),
+        }),
+    ]
+
+    def step_args(self):
+        r"""Yield the updates that should be made to the arguments for
+        each step.
+
+        Yields:
+            dict: Step arguments.
+
+        """
+        if self.args.values:
+            for x in self.args.values:
+                yield {self.args.vary: x}
+            return
+        dx = self.args.step_interval
+        if self.args.vary == 'time':
+            iargs = None
+            for i in range(self.args.step_count):
+                iargs = self.args.start_value.iteration_args(
+                    i * dx, dont_age=self.args.dont_age)
+                yield iargs
+            iargs.setdefault('location', self.args.location)
+            time = TimeArgument.from_kwargs(iargs)
+            if time.time < self.args.stop_value.time:
+                yield self.args.stop_value.iteration_args()
+            return
+        for i in range(self.args.step_count):
+            yield {
+                self.args.vary: self.args.start_value + i * dx
+            }
+        x = self.args.start_value + dx * (self.args.step_count - 1)
+        if x < self.args.stop_value:
+            yield {
+                self.args.vary: self.args.stop_value
+            }
+
+    @classmethod
+    def adjust_args_internal(cls, args, **kwargs):
+        r"""Adjust the parsed arguments including setting defaults that
+        depend on other provided arguments.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            **kwargs: Additional keyword arguments are passed to the
+                parent class's method.
+
+        """
+        if args.vary is None:
+            args.vary = cls._step_vary_default
+        cls._arguments = copy.deepcopy(cls._arguments)
+        base = cls._arguments.getnested(args.vary)
+        cls._arguments.replace('start_value', base.copy(
+            dest='start_value', action=None))
+        cls._arguments.replace('stop_value', base.copy(
+            dest='stop_value', action=None, name_base='start_value'))
+        # cls._arguments.replace('values', base.copy(
+        #     dest='values', action='extend', nargs='+'))
+        # if base.properties.get('action', None) is not None:
+        #     import pdb; pdb.set_trace()
+        assert base.properties.get('action', None) is None
+        if args.vary == 'time':
+            # TODO: Add values to time
+            assert not args.values
+            TemporalTaskBase.initialize_time_range(
+                cls, args, 'start_value', 'stop_value',
+                'value_range', 'values')
+            super().adjust_args_internal(args, **kwargs)
+            TemporalTaskBase.finalize_time_range(
+                cls, args, 'start_value', 'stop_value',
+                'value_range', 'values')
+            return
+        if not args.values:
+            cls._arguments['value_range'].adjust_args(args)
+            if ((args.value_range is None
+                 and not (args.step_interval is None
+                          or args.step_count is None))):
+                args.value_range = args.step_interval * args.step_count
+            start_set = cls._arguments['start_value'].any_arguments_set(args)
+            stop_set = cls._arguments['stop_value'].any_arguments_set(args)
+            if not (start_set or stop_set):
+                start_set = True  # Force default for start
+            if args.value_range is not None:
+                if start_set and not stop_set:
+                    cls._arguments['start_value'].adjust_args(args)
+                    args.stop_value = (args.start_value + args.value_range)
+                elif stop_set and not start_set:
+                    cls._arguments['stop_value'].adjust_args(args)
+                    args.start_value = (args.stop_value - args.value_range)
+        super().adjust_args_internal(args, **kwargs)
+        if not args.values:
+            assert args.stop_value > args.start_value
+            value_range = args.stop_value - args.start_value
+            if ((args.step_interval is not None
+                 and isinstance(value_range, units.Quantity))):
+                args.step_interval = utils.parse_quantity(
+                    args.step_interval, value_range.units)
+            if not args.step_interval:
+                if not args.step_count:
+                    args.step_count = 10
+                args.step_interval = value_range / args.step_count
+            elif not args.step_count:
+                if isinstance(value_range, units.Quantity):
+                    args.step_count = int(
+                        (value_range / args.step_interval).to('').value)
+                else:
+                    args.step_count = int(value_range / args.step_interval)
 
 
 class OptimizationTaskBase(IterationTaskBase):
@@ -5852,6 +6108,119 @@ class TemporalTaskBase(IterationTaskBase):
         }),
     ]
 
+    @staticmethod
+    def initialize_time_range(cls, args, start_var='start_time',
+                              stop_var='stop_time',
+                              range_var='duration',
+                              values_var='times'):
+        # TODO: Add support for times
+        cls._arguments.getnested('location').adjust_args(args)
+        cls._arguments[range_var].adjust_args(args)
+        if ((getattr(args, range_var) is None
+             and not (args.step_interval is None
+                      or args.step_count is None))):
+            setattr(args, range_var,
+                    args.step_interval * args.step_count)
+        start_set = cls._arguments[start_var].any_arguments_set(args)
+        stop_set = cls._arguments[stop_var].any_arguments_set(args)
+        if not (start_set or stop_set):
+            start_set = True  # Force default for start
+        if getattr(args, range_var) is not None:
+            if start_set and not stop_set:
+                cls._arguments[start_var].adjust_args(args)
+                setattr(args, stop_var, (
+                    getattr(args, start_var).time
+                    + utils.quantity2timedelta(getattr(args, range_var))
+                ))
+            elif stop_set and not start_set:
+                cls._arguments[stop_var].adjust_args(args)
+                setattr(args, start_var, (
+                    getattr(args, stop_var).time
+                    - utils.quantity2timedelta(getattr(args, range_var))
+                ))
+        elif not stop_set:
+            # TODO: Check for how to set age & time with different
+            #   variable names
+            # if getattr(args, start_var) == "planting":
+            # if ((args.start_age == "planting"
+            #      and args.start_time is None
+            #      and args.start_hour is None)):
+            #     args.start_time = "noon"
+            cls._arguments[start_var].adjust_args(args)
+            start_time = getattr(args, start_var)
+            if start_time.crop_age_string == 'planting':
+                assert not args.dont_age
+                args.planting_date = start_time.date
+                setattr(args, stop_var, 'mature')
+                # args.stop_age = 'mature'
+                # args.stop_doy = None
+                # args.stop_date = None
+                # TODO: Set stop solar time string
+                # if start_time.solar_time_string:
+                #     args.stop_hour = (
+                #         start_time.solar_time_string
+                #     )
+            elif start_time.solar_time_string == 'sunrise':
+                setattr(args, stop_var, 'sunset')
+                # args.stop_hour = 'sunset'
+                # args.stop_date = args.start_time.date
+                # TODO: Set stop crop age stirng
+                # if start_time.crop_age_string:
+                #     args.stop_age = (
+                #         args.start_time.crop_age_string
+                #     )
+            else:
+                setattr(args, range_var, units.Quantity(24.0, 'hours'))
+        if start_set:
+            # Ensure that planting date is set
+            cls._arguments[start_var].adjust_args(args)
+            start_time = getattr(args, start_var)
+            if start_time.crop_age_string == 'planting':
+                args.planting_date = start_time.date
+
+    @staticmethod
+    def finalize_time_range(cls, args, start_var='start_time',
+                            stop_var='stop_time',
+                            range_var='duration'):
+        start_time = getattr(args, start_var)
+        stop_time = getattr(args, stop_var)
+        if stop_time.time == start_time.time:
+            setattr(args, stop_var, stop_time.time.replace(
+                hour=0, minute=0, microsecond=0))
+            cls._arguments[stop_var].adjust_args(args, overwrite=True)
+            stop_time = getattr(args, stop_var)
+        assert stop_time.time > start_time.time
+        duration = stop_time.time - start_time.time
+        duration = utils.timedelta2quantity(duration)
+        if not args.step_count:
+            if not args.step_interval:
+                ndays = int(duration.to('days'))
+                if ndays > 2:
+                    args.step_interval = units.Quantity(1.0, 'days')
+                else:
+                    args.step_interval = units.Quantity(1.0, 'hours')
+            args.step_count = int(duration / args.step_interval)
+        elif not args.step_interval:
+            args.step_interval = duration / args.step_count
+        start_time.update_args(args, name='time')
+        if start_time.date == stop_time.date:
+            for k in ['crop_age_string', 'solar_date_string']:
+                vstart = getattr(start_time, k)
+                vstop = getattr(stop_time, k)
+                if vstart == vstop:
+                    continue
+                if vstart:
+                    assert vstop is None
+                    stop_time.setarg(k, vstart)
+                else:
+                    assert vstart is None
+                    start_time.setarg(k, vstop)
+            stop_time.ignore_date = True
+            # TODO: Update this?
+            args.dont_age = True
+        if args.dont_age:
+            start_time.ignore_age = True
+
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
         r"""Adjust the parsed arguments including setting defaults that
@@ -5893,7 +6262,7 @@ class TemporalTaskBase(IterationTaskBase):
             cls._arguments['start_time'].adjust_args(args)
             if args.start_time.crop_age_string == 'planting':
                 assert not args.dont_age
-                args.stop_age = 'maturity'
+                args.stop_age = 'mature'
                 args.planting_date = args.start_time.date
                 args.stop_doy = None
                 args.stop_date = None

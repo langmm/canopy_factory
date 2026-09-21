@@ -1625,7 +1625,10 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
         print(f'scene2geom: Converting scene with {len(scene_dict)} '
               f'components')
     cmap = None
-    kmax = max(scene_dict.keys())
+    if not scene_dict:
+        kmax = 0
+    else:
+        kmax = max(scene_dict.keys())
     if colormap_target is None:
         if components is not None:
             colormap_target = "component_idx"
@@ -2336,6 +2339,23 @@ def parse_quantity(x, default_units=None):
     elif isinstance(x, np.ndarray):
         return units.QuantityArray(x, default_units)
     return units.Quantity(x, default_units)
+
+
+def parse_timedelta(x, default_units='hrs'):
+    r"""Parse an input string as a datetime.timedelta instance.
+
+    Args:
+        x (str): Input string or quantity.
+
+    Returns:
+        datetime.timedelta: Time delta instance.
+
+    """
+    if isinstance(x, timedelta):
+        return x
+    if not isinstance(x, (units.Quantity, units.QuantityArray)):
+        x = parse_quantity(x, default_units)
+    return quantity2timedelta(x)
 
 
 def parse_axis(x):
@@ -4192,12 +4212,14 @@ class DataProcessor:
         return ids[0]
 
     @classmethod
-    def output_name(cls, crop, year):
+    def output_name(cls, crop, year, existing_param=False):
         r"""Create an output file name for a given crop and year.
 
         Args:
             crop (str): Crop name.
             year (str): Year that data was collected in.
+            existing_param (bool, optional): Return the path to an
+                existing parameter file.
 
         Returns:
             str: Data file name.
@@ -4206,39 +4228,53 @@ class DataProcessor:
         if not (crop and year):
             raise ValueError("Both crop and year must be provided to "
                              "generate a file name")
-        return os.path.join(cfg['directories']['input'],
-                            f'{crop}_{year}.json')
+        directory = (
+            cfg['directories']['param'] if existing_param
+            else cfg['directories']['input']
+        )
+        out = os.path.join(directory, f'{crop}_{year}.json')
+        if isinstance(existing_param, str):
+            out = existing_param.join(os.path.splitext(out))
+        return out
 
     @classmethod
-    def available_files(cls, crop=None, id=None, year=None):
+    def available_files(cls, crop=None, id=None, year=None,
+                        existing_param=False):
         r"""Locate files containing data for a certain crop and/or year.
 
         Args:
             crop (str, optional): Crop name.
             id (str, optional): ID string to find files for.
             year (str, optional): Year that data was collected in.
+            existing_param (bool, optional): If True, only check
+                existing parameter files.
 
         Returns:
             list: Matching files.
 
         """
-        if cls._ignore_data:
+        if cls._ignore_data and not existing_param:
             return []
         if isinstance(crop, list):
             out = []
             for x in crop:
-                out += cls.available_files(crop=x, id=id, year=year)
+                out += cls.available_files(crop=x, id=id, year=year,
+                                           existing_param=existing_param)
             return out
         if isinstance(year, list):
             out = []
             for x in year:
-                out += cls.available_files(crop=crop, id=id, year=x)
+                out += cls.available_files(crop=crop, id=id, year=x,
+                                           existing_param=existing_param)
             return out
         if crop is None:
             crop = '*'
         if year is None:
             year = '*'
-        regex = cls.output_name(crop, year)
+        regex = cls.output_name(crop, year,
+                                existing_param=existing_param)
+        if existing_param:
+            regex = '*'.join(os.path.splitext(regex))
         out = sorted(glob.glob(regex))
         if id is not None:
             if not isinstance(id, list):
@@ -4277,12 +4313,14 @@ class DataProcessor:
         return sorted(list(out))
 
     @classmethod
-    def available_ids(cls, crop, **kwargs):
+    def available_ids(cls, crop, existing_param=False, **kwargs):
         r"""Determine the IDs for which there is data available for a
         given crop.
 
         Args:
             crop (str): Crop name.
+            existing_param (bool, optional): If True, only check
+                existing parameter files.
             **kwargs: Additional keyword arguments are passed to
                 available_files.
 
@@ -4291,8 +4329,18 @@ class DataProcessor:
 
         """
         out = set()
-        for x in cls.available_files(crop, **kwargs):
-            out |= set(cls.from_file(x).ids)
+        if existing_param:
+            param_files = cls.available_files(crop, existing_param=True,
+                                              **kwargs)
+            out |= set([
+                os.path.splitext(os.path.basename(x))[0].split(
+                    f'{crop}_')[-1]
+                for x in param_files
+            ])
+            out -= set(cls.available_files(crop, **kwargs))
+        else:
+            for x in cls.available_files(crop, **kwargs):
+                out |= set(cls.from_file(x).ids)
         if kwargs.get('id', None) is not None:
             ids = kwargs['id']
             if not isinstance(ids, list):

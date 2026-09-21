@@ -8,19 +8,13 @@ class MonocotGenerator(PlantGenerator):
     r"""Class for generating generic monocot plant geometries."""
 
     _plant_name = 'monocot'
-    _components = dict(
-        PlantGenerator._components,
-        Leaf={
-            'defaults': {
-                'WMax': 1,
-                'NFirst': 0,  # No separate profile for cotyledons
-            },
-        },
-    )
     _defaults = dict(
         PlantGenerator._defaults,
         NMax=10,
-        NodeElements=['Cotyledon', 'Leaf'],
+        NodeSubcomponents=['Leaf'],
+        LeafWMax=1,
+        LeafNFirst=0,  # No separate profile for cotyledons
+        LeafSubcomponents=[],  # To remove petiole
         LeafAngle=30,
         LeafMethod='sweep',
         LeafLength=60.0,

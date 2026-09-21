@@ -414,6 +414,8 @@ class HothouseRayTracer(RayTracerBase):
             list: Geometry IDs.
 
         """
+        if plantid not in self._plantid2geomID:
+            return []
         out = [self._plantid2geomID[plantid]['real']]
         if not exclude_virtual:
             out += self._plantid2geomID[plantid]['virtual']

@@ -69,7 +69,6 @@ class SuffixGenerator(object):
             outputs = [outputs]
         if isinstance(skip_outputs, str):
             skip_outputs = [skip_outputs]
-        assert not (cond is not NoDefault and noteq is not NoDefault)
         self.arg = arg
         self.value = value
         self.prefix = prefix
@@ -148,21 +147,33 @@ class SuffixGenerator(object):
                 should be returned.
 
         """
+        cond = []
         if self.noteq is not NoDefault:
             if self._callable(self.noteq):
 
-                def cond(args):
+                def noteq_cond(args):
                     return (value != self.noteq(args))
 
+                cond.append(noteq_cond)
             else:
-                cond = (value != self.noteq)
-        else:
-            cond = self.cond
-        if cond is NoDefault:
-            try:
-                cond = bool(value)
-            except ValueError:
-                cond = bool(len(value))
+                cond.append((value != self.noteq))
+        if self.cond is not NoDefault:
+            cond.append(self.cond)
+        if False in cond:
+            return False
+        if len(cond) == 1:
+            return cond[0]
+        elif cond:
+
+            def cond_accum(args):
+                return all(self._resolve_callable(x, args)
+                           for x in cond)
+
+            return cond_accum
+        try:
+            cond = bool(value)
+        except ValueError:
+            cond = bool(len(value))
         return cond
 
     def __call__(self, *args, **kwargs):
@@ -1316,6 +1327,19 @@ class ArgumentDescription(ArgumentDescriptionABC):
         if only_subparsers or self.ignored or self.no_cli:
             return
         kws = dict(self.properties)
+        if kws.get('action', None) == 'extend_if_multiple':
+            if kws.get('const', NoDefault) is not NoDefault:
+                kws.update(
+                    action='append',
+                    nargs='?',
+                )
+            else:
+                kws.update(
+                    action='extend',
+                    nargs='+',
+                )
+            if 'default' in kws:
+                kws['default'] = []
         kws.setdefault('dest', self.dest)
         if self.prefix or self.suffix or self.description:
             prefix_dst = self.prefix
@@ -1378,12 +1402,21 @@ class ArgumentDescription(ArgumentDescriptionABC):
             object: The finalized instance.
 
         """
+        action = self.properties.get('action', None)
         if 'type' in self.properties and x is not None:
-            if self.properties.get('action', None) in ['append', 'extend']:
-                assert isinstance(x, list)
+            if ((isinstance(x, list)
+                 and action in ['append', 'extend', 'extend_if_multiple'])):
                 x = [self.properties['type'](xx) for xx in x]
             else:
                 x = self.properties['type'](x)
+        if action in ['append', 'extend'] and not isinstance(x, list):
+            if x is not None:
+                x = [x]
+        elif action == 'extend_if_multiple' and isinstance(x, list):
+            if 'default' in self.properties and len(x) == 0:
+                x = self.properties['default']
+            elif len(x) == 1:
+                x = x[0]
         if args is not None:
             if self.units_arg and getattr(args, self.units_arg, None):
                 x = utils.parse_quantity(x, getattr(args, self.units_arg))
@@ -2007,6 +2040,10 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         if key is None:
             key = str(uuid.uuid4())
         self[key] = x
+
+    def replace(self, k, v):
+        self.modify(exclude=[k])
+        self.__setitem__(k, v, dont_add_class=True)
 
     def __setitem__(self, k, v, dont_add_class=False):
         vnested = self.getnested(k, None)

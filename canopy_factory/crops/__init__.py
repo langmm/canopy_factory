@@ -25,6 +25,28 @@ from canopy_factory.crops import (
 # TASKS
 ############################################################
 
+def _piecewise_properties_suffix(x):
+    if not (x.piecewise_param and x.piecewise_param_values
+            and (x.piecewise_files or x.piecewise_ids)):
+        return ''
+    values = x.piecewise_param_values
+    if x.piecewise_param in ["N", "Age"]:
+        values = [int(v) for v in values]
+    if x.piecewise_files:
+        ids = [
+            os.path.splitext(os.path.basename(f))[0]
+            for f in x.piecewise_files
+        ]
+    else:
+        ids = x.piecewise_ids
+    out = [
+        f'{x.piecewise_param}{v}_{k}'
+        for v, k in zip(values, ids)
+    ]
+    out = '_'.join(out)
+    return out
+
+
 class ParametrizeCropTask(TaskBase):
     r"""Class for generating the LSystem parameters for a canopy."""
 
@@ -79,15 +101,15 @@ class ParametrizeCropTask(TaskBase):
                     'Independent variable that should be used to '
                     'determine when different parameters should be used'
                 ),
-                'suffix_param': {},
+                'suffix_param': {'cond': False},
             }),
             (('--piecewise-param-values', ), {
-                'type': float, 'nargs': '+',
+                'type': float, 'nargs': '+', 'action': 'extend',
                 'help': (
                     'Independent variable values at which parameters sets '
                     'should be changed'
                 ),
-                'suffix_param': {'sep': '-'},
+                'suffix_param': {'cond': False},
             }),
             (('--piecewise-files', ), {
                 'type': str, 'nargs': '+', 'action': 'extend',
@@ -95,7 +117,7 @@ class ParametrizeCropTask(TaskBase):
                     'Names of parameter files that should be used '
                     'conditionally in the order they should be used'
                 ),
-                'suffix_param': {'sep': '-'},
+                'suffix_param': {'cond': False},
             }),
             (('--piecewise-ids', ), {
                 'type': str, 'nargs': '+', 'action': 'extend',
@@ -104,12 +126,13 @@ class ParametrizeCropTask(TaskBase):
                     'conditionally in the order they should be '
                     'used (if parameter files not provided)'
                 ),
-                'suffix_param': {'sep': '-'},
+                'suffix_param': {'cond': False},
             }),
         ], name='piecewise_properties', suffix_param={
             'cond': lambda x: bool(x.piecewise_param),
             'outputs': ['parametrize'],
             'skip_outputs': ['lpy_model'],
+            'value': _piecewise_properties_suffix,
         }),
         (('--debug-param', ), {
             'action': 'append',
@@ -124,6 +147,8 @@ class ParametrizeCropTask(TaskBase):
                      'be enabled for.'),
         }),
     ]
+    _piecewise_arguments = ['piecewise_param', 'piecewise_param_values',
+                            'piecewise_files', 'piecewise_ids']
 
     @staticmethod
     def _on_registration(cls):
@@ -159,8 +184,10 @@ class ParametrizeCropTask(TaskBase):
 
     def __init__(self, *args, **kwargs):
         super(ParametrizeCropTask, self).__init__(*args, **kwargs)
-        if ((isinstance(getattr(self.args, 'id', None), str)
-             and self.args.id.startswith('all') and not self.is_root)):
+        if (((isinstance(getattr(self.args, 'id', None), str)
+              and self.args.id.startswith('all')
+              or isinstance(getattr(self.args, 'id', None), list))
+             and not self.is_root)):
             self.ensure_initialized()
 
     def ensure_initialized(self):
@@ -179,6 +206,12 @@ class ParametrizeCropTask(TaskBase):
                                and self.args.data_year.startswith('all'))
                       else self.args.data_year),
             )
+        elif isinstance(self.args.id, list):
+            self.args = copy.deepcopy(self.args)
+            if len(self.args.id) > 0:
+                self.args.id = self.args.id[0]
+            else:
+                self.args.id = 'default'
         self.finalize()
 
     @classmethod
@@ -194,13 +227,32 @@ class ParametrizeCropTask(TaskBase):
         """
         super(ParametrizeCropTask, cls).adjust_args_internal(args, **kwargs)
         idstr = args.id
-        if isinstance(idstr, str) and idstr.startswith('all'):
+        if (((isinstance(idstr, str) and idstr.startswith('all'))
+             or isinstance(idstr, list))):
             idstr = None
         fdata = None
+        if ((idstr is not None
+             and idstr in utils.DataProcessor.available_ids(
+                 args.crop, year=args.data_year,
+                 existing_param=True))):
+            fname = os.path.join(utils.cfg['directories']['param'],
+                                 f'{args.crop}_{idstr}.json')
+            param = cls._read_output(args, 'parametrize', fname)
+            idstr = param['id']
+            args.id = idstr
+            for k in (['crop', 'data', 'data_year']
+                      + cls._piecewise_arguments):
+                if getattr(args, k):
+                    assert getattr(args, k) == param[k]
+                else:
+                    setattr(args, k, param[k])
         if args.data:
             fdata = utils.DataProcessor.from_file(args.data)
             args.data_year = fdata.year
-        elif args.data_year and not args.data_year.startswith('all'):
+        elif args.data_year and not (
+                (isinstance(args.data_year, str)
+                 and args.data_year.startswith('all'))
+                or isinstance(args.data_year, list)):
             args.data = utils.DataProcessor.output_name(args.crop,
                                                         args.data_year)
             if ((utils.DataProcessor._ignore_data
@@ -222,9 +274,13 @@ class ParametrizeCropTask(TaskBase):
                     args.crop, args.data_year)
         if idstr is not None:
             if args.piecewise_param:
+                npiecewise = None
                 if args.piecewise_files:
+                    npiecewise = len(args.piecewise_files)
                     args.piecewise_ids = None
-                elif not args.piecewise_ids:
+                elif args.piecewise_ids:
+                    npiecewise = len(args.piecewise_ids)
+                else:
                     id_base = idstr.split('_')[0]
                     ids = utils.DataProcessor.available_ids(
                         args.crop, year=args.data_year)
@@ -232,10 +288,28 @@ class ParametrizeCropTask(TaskBase):
                         x for x in ids
                         if x.startswith(id_base) and x != idstr
                     ]
+                    npiecewise = len(args.piecewise_ids)
+                if args.piecewise_param_values is None:
+                    args_overwrite = {
+                        k: None for k in cls._piecewise_arguments
+                    }
+                    args_overwrite['output_parametrize'] = None
+                    base = cls.run_iteration_class(
+                        args,
+                        args_overwrite=args_overwrite,
+                        output_name='parametrize',
+                    )
+                    xmax = base[f'{args.piecewise_param.title()}Max']
+                    dtype = type(xmax)
+                    if args.piecewise_param.title() in ['N', 'Age']:
+                        dtype = np.int32
+                    args.piecewise_param_values = list(np.linspace(
+                        0, xmax, npiecewise + 2, dtype=dtype
+                    )[1:-1])
             else:
                 args.piecewise_ids = []
                 args.piecewise_files = []
-                args.piecewise_values = []
+                args.piecewise_param_values = []
 
     @cached_property
     def generator_class(self):
@@ -272,11 +346,10 @@ class ParametrizeCropTask(TaskBase):
         """
         if name == 'planting':
             return units.Quantity(0.0, 'days')
-        elif name == 'maturity':
-            return (
-                parameters['NMax']
-                * parameters['Plastocron']
-            )
+        elif parameters is None:
+            return None
+        elif name == 'mature':
+            return parameters['AgeMature']
         elif f'Age{name.title()}' in parameters:
             return parameters[f'Age{name.title()}']
         else:
@@ -395,12 +468,13 @@ class ParametrizeCropTask(TaskBase):
 
     def generate_piecewise_merge(self):
         r"""Generate a table of piecewise parameters."""
+        args_overwrite = {
+            k: None for k in self._piecewise_arguments
+        }
+        args_overwrite['output_parametrize'] = None
         out = copy.deepcopy(
             self.run_iteration(
-                args_overwrite={
-                    'piecewise_param': None,
-                    'output_parametrize': True,
-                },
+                args_overwrite=args_overwrite,
                 output_name='parametrize',
             )
         )
@@ -410,15 +484,13 @@ class ParametrizeCropTask(TaskBase):
                 merge.append(self.read_output('parametrize', x))
         else:
             for iid in self.args.piecewise_ids:
+                args_overwrite['id'] = iid
                 merge.append(self.run_iteration(
-                    args_overwrite={
-                        'id': iid,
-                        'piecewise_param': None,
-                        'output_parametrize': True,
-                    },
+                    args_overwrite=args_overwrite,
                     output_name='parametrize',
                 ))
         merged = {}
+        assert len(self.args.piecewise_param_values) == len(merge)
         for iout in merge:
             for k in list(iout.keys()):
                 kequal = (iout[k] == out.get(k, None))
@@ -427,19 +499,12 @@ class ParametrizeCropTask(TaskBase):
                 if kequal:
                     del iout[k]
                 elif k == 'id':
-                    out[k] += '_' + iout[k]
                     del iout[k]
                 else:
                     merged.setdefault(k, [out[k]])
         for iout in merge:
             for k in merged.keys():
                 merged[k].append(iout.get(k, out[k]))
-        if not self.args.piecewise_param_values:
-            xmax = out[f'{self.args.piecewise_param.title()}Max']
-            self.args.piecewise_param_values = list(
-                np.linspace(0, xmax, len(merge) + 2,
-                            dtype=type(xmax))[1:-1])
-        assert len(self.args.piecewise_param_values) == len(merge)
         generator = self.generator_class(**out)
         for k, v in merged.items():
             if k.endswith("XVals"):
@@ -480,6 +545,8 @@ class ParametrizeCropTask(TaskBase):
                 out[kx] = xout
             else:
                 raise NotImplementedError(k)
+        for k in self._piecewise_arguments:
+            out[k] = getattr(self.args, k)
         return out
 
     def _generate_output(self, name):
@@ -549,10 +616,27 @@ class LayoutTask(TaskBase):
                 'units': 'cm', 'default': 18.3,
                 'units_arg': 'mesh_units',
                 'help': 'Space between adjacent plants in rows (in cm)',
-                'suffix_param': {'noteq': parse_quantity(18.3, 'cm')},
+                'suffix_param': {
+                    'noteq': parse_quantity(18.3, 'cm'),
+                    'cond': lambda x: (x.planting_density is None),
+                },
             }),
         ], name='plot_spacing', suffix_param={
             'cond': lambda x: (x.periodic_canopy or x.canopy != 'single'),
+        }),
+        (('--planting-density', ), {
+            'help': (
+                'Planting density to use to overwride the plant '
+                'spacing within rows for a given number of rows/columns'
+            ),
+            'units': 'hectare**-1',
+            'suffix_param': {
+                'cond': lambda x: (
+                    x.planting_density is not None
+                    and (x.periodic_canopy or x.canopy != 'single')),
+                'conv': lambda x: int(x.value / 1000),
+                'suffix': 'k',
+            },
         }),
         arguments.DimensionArgumentDescription([
             (('--nrows', ), {
@@ -691,10 +775,17 @@ class LayoutTask(TaskBase):
 
         """
         super(LayoutTask, cls).adjust_args_internal(args, **kwargs)
+        if args.planting_density is not None:
+            args.plant_spacing = (
+                1.0 / (args.planting_density * args.row_spacing)
+            ).to(args.row_spacing.units)
         args.plot_width = args.nrows * args.row_spacing
         args.plot_length = args.ncols * args.plant_spacing
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
+        # 74k 89k 104k 119k 133k
+        # 76.2cm 51cm
+        # 71712.34743198083 by default
         if args.periodic_canopy == "False":
             args.periodic_canopy = False
         if args.periodic_canopy is True:
@@ -1192,7 +1283,7 @@ class PlantMesh(utils.RegisteredClassBase):
         if kwargs or missing:
             raise ValueError(f"Extra ({list(kwargs.keys())}) or "
                              f"missing ({missing}) arguments")
-        if not (self._mesh or self.mesh_file):
+        if not (self._mesh is not None or self.mesh_file):
             raise ValueError("Either mesh or mesh_file must be provided")
         if not self.args.mesh_format:
             self.args.mesh_format = 'obj'
@@ -1604,33 +1695,6 @@ class PlantMesh(utils.RegisteredClassBase):
         )
         return out
 
-    def respace_plants(self, plant_spacing, row_spacing):
-        print(f"{self.args.plant_spacing} -> {plant_spacing}")
-        print(f"{self.args.row_spacing} -> {row_spacing}")
-        mesh_dict = self.mesh.as_array_dict()
-        new_args = copy.deepcopy(self.args)
-        new_args.plant_spacing = plant_spacing
-        new_args.row_spacing = row_spacing
-        old_generator = FieldPositionGenerator(self.args)
-        new_generator = FieldPositionGenerator(new_args)
-        for plantid in self.unique_plantids:
-            old_loc = self.plantpos(plantid,
-                                    generator=old_generator)
-            new_loc = self.plantpos(plantid, args=new_args,
-                                    generator=new_generator)
-            x_shift = (new_loc[0] - old_loc[0]).value
-            y_shift = (new_loc[1] - old_loc[1]).value
-            mask = (self.plantids == plantid)
-            utils.shift_mesh(
-                mesh_dict, x_shift, y_shift,
-                axis_up=self.args.axis_up,
-                axis_x=self.args.axis_rows,
-                face_mask=mask,
-            )
-        self._mesh = type(self.mesh).from_array_dict(mesh_dict)
-        self.args = new_args
-        self.clear_cached_properties()
-
 
 class GenerateTask(TaskBase):
     r"""Class for generating 3D canopies."""
@@ -1667,6 +1731,7 @@ class GenerateTask(TaskBase):
             'include': [
                 'canopy', 'plot_length', 'plot_width',
                 'nrows', 'ncols', 'row_spacing', 'plant_spacing',
+                'planting_density',
                 'x', 'y', 'plantid', 'mesh_units',
             ],
             'modifications': {
@@ -1705,7 +1770,7 @@ class GenerateTask(TaskBase):
         arguments.CompositeArgumentDescription(
             'age', description=' to generate model for',
             ignore=['planting_date'],
-            suffix_param={'noteq': 'maturity'},
+            suffix_param={'cond': True},
         ),
         arguments.CompositeArgumentDescription(
             'color', description=(
@@ -1809,8 +1874,7 @@ class GenerateTask(TaskBase):
             object: Contents of the output file.
 
         """
-        if ((args.age.string != 'maturity'
-             and args.age.string not in fname)):
+        if args.age.string not in fname:
             print(args.age.string, fname)
             import pdb
             pdb.set_trace()
@@ -1831,7 +1895,7 @@ class GenerateTask(TaskBase):
             output (object): Output object to write to file.
 
         """
-        if args.id == 'all':
+        if args.id == 'all' or isinstance(args.id, list):
             return
         if name == "generate":
             assert isinstance(output, PlantMesh)
@@ -1850,12 +1914,12 @@ class GenerateTask(TaskBase):
                 parent class's method.
 
         """
-        args.save_all_plantids = False
         if args.verbose:
             args.verbose_lpy = True
-        if args.plantid > 0 and not args.save_all_plantids:
-            args.dont_write_generate = True
         super(GenerateTask, cls).adjust_args_internal(args, **kwargs)
+        if ((args.output_generate is True
+             and args.dont_write_generate is None)):
+            args.dont_write_generate = False
 
     @cached_property
     def generator_class(self):
@@ -1927,11 +1991,17 @@ class GenerateTask(TaskBase):
 
         """
         assert self.args.id not in ['all', 'all_combined']
+        assert not isinstance(self.args.id, list)
         if name == 'generate':
             if self.args.canopy in ['single', 'virtual', 'virtual_single']:
                 return self._generate_single_plant()
             else:
-                return self._generate_field()
+                out = self._generate_field()
+                if self.args.dont_write_generate is None:
+                    self.args.output_generate.args['dont_write'] = True
+                    assert not self.output_enabled('generate',
+                                                   for_write=True)
+                return out
         return super(GenerateTask, self)._generate_output(name)
 
     def generate_single_plant(self, **kwargs):
@@ -1962,8 +2032,7 @@ class GenerateTask(TaskBase):
         y = self.args.y
         plantid = self.args.plantid
         self.log(f'generate_single_plant: {x}, {y}, {plantid}')
-        if ((((x.value > 0) or (y.value > 0))
-             and (plantid == 0 or self.args.save_all_plantids))):
+        if (x.value > 0) or (y.value > 0):
             inst = self.run_iteration(
                 args_overwrite={'x': 0.0, 'y': 0.0},
             )
@@ -1980,6 +2049,7 @@ class GenerateTask(TaskBase):
             / self.parameters['AgeInc'],
             age / self.parameters['AgeInc']
         ))
+        derivation_length = 2 * int(age / self.parameters['AgeInc'])
         lpy_param = {
             'RUNTIME_PARAM': dict(
                 self.parameters,
@@ -2006,7 +2076,6 @@ class GenerateTask(TaskBase):
             assert os.path.isfile(lpy_model)
         lsys = Lsystem(lpy_model, lpy_param)
         tree = lsys.derive()
-        # print(f"LSTRING: {tree}")
         generator = lsys.context().globals()['generator']
         scene = lsys.sceneInterpretation(tree)
         lsys_units = generator.unit_system
@@ -2063,31 +2132,6 @@ class GenerateTask(TaskBase):
         y = self.args.y
         plantid = self.args.plantid
         self.log(f'generate_field: {x}, {y}, {plantid}')
-        # TODO: Read these from arguments
-        # default_plant_spacing = 18.3
-        # default_row_spacing = 76.2
-        # Generate the unshifted field so it can be reused
-        # if ((x.value > 0 or y.value > 0 or plantid > 0
-        #      or self.args.plant_spacing.value != default_plant_spacing
-        #      or self.args.row_spacing.value != default_row_spacing)):
-        if x.value > 0 or y.value > 0 or plantid > 0:
-            inst = self.run_iteration(
-                args_overwrite={
-                    'x': 0.0, 'y': 0.0, 'plantid': 0,
-                    # 'plant_spacing': default_plant_spacing,
-                    # 'row_spacing': default_row_spacing,
-                },
-            )
-            mesh = inst.get_output('generate')
-            # if ((self.args.plant_spacing.value != default_plant_spacing
-            #      or self.args.row_spacing.value != default_row_spacing)):
-            #     mesh = self.respace_field(
-            #         self.args, mesh, default_plant_spacing,
-            #         default_row_spacing)
-            if x.value > 0 or y.value > 0 or plantid > 0:
-                mesh = mesh.shifted(x, y, plantid)
-            return mesh
-
         generator = np.random.default_rng(seed=plantid)
 
         def posdev():
@@ -2098,15 +2142,16 @@ class GenerateTask(TaskBase):
             )
 
         # First plant
-        inst = self.run_iteration(
-            args_overwrite={
-                'x': x, 'y': y, 'plantid': plantid,
-                'canopy': 'single', 'nrows': 1, 'ncols': 1,
-            },
-        )
+        args_overwrite = {
+            'x': 0.0, 'y': 0.0, 'plantid': plantid,
+            'canopy': 'single', 'nrows': 1, 'ncols': 1,
+            'output_parametrize': None,
+            'output_generate': None,
+        }
+        inst = self.run_iteration(args_overwrite=args_overwrite)
         # TODO: Prime this in a systemic way
-        inst.get_output('parametrize')
-        single_mesh = inst.get_output('generate')
+        # inst.get_output('parametrize')
+        single_mesh = inst.get_output('generate').shifted(x, y)
         mesh = copy.deepcopy(single_mesh)
         mesh.args.ncols = self.args.ncols
         mesh.args.nrows = self.args.nrows
@@ -2122,11 +2167,10 @@ class GenerateTask(TaskBase):
                     iy = j * self.args.plant_spacing
                     if i == 0 and j == 0:
                         continue
-                    ikwargs = {
-                        'x': ix + posdev(), 'y': iy + posdev(),
-                        'plantid': plantid,
-                        'canopy': 'single', 'nrows': 1, 'ncols': 1,
-                    }
+                    ikwargs = dict(
+                        args_overwrite,
+                        plantid=plantid,
+                    )
                     kwargs_pool.append(ikwargs)
                     # The performance of the single plant generation
                     # needs improved
@@ -2135,7 +2179,8 @@ class GenerateTask(TaskBase):
                         output_name="generate",
                         copy_outputs_from=inst,
                     )
-                    mesh.append(imesh)
+                    mesh.append(imesh.shifted(x + ix + posdev(),
+                                              y + iy + posdev()))
                     plantid += 1
             # 45.3042 seconds for serial
             # 81.7037 seconds for parallel due to IO

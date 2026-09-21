@@ -1,15 +1,24 @@
 {
     "AgeInc": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAA8D8=-YGG-",
-    "AgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAATkA=-YGG-",
+    "AgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-MzMzMzOTUEA=-YGG-",
     "AgeRemove": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAA8H8=-YGG-",
     "AgeSenesce": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAAXkA=-YGG-",
+    "ApexAgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAAGEA=-YGG-",
+    "ApexAngle": 0,
     "ApexBFirst": 0,
     "ApexBLast": -1,
     "ApexBPeriod": 1,
     "ApexNFirst": 0,
     "ApexNLast": -1,
     "ApexNPeriod": 1,
+    "ApexRotationAngle": 0,
+    "ApexSubcomponents": [
+        "Internode",
+        "Node",
+        "Apex"
+    ],
     "ApexWMax": 1,
+    "BMax": 1,
     "InternodeAgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAA8D8=-YGG-",
     "InternodeAngle": 0.0,
     "InternodeAngleStdDev": 0.5,
@@ -115,6 +124,7 @@
         0
     ],
     "LeafRotationAngle": 0,
+    "LeafSubcomponents": [],
     "LeafThickness": 0.1,
     "LeafTwist": 1.0,
     "LeafTwistRelStdDev": 0.1,
@@ -145,8 +155,9 @@
     ],
     "LeafWidthXFuncYVals": "-YGG-eyJ0eXBlIjoibmRhcnJheSIsInN1YnR5cGUiOiJmbG9hdCIsInByZWNpc2lvbiI6OCwic2hhcGUiOlsxMF19-YGG-SOF6FK5H0T8zMzMzMzPTP+F6FK5H4do/XI/C9Shc5z8pXI/C9SjsPwAAAAAAAPA/H4XrUbge7T9SuB6F61HoP5qZmZmZmeE/AAAAAAAAAAA=-YGG-",
     "NMax": 20,
-    "NodeElements": [
-        "Cotyledon",
+    "NodeAngle": 0,
+    "NodeRotationAngle": 0,
+    "NodeSubcomponents": [
         "Leaf"
     ],
     "Plastocron": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAACEA=-YGG-",
@@ -156,8 +167,16 @@
     "data": "maize_2025.json",
     "data_year": "2025",
     "density_units": "kg*(cm**-2)",
-    "id": "B73_WT_B73_rdla",
+    "id": "B73_WT",
     "length_units": "cm",
     "mass_units": "kg",
-    "time_units": "day"
+    "time_units": "day",
+    "piecewise_param": "N",
+    "piecewise_param_values": [
+        "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImludCIsInByZWNpc2lvbiI6NH0=-YGG-CgAAAA==-YGG-"
+    ],
+    "piecewise_files": null,
+    "piecewise_ids": [
+        "B73_rdla"
+    ]
 }

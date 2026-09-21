@@ -6,31 +6,6 @@ class DicotGenerator(PlantGenerator):
     r"""Class for generating generic dicot plant geometries."""
 
     _plant_name = 'dicot'
-    _components = dict(
-        PlantGenerator._components,
-        Leaf={
-            'defaults': {
-                'NFirst': 1,
-                'NPeriod': 2,
-                'WMax': 2,
-            },
-        },
-        Petiole={},
-        Cotyledon={
-            'defaults': {
-                'NFirst': 0,
-                'NLast': 0,
-                'WMax': 2,
-            },
-        },
-        Branch={
-            'defaults': {
-                'NFirst': 2,
-                'NPeriod': 2,
-                'WMax': 2,
-            },
-        },
-    )
     _properties = dict(
         PlantGenerator._properties,
         LeavesPerNode={
@@ -46,11 +21,15 @@ class DicotGenerator(PlantGenerator):
     _defaults = dict(
         PlantGenerator._defaults,
         NMax=10,
-        NodeElements=['Cotyledon', 'Leaf', 'Branch', 'Fruit'],
+        BMax=2,
+        NodeSubcomponents=['Cotyledon', 'Leaf', 'Fruit'],
+        ApexSubcomponents=['Internode', 'Node', 'Branch'],
         # Petiole parameters
         PetioleLength=0.5,
         PetioleWidth=0.125,
         # Leaf parameters
+        LeafNFirst=1,
+        LeafNPeriod=2,
         LeafWMax=5,
         LeafMethod='sweep',
         LeafLength=5.0,
@@ -72,6 +51,9 @@ class DicotGenerator(PlantGenerator):
         LeafBendRelStdDev=0.1,
         LeafBendXFuncMethod='LeafBendX',
         # Cotyledon parameters
+        CotyledonNFirst=0,
+        CotyledonNLast=0,
+        CotyledonWMax=2,
         CotyledonMethod='sweep',
         CotyledonLength=1.75,
         CotyledonLengthRelStdDev=0.01,
@@ -94,14 +76,16 @@ class DicotGenerator(PlantGenerator):
         InternodeWidthNFunc='linear',
         InternodeWidthNFuncSlope=-0.9,
         InternodeWidthNFuncIntercept=1.0,
-        InternodeRotationAngle=45,
-        InternodeRotationAngleRelStdDev=0.1,
-        # Branch parameters
-        BranchAngle=70,
-        BranchRotationAngle=360,
-        BranchRotationAngleWFunc='linear',
-        BranchRotationAngleWFuncSlope=1,
-        BranchRotationAngleWFuncIntercept=0.0,
+        InternodeRotationAngle=0,
+        # Apex parameters
+        ApexAngle=20,
+        ApexAngleNFunc='expression',
+        ApexAngleNFuncExpression='1.0 if N > 0 else 0.0',
+        ApexRotationAngle=360,
+        ApexRotationAngleStdDev=5,
+        ApexRotationAngleBFunc='linear',
+        ApexRotationAngleBFuncSlope=1,
+        ApexRotationAngleBFuncIntercept=0.25,
     )
 
     def LeafBendX(self, x):

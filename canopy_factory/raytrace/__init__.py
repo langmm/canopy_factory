@@ -16,7 +16,7 @@ from canopy_factory.utils import (
     scene2geom,
 )
 from canopy_factory.cli import (
-    TaskBase, TemporalTaskBase,
+    TaskBase, TemporalTaskBase, ExploreParametersTaskBase,
     OptimizationTaskBase,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
@@ -344,7 +344,8 @@ class RayTraceTask(TaskBase):
             output (object): Output object to write to file.
 
         """
-        if args.id == 'all' and name != 'traced_mesh':
+        if (((args.id == 'all' or isinstance(args.id, list))
+             and name != 'traced_mesh')):
             return
         super(RayTraceTask, cls)._write_output(args, name, fname, output)
 
@@ -1211,7 +1212,7 @@ class RayTraceTask(TaskBase):
             return out
         if base:
             out.update(
-                age='maturity',
+                age='mature',
                 **GenerateTask.base_param_class(args)
             )
         else:
@@ -1253,6 +1254,7 @@ class RayTraceTask(TaskBase):
 
         """
         assert self.args.id != 'all'
+        assert not isinstance(self.args.id, list)
         if name == 'raytrace':
             out = self.raytrace_scene()
             # Prevent saving redundant info stored or calculated by mesh
@@ -1315,7 +1317,7 @@ class RenderTask(TaskBase):
                      'also not provided, the camera will be centered '
                      'on the center of the scene facing down, '
                      'southeast at a distance that captures the entire '
-                     'scene. If \"maturity\" is specified, the location '
+                     'scene. If \"mature\" is specified, the location '
                      'will be set for the mature plant (only valid for '
                      'generated meshes).'),
             'suffix_param': {'prefix': 'from_'},
@@ -1576,7 +1578,7 @@ class RenderTask(TaskBase):
             return {}
         if base:
             out = {
-                'age': 'maturity',
+                'age': 'mature',
                 'scene_age': None,
             }
             if args.scene_age.args['age']:
@@ -1698,6 +1700,7 @@ class RenderTask(TaskBase):
 
         """
         assert self.args.id != 'all'
+        assert not isinstance(self.args.id, list)
         if name == 'render_camera':
             return self._generate_camera()
         elif name == 'render':
@@ -1712,12 +1715,15 @@ class RenderTask(TaskBase):
         return super(RenderTask, self)._generate_output(name)
 
 
-class TotalsTask(TemporalTaskBase):
-    r"""Class for plotting the flux on a geometry as a function of time."""
+class TotalsTask(ExploreParametersTaskBase):
+    r"""Class for plotting the flux on a geometry as a function of a
+    varied parameter."""
+
     _name = 'totals'
-    _help = 'Get canopy properties over a period of time'
+    _help = 'Get canopy properties over a range of parameters'
     _step_task = RayTraceTask
     _step_outputs_write = ['raytrace_stats']
+    _step_vary_default = 'time'
     _output_info = {
         'totals': {
             'base_prefix': True,
@@ -1758,7 +1764,7 @@ class TotalsTask(TemporalTaskBase):
             'type': str, 'choices': RayTraceTask._query_options_stats,
             'default': 'total_flux',
             'help': ('Name of the raytracer query result that should '
-                     'be plot as a function of time. '),
+                     'be plot as a function of the varied parameter. '),
             'suffix_param': {
                 'cond': True,
                 'skip_outputs': ['totals'],
@@ -1795,17 +1801,20 @@ class TotalsTask(TemporalTaskBase):
                 parent class's method.
 
         """
+        if args.vary is None:
+            args.vary = cls._step_vary_default
         if args.crop_model:
             args.nproc = 1
         if args.canopy == 'single':
             args.per_plant = False
         iterating = [
             k for k in cls._output_info['totals']['composite_param']
-            if getattr(args, k) == 'all'
+            if getattr(args, k) == 'all' or
+            isinstance(getattr(args, k), list)
         ]
         if ((args.figure_color_by is None
              and args.totals_query.startswith('profile_'))):
-            args.figure_color_by = 'time'
+            args.figure_color_by = args.vary
         if args.per_plant:
             if args.figure_color_by is None:
                 if iterating and args.figure_linestyle_by is None:
@@ -1823,9 +1832,13 @@ class TotalsTask(TemporalTaskBase):
         super(TotalsTask, cls).adjust_args_internal(args, **kwargs)
 
     @cached_property
-    def time_marker(self):
+    def vary_value_marker(self):
         r"""matplotlib.lines.line2D: Vertical line marking a time."""
-        return self.axes.axvline(x=self.args.start_time.time,
+        if self.args.vary == 'time':
+            return self.axes.axvline(x=self.args.start_time.time,
+                                     color=(0, 0, 0),
+                                     alpha=0.5, linewidth=10)
+        return self.axes.axvline(x=self.args.start_value,
                                  color=(0, 0, 0),
                                  alpha=0.5, linewidth=10)
 
@@ -1834,6 +1847,7 @@ class TotalsTask(TemporalTaskBase):
         r"""simulatr.BaseEngine: Simulator engined."""
         if not self.args.crop_model:
             return None
+        assert self.args.vary == 'time'
         out = simulatr.run(
             self.args.crop_model,
             crop_name=self.args.crop_name,
@@ -1856,14 +1870,14 @@ class TotalsTask(TemporalTaskBase):
         out.fast_forward(self.args.start_time.time)
         return out
 
-    def mark_time(self, time):
-        r"""Mark a time with a vertical line on the figure.
+    def mark_vary_value(self, x):
+        r"""Mark a value with a vertical line on the figure.
 
         Args:
-            time (datetime.datetime): Time that should be marked.
+            x (object): Value that should be marked.
 
         """
-        self.time_marker.set_xdata([time, time])
+        self.vary_value_marker.set_xdata([x, x])
 
     def plot_query(self, query, x, y, label=None, plantid=None,
                    reset=False, line_prop=None):
@@ -1900,7 +1914,7 @@ class TotalsTask(TemporalTaskBase):
             if profile:
                 xlabel = 'Height'
             else:
-                xlabel = 'Time'
+                xlabel = self.args.vary.title()
             ylabel = query if query in ['LAI'] else query.title()
 
             def add_units_label(v):
@@ -1965,7 +1979,7 @@ class TotalsTask(TemporalTaskBase):
         """
         if label is None:
             label = self.args.id
-        times = values['times']
+        vary_values = values['vary_values']
         query = self.args.totals_query
         if query in RayTraceTask._query_options_phy:
             query = f'total_{query}'
@@ -1974,32 +1988,32 @@ class TotalsTask(TemporalTaskBase):
         if profile:
             cmap = None
             norm = None
-            if self.args.figure_color_by == 'time':
+            if self.args.figure_color_by == self.args.vary:
                 import matplotlib as mpl
                 norm = mpl.colors.Normalize(
                     vmin=0,
-                    vmax=(times[-1] - times[0]).total_seconds(),
+                    vmax=(vary_values[-1] - vary_values[0]).total_seconds(),
                 )
                 cmap = mpl.colormaps['viridis']
                 kwargs.setdefault('line_prop', {})
             if tprofile is None:
-                for tprofile in times:
+                for tprofile in vary_values:
                     if cmap is not None:
                         color = cmap(norm(
-                            (tprofile - times[0]).total_seconds()))
+                            (tprofile - vary_values[0]).total_seconds()))
                         kwargs['line_prop']['color'] = color
                     self.plot_data(values, label=f'{label} {tprofile}',
                                    reset=reset, tprofile=tprofile,
                                    **kwargs)
                     reset = False
                 return
-            if isinstance(times, np.ndarray):
-                tidx = np.where(times == tprofile)[0][0]
+            if isinstance(vary_values, np.ndarray):
+                tidx = np.where(vary_values == tprofile)[0][0]
             else:
-                tidx = times.index(tprofile)
+                tidx = vary_values.index(tprofile)
             x = values[f'{query}_bins']
         else:
-            x = times
+            x = vary_values
         y = values[query]
         if query.startswith(tuple(
                 RayTraceTask._query_options_calc_prefix_per_plant)):
@@ -2050,6 +2064,7 @@ class TotalsTask(TemporalTaskBase):
         """
         if not self.crop_model_engine:
             return x
+        assert self.args.vary == 'time'
         value = x[1]
         # TODO: Get intercepted light for next step
         #   - Set LAI
@@ -2104,10 +2119,14 @@ class TotalsTask(TemporalTaskBase):
 
         """
         assert self.args.id != 'all'
-        times = [x[0] for x in xlist]
+        assert not isinstance(self.args.id, list)
+        if self.args.vary == 'time':
+            vary_values = [x[0] for x in xlist]
+        else:
+            vary_values = [x[self.args.vary] for x in self.step_args()]
         values = [x[1] for x in xlist]
         out = RayTraceTask.join_query_stats(values, per_plant=True)
-        out['times'] = times
+        out['vary_values'] = vary_values
         return out
 
     def _merge_output(self, name, output, merged_param):
@@ -2153,6 +2172,7 @@ class TotalsTask(TemporalTaskBase):
         """
         if name == 'totals_plot':
             assert self.args.id != 'all'
+            assert not isinstance(self.args.id, list)
             out = self.get_output('totals')
             self.plot_data(out)
             self.axes.legend()
@@ -2170,7 +2190,7 @@ class AnimateTask(TemporalTaskBase):
     )
     _step_task = RenderTask
     _step_args_preserve = ['render_colormap']
-    _step_outputs_write = ['render']
+    _step_outputs_write = ['render', 'generate']
     _output_info = {
         'animate': {
             'base_output': 'render',

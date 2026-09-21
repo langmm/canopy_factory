@@ -39,30 +39,37 @@ derivation length: DERIVATION_LENGTH
 production:
 
 Apex(time,age,n,b):
-    if not generator.CheckProduceComponent("Apex",time,age,n,b):
+    component = generator.parameters["Apex"]
+    if not component.CheckProduceComponent(time,age,n,b):
         produce *
     if (time + age) >= OUTPUT_TIME:
         produce Apex(time,age,n,b)
-    elif ((age >= PLASTOCHRON and n < NMax)
-          or ((time + age) == 0 and n == 0)):
-        time = time + age
-        if age >= PLASTOCHRON:        age = age - PLASTOCHRON
-        if generator.verbose_lpy:
-            print(f"Node: {n} (t = {time})")
-        nproduce @Ge @Gc Internode(time,age,n,b)
-        nproduce [Node(time,age,n,b)]
-        if generator.verbose_lpy:
-            print(f"Next apex: {n + 1}")
-        produce Apex(time,age,n+1,b)
-    else:
+    elif component.CheckProduceAge(time,age,n,b):
         if generator.verbose_lpy:
             print(f"Ageing Apex[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
         produce Apex(time,age+ageinc,n,b)
+    time = time + age
+    if age >= PLASTOCHRON:
+        age = age - PLASTOCHRON
+    if generator.verbose_lpy:
+        print(f"Node: {n} (t = {time})")
+    nproduce /(generator.ApexRotationAngle(time,age,n,b))
+    nproduce &(generator.ApexAngle(time,age,n,b))
+    for w in range(0, generator.InternodeWMax()):
+        nproduce Internode(time,age,n,b)
+    nproduce [Node(time,age,n,b)]
+    if generator.verbose_lpy:
+        print(f"Next Apex: {n + 1}")
+    for binc in range(0 + 1, generator.ApexBMax()):
+        nproduce [Apex(time,age,n+1,b+binc)]
+    binc = 0
+    produce [Apex(time,age,n+1,b+binc)]
 
 Internode(time,age,n,b):
-    if not generator.CheckProduceComponent("Internode",time,age,n,b):
+    component = generator.parameters["Internode"]
+    if not component.CheckProduceComponent(time,age,n,b):
         produce *
     if (time + age) >= OUTPUT_TIME:
         produce Internode(time,age,n,b)
@@ -74,12 +81,15 @@ Internode(time,age,n,b):
         produce Internode(time,age+ageinc,n,b)
 
 Node(time,age,n,b):
-    for w in range(generator.LeafWMax()):
+    nproduce /(generator.NodeRotationAngle(time,age,n,b))
+    nproduce &(generator.NodeAngle(time,age,n,b))
+    for w in range(0, generator.LeafWMax()):
         nproduce [Leaf(time,age,n,b)]
     produce [/(0)]
 
 Leaf(time,age,n,b):
-    if not generator.CheckProduceComponent("Leaf",time,age,n,b):
+    component = generator.parameters["Leaf"]
+    if not component.CheckProduceComponent(time,age,n,b):
         produce *
     if (time + age) >= OUTPUT_TIME:
         produce Leaf(time,age,n,b)
@@ -99,7 +109,7 @@ Apex(time,age,n,b):
 Internode(time,age,n,b):
     component = generator.parameters["Internode"]
     with component.temporary_index(time,age,n,b):
-        if not generator.CheckProduceComponent("Internode",time,age,n,b):
+        if not component.CheckProduceComponent(time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Internode[{age},{n}]")
@@ -123,7 +133,7 @@ Internode(time,age,n,b):
 Leaf(time,age,n,b):
     component = generator.parameters["Leaf"]
     with component.temporary_index(time,age,n,b):
-        if not generator.CheckProduceComponent("Leaf",time,age,n,b):
+        if not component.CheckProduceComponent(time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Leaf[{age},{n}]")
