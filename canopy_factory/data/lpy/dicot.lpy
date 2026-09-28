@@ -31,46 +31,47 @@ module A
 module Apex
 module Internode
 module Node
-module Cotyledon
+module CotyledonComplex
 module Petiole
+module Cotyledon
+module LeafComplex
 module Leaf
-module Fruit
-module Pedicel
 module Branch
 
-Axiom: @Gc/(StartingAngle)Apex(0,0,0,0)@Ge
+Axiom: @Gc/(StartingAngle)Apex(0,0,0,0,0)@Ge
 derivation length: DERIVATION_LENGTH
 
 production:
 
-Apex(time,age,n,b):
+Apex(time,age,n,b,w):
     component = generator.parameters["Apex"]
-    if not component.CheckProduceComponent(time,age,n,b):
+    if not component.CheckProduceComponent(time,age,n,b,w=w):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce Apex(time,age,n,b)
-    elif component.CheckProduceAge(time,age,n,b):
+        produce Apex(time,age,n,b,w)
+    elif component.CheckProduceAge(time,age,n,b,w=w):
         if generator.verbose_lpy:
             print(f"Ageing Apex[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce Apex(time,age+ageinc,n,b)
+        produce Apex(time,age+ageinc,n,b,w)
+    plastochron = generator.ApexPlastocron()
     time = time + age
-    if age >= PLASTOCHRON:
-        age = age - PLASTOCHRON
+    if age >= plastochron:
+        age = age - plastochron
     if generator.verbose_lpy:
         print(f"Node: {n} (t = {time})")
-    nproduce /(generator.ApexRotationAngle(time,age,n,b))
-    nproduce &(generator.ApexAngle(time,age,n,b))
-    for w in range(0, generator.InternodeWMax()):
-        nproduce Internode(time,age,n,b)
-    nproduce [Node(time,age,n,b)]
+    nproduce /(generator.ApexRotationAngle(time,age,n,b,w=w))
+    nproduce &(generator.ApexAngle(time,age,n,b,w=w))
+    nproduce /(generator.ApexTiltAngle(time,age,n,b,w=w))
+    nproduce Internode(time,age,n,b)
+    nproduce [Node(time,age,n,b,w)]
     if generator.verbose_lpy:
         print(f"Next Apex: {n + 1}")
     for binc in range(0 + 1, generator.BranchBMax()):
-        nproduce [Branch(time,age,n+1,b+binc)]
+        nproduce [Branch(time,age,n+1,b+binc,w)]
     binc = 0
-    produce [Apex(time,age,n+1,b+binc)]
+    produce [Apex(time,age,n+1,b+binc,w)]
 
 Internode(time,age,n,b):
     component = generator.parameters["Internode"]
@@ -85,29 +86,35 @@ Internode(time,age,n,b):
                      OUTPUT_TIME - (time + age))
         produce Internode(time,age+ageinc,n,b)
 
-Node(time,age,n,b):
-    nproduce /(generator.NodeRotationAngle(time,age,n,b))
-    nproduce &(generator.NodeAngle(time,age,n,b))
-    for w in range(0, generator.CotyledonWMax()):
-        nproduce [Cotyledon(time,age,n,b,w)]
-    for w in range(0, generator.LeafWMax()):
-        nproduce [Leaf(time,age,n,b,w)]
-    for w in range(0, generator.FruitWMax()):
-        nproduce [Fruit(time,age,n,b)]
+Node(time,age,n,b,w):
+    nproduce /(generator.NodeRotationAngle(time,age,n,b,w=w))
+    nproduce &(generator.NodeAngle(time,age,n,b,w=w))
+    nproduce /(generator.NodeTiltAngle(time,age,n,b,w=w))
+    for w in range(0, generator.CotyledonComplexWMax()):
+        nproduce [CotyledonComplex(time,age,n,b,w)]
+    for w in range(0, generator.LeafComplexWMax()):
+        nproduce [LeafComplex(time,age,n,b,w)]
     produce [/(0)]
 
-Cotyledon(time,age,n,b,w):
-    component = generator.parameters["Cotyledon"]
-    if not component.CheckProduceComponent(time,age,n,b,w):
+CotyledonComplex(time,age,n,b,w):
+    component = generator.parameters["CotyledonComplex"]
+    if not component.CheckProduceComponent(time,age,n,b,w=w):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce Cotyledon(time,age,n,b,w)
+        produce CotyledonComplex(time,age,n,b,w)
     else:
         if generator.verbose_lpy:
-            print(f"Ageing Cotyledon[{age},{n}]")
+            print(f"Ageing CotyledonComplex[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce Cotyledon(time,age+ageinc,n,b,w)
+        produce CotyledonComplex(time,age+ageinc,n,b,w)
+    nproduce /(generator.CotyledonComplexRotationAngle(time,age,n,b,w=w))
+    nproduce &(generator.CotyledonComplexAngle(time,age,n,b,w=w))
+    nproduce /(generator.CotyledonComplexTiltAngle(time,age,n,b,w=w))
+    nproduce Petiole(time,age,n,b)
+    for w in range(0, generator.CotyledonWMax()):
+        nproduce [Cotyledon(time,age,n,b)]
+    produce [/(0)]
 
 Petiole(time,age,n,b):
     component = generator.parameters["Petiole"]
@@ -122,78 +129,86 @@ Petiole(time,age,n,b):
                      OUTPUT_TIME - (time + age))
         produce Petiole(time,age+ageinc,n,b)
 
-Leaf(time,age,n,b,w):
-    component = generator.parameters["Leaf"]
-    if not component.CheckProduceComponent(time,age,n,b,w):
+Cotyledon(time,age,n,b):
+    component = generator.parameters["Cotyledon"]
+    if not component.CheckProduceComponent(time,age,n,b):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce Leaf(time,age,n,b,w)
+        produce Cotyledon(time,age,n,b)
+    else:
+        if generator.verbose_lpy:
+            print(f"Ageing Cotyledon[{age},{n}]")
+        ageinc = min(generator.AgeInc(),
+                     OUTPUT_TIME - (time + age))
+        produce Cotyledon(time,age+ageinc,n,b)
+
+LeafComplex(time,age,n,b,w):
+    component = generator.parameters["LeafComplex"]
+    if not component.CheckProduceComponent(time,age,n,b,w=w):
+        produce *
+    if (time + age) >= OUTPUT_TIME:
+        produce LeafComplex(time,age,n,b,w)
+    else:
+        if generator.verbose_lpy:
+            print(f"Ageing LeafComplex[{age},{n}]")
+        ageinc = min(generator.AgeInc(),
+                     OUTPUT_TIME - (time + age))
+        produce LeafComplex(time,age+ageinc,n,b,w)
+    nproduce /(generator.LeafComplexRotationAngle(time,age,n,b,w=w))
+    nproduce &(generator.LeafComplexAngle(time,age,n,b,w=w))
+    nproduce /(generator.LeafComplexTiltAngle(time,age,n,b,w=w))
+    nproduce Petiole(time,age,n,b)
+    for w in range(0, generator.LeafWMax()):
+        nproduce [Leaf(time,age,n,b)]
+    produce [/(0)]
+
+Leaf(time,age,n,b):
+    component = generator.parameters["Leaf"]
+    if not component.CheckProduceComponent(time,age,n,b):
+        produce *
+    if (time + age) >= OUTPUT_TIME:
+        produce Leaf(time,age,n,b)
     else:
         if generator.verbose_lpy:
             print(f"Ageing Leaf[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce Leaf(time,age+ageinc,n,b,w)
+        produce Leaf(time,age+ageinc,n,b)
 
-Fruit(time,age,n,b):
-    component = generator.parameters["Fruit"]
-    if not component.CheckProduceComponent(time,age,n,b):
-        produce *
-    if (time + age) >= OUTPUT_TIME:
-        produce Fruit(time,age,n,b)
-    else:
-        if generator.verbose_lpy:
-            print(f"Ageing Fruit[{age},{n}]")
-        ageinc = min(generator.AgeInc(),
-                     OUTPUT_TIME - (time + age))
-        produce Fruit(time,age+ageinc,n,b)
-
-Pedicel(time,age,n,b):
-    component = generator.parameters["Pedicel"]
-    if not component.CheckProduceComponent(time,age,n,b):
-        produce *
-    if (time + age) >= OUTPUT_TIME:
-        produce Pedicel(time,age,n,b)
-    else:
-        if generator.verbose_lpy:
-            print(f"Ageing Pedicel[{age},{n}]")
-        ageinc = min(generator.AgeInc(),
-                     OUTPUT_TIME - (time + age))
-        produce Pedicel(time,age+ageinc,n,b)
-
-Branch(time,age,n,b):
+Branch(time,age,n,b,w):
     component = generator.parameters["Branch"]
-    if not component.CheckProduceComponent(time,age,n,b):
+    if not component.CheckProduceComponent(time,age,n,b,w=w):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce Branch(time,age,n,b)
-    elif component.CheckProduceAge(time,age,n,b):
+        produce Branch(time,age,n,b,w)
+    elif component.CheckProduceAge(time,age,n,b,w=w):
         if generator.verbose_lpy:
             print(f"Ageing Branch[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce Branch(time,age+ageinc,n,b)
+        produce Branch(time,age+ageinc,n,b,w)
+    plastochron = generator.BranchPlastocron()
     time = time + age
-    if age >= PLASTOCHRON:
-        age = age - PLASTOCHRON
+    if age >= plastochron:
+        age = age - plastochron
     if generator.verbose_lpy:
         print(f"Node: {n} (t = {time})")
-    nproduce /(generator.BranchRotationAngle(time,age,n,b))
-    nproduce &(generator.BranchAngle(time,age,n,b))
-    for w in range(0, generator.InternodeWMax()):
-        nproduce Internode(time,age,n,b)
-    nproduce [Node(time,age,n,b)]
+    nproduce /(generator.BranchRotationAngle(time,age,n,b,w=w))
+    nproduce &(generator.BranchAngle(time,age,n,b,w=w))
+    nproduce /(generator.BranchTiltAngle(time,age,n,b,w=w))
+    nproduce Internode(time,age,n,b)
+    nproduce [Node(time,age,n,b,w)]
     if generator.verbose_lpy:
         print(f"Next Branch: {n + 1}")
     for binc in range(0 + 1, generator.BranchBMax()):
-        nproduce [Branch(time,age,n+1,b+binc)]
+        nproduce [Branch(time,age,n+1,b+binc,w)]
     binc = 0
-    produce [Branch(time,age,n+1,b+binc)]
+    produce [Branch(time,age,n+1,b+binc,w)]
 
 homomorphism:
-maximum depth: 3
+maximum depth: 5
 
-Apex(time,age,n,b):
+Apex(time,age,n,b,w):
     produce &(90)@o^(90)
 
 Internode(time,age,n,b):
@@ -205,6 +220,7 @@ Internode(time,age,n,b):
             print(f"Homomorphism Internode[{age},{n}]")
         nproduce /(generator.InternodeRotationAngle(time,age,n,b))
         nproduce &(generator.InternodeAngle(time,age,n,b))
+        nproduce /(generator.InternodeTiltAngle(time,age,n,b))
         nproduce SetColor(generator.InternodeColor(time,age,n,b))
         length = generator.InternodeLength(time,age,n,b)
         nproduce F(0.001 * length)
@@ -220,33 +236,20 @@ Internode(time,age,n,b):
             else:
                 nproduce F(DX)
 
-Cotyledon(time,age,n,b,w):
-    component = generator.parameters["Cotyledon"]
+CotyledonComplex(time,age,n,b,w):
+    component = generator.parameters["CotyledonComplex"]
     with component.temporary_index(time,age,n,b,w=w):
         if not component.CheckProduceComponent(time,age,n,b,w=w):
             produce [/(0)]
         if generator.verbose_lpy:
-            print(f"Homomorphism Cotyledon[{age},{n}]")
-        nproduce /(generator.CotyledonRotationAngle(time,age,n,b,w=w))
-        nproduce &(generator.CotyledonAngle(time,age,n,b,w=w))
-        for w in range(0, generator.PetioleWMax()):
-            nproduce Petiole(time,age,n,b) @Ge @Gc
-        nproduce SetColor(generator.CotyledonColor(time,age,n,b,w=w))
-        nproduce SetContour(generator.CotyledonProfile(time,age,n,b,w=w,x=0))
-        length = generator.CotyledonLength(time,age,n,b,w=w)
-        nproduce F(0.001 * length)
-        xprev = 0.0
-        for x in component.XIterator():
-            DX = length * (x - xprev)
-            xprev = x
-            nproduce _(generator.CotyledonWidth(time,age,n,b,w=w,x=x))
-            nproduce &(generator.CotyledonBend(time,age,n,b,w=w,x=x)*DX)
-            nproduce /(generator.CotyledonTwist(time,age,n,b,w=w,x=x)*DX)
-            nproduce SetContour(generator.CotyledonProfile(time,age,n,b,w=w,x=x))
-            if x == 1:
-                produce F(DX)
-            else:
-                nproduce F(DX)
+            print(f"Homomorphism CotyledonComplex[{age},{n}]")
+        nproduce /(generator.CotyledonComplexRotationAngle(time,age,n,b,w=w))
+        nproduce &(generator.CotyledonComplexAngle(time,age,n,b,w=w))
+        nproduce /(generator.CotyledonComplexTiltAngle(time,age,n,b,w=w))
+        nproduce Petiole(time,age,n,b)
+        for w in range(0, generator.CotyledonWMax()):
+            nproduce [Cotyledon(time,age,n,b)]
+        produce &(90)@o^(90)
 
 Petiole(time,age,n,b):
     component = generator.parameters["Petiole"]
@@ -255,7 +258,6 @@ Petiole(time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Petiole[{age},{n}]")
-        nproduce SetColor(generator.PetioleColor(time,age,n,b))
         length = generator.PetioleLength(time,age,n,b)
         nproduce F(0.001 * length)
         xprev = 0.0
@@ -270,73 +272,76 @@ Petiole(time,age,n,b):
             else:
                 nproduce F(DX)
 
-Leaf(time,age,n,b,w):
-    component = generator.parameters["Leaf"]
+Cotyledon(time,age,n,b):
+    component = generator.parameters["Cotyledon"]
+    with component.temporary_index(time,age,n,b):
+        if not component.CheckProduceComponent(time,age,n,b):
+            produce [/(0)]
+        if generator.verbose_lpy:
+            print(f"Homomorphism Cotyledon[{age},{n}]")
+        nproduce /(generator.CotyledonRotationAngle(time,age,n,b))
+        nproduce &(generator.CotyledonAngle(time,age,n,b))
+        nproduce /(generator.CotyledonTiltAngle(time,age,n,b))
+        nproduce SetColor(generator.CotyledonColor(time,age,n,b))
+        nproduce SetContour(generator.CotyledonProfile(time,age,n,b,x=0))
+        length = generator.CotyledonLength(time,age,n,b)
+        nproduce F(0.001 * length)
+        xprev = 0.0
+        for x in component.XIterator():
+            DX = length * (x - xprev)
+            xprev = x
+            nproduce _(generator.CotyledonWidth(time,age,n,b,x=x))
+            nproduce &(generator.CotyledonBend(time,age,n,b,x=x)*DX)
+            nproduce /(generator.CotyledonTwist(time,age,n,b,x=x)*DX)
+            nproduce SetContour(generator.CotyledonProfile(time,age,n,b,x=x))
+            if x == 1:
+                produce F(DX)
+            else:
+                nproduce F(DX)
+
+LeafComplex(time,age,n,b,w):
+    component = generator.parameters["LeafComplex"]
     with component.temporary_index(time,age,n,b,w=w):
         if not component.CheckProduceComponent(time,age,n,b,w=w):
             produce [/(0)]
         if generator.verbose_lpy:
+            print(f"Homomorphism LeafComplex[{age},{n}]")
+        nproduce /(generator.LeafComplexRotationAngle(time,age,n,b,w=w))
+        nproduce &(generator.LeafComplexAngle(time,age,n,b,w=w))
+        nproduce /(generator.LeafComplexTiltAngle(time,age,n,b,w=w))
+        nproduce Petiole(time,age,n,b)
+        for w in range(0, generator.LeafWMax()):
+            nproduce [Leaf(time,age,n,b)]
+        produce &(90)@o^(90)
+
+Leaf(time,age,n,b):
+    component = generator.parameters["Leaf"]
+    with component.temporary_index(time,age,n,b):
+        if not component.CheckProduceComponent(time,age,n,b):
+            produce [/(0)]
+        if generator.verbose_lpy:
             print(f"Homomorphism Leaf[{age},{n}]")
-        nproduce /(generator.LeafRotationAngle(time,age,n,b,w=w))
-        nproduce &(generator.LeafAngle(time,age,n,b,w=w))
-        for w in range(0, generator.PetioleWMax()):
-            nproduce Petiole(time,age,n,b) @Ge @Gc
-        nproduce SetColor(generator.LeafColor(time,age,n,b,w=w))
-        nproduce SetContour(generator.LeafProfile(time,age,n,b,w=w,x=0))
-        length = generator.LeafLength(time,age,n,b,w=w)
+        nproduce /(generator.LeafRotationAngle(time,age,n,b))
+        nproduce &(generator.LeafAngle(time,age,n,b))
+        nproduce /(generator.LeafTiltAngle(time,age,n,b))
+        nproduce SetColor(generator.LeafColor(time,age,n,b))
+        nproduce SetContour(generator.LeafProfile(time,age,n,b,x=0))
+        length = generator.LeafLength(time,age,n,b)
         nproduce F(0.001 * length)
         xprev = 0.0
         for x in component.XIterator():
             DX = length * (x - xprev)
             xprev = x
-            nproduce _(generator.LeafWidth(time,age,n,b,w=w,x=x))
-            nproduce &(generator.LeafBend(time,age,n,b,w=w,x=x)*DX)
-            nproduce /(generator.LeafTwist(time,age,n,b,w=w,x=x)*DX)
-            nproduce SetContour(generator.LeafProfile(time,age,n,b,w=w,x=x))
+            nproduce _(generator.LeafWidth(time,age,n,b,x=x))
+            nproduce &(generator.LeafBend(time,age,n,b,x=x)*DX)
+            nproduce /(generator.LeafTwist(time,age,n,b,x=x)*DX)
+            nproduce SetContour(generator.LeafProfile(time,age,n,b,x=x))
             if x == 1:
                 produce F(DX)
             else:
                 nproduce F(DX)
 
-Fruit(time,age,n,b):
-    component = generator.parameters["Fruit"]
-    with component.temporary_index(time,age,n,b):
-        if not component.CheckProduceComponent(time,age,n,b):
-            produce [/(0)]
-        if generator.verbose_lpy:
-            print(f"Homomorphism Fruit[{age},{n}]")
-        nproduce /(generator.FruitRotationAngle(time,age,n,b))
-        nproduce &(generator.FruitAngle(time,age,n,b))
-        for w in range(0, generator.PedicelWMax()):
-            nproduce Pedicel(time,age,n,b)
-        nproduce SetColor(generator.FruitColor(time,age,n,b))
-        length = generator.FruitLength(time,age,n,b)
-        nproduce F(length)
-        produce @O(length)
-
-Pedicel(time,age,n,b):
-    component = generator.parameters["Pedicel"]
-    with component.temporary_index(time,age,n,b):
-        if not component.CheckProduceComponent(time,age,n,b):
-            produce [/(0)]
-        if generator.verbose_lpy:
-            print(f"Homomorphism Pedicel[{age},{n}]")
-        nproduce SetColor(generator.PedicelColor(time,age,n,b))
-        length = generator.PedicelLength(time,age,n,b)
-        nproduce F(0.001 * length)
-        xprev = 0.0
-        for x in component.XIterator():
-            DX = length * (x - xprev)
-            xprev = x
-            nproduce _(generator.PedicelWidth(time,age,n,b,x=x))
-            nproduce &(generator.PedicelBend(time,age,n,b,x=x)*DX)
-            nproduce /(generator.PedicelTwist(time,age,n,b,x=x)*DX)
-            if x == 1:
-                produce F(DX)
-            else:
-                nproduce F(DX)
-
-Branch(time,age,n,b):
+Branch(time,age,n,b,w):
     produce &(90)@o^(90)
 
 interpretation:

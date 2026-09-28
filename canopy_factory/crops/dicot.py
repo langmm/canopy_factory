@@ -16,21 +16,25 @@ class DicotGenerator(PlantGenerator):
     )
     _aliases = dict(
         PlantGenerator._aliases,
-        LeavesPerNode='LeafWMax',
+        LeavesPerNode='LeafComplexWMax',
     )
     _defaults = dict(
         PlantGenerator._defaults,
-        NMax=10,
+        NMax=3,
         BMax=2,
-        NodeSubcomponents=['Cotyledon', 'Leaf', 'Fruit'],
         ApexSubcomponents=['Internode', 'Node', 'Branch'],
+        NodeSubcomponents=[
+            # Fruit disabled for default dicot for testing
+            'CotyledonComplex', 'LeafComplex',  # 'FruitingComplex',
+        ],
         # Petiole parameters
         PetioleLength=0.5,
         PetioleWidth=0.125,
+        # LeafComplex
+        LeafComplexNPeriod=2,
+        LeafComplexWMax=5,
+        LeafComplexAngle=70,
         # Leaf parameters
-        LeafNFirst=1,
-        LeafNPeriod=2,
-        LeafWMax=5,
         LeafMethod='sweep',
         LeafLength=5.0,
         LeafLengthRelStdDev=0.01,
@@ -42,18 +46,10 @@ class DicotGenerator(PlantGenerator):
             0.1, 0.30, 0.42, 0.73, 0.88, 1.0, 0.91, 0.76, 0.55, 0,
         ]),
         LeafThickness=0.01,  # relative to leaf width
-        LeafAngle=70,
-        LeafRotationAngle=360,
-        LeafRotationAngleWFunc='linear',
-        LeafRotationAngleWFuncSlope=1,
-        LeafRotationAngleWFuncIntercept=0.0,
         LeafBend=1.0,
         LeafBendRelStdDev=0.1,
         LeafBendXFuncMethod='LeafBendX',
         # Cotyledon parameters
-        CotyledonNFirst=0,
-        CotyledonNLast=0,
-        CotyledonWMax=2,
         CotyledonMethod='sweep',
         CotyledonLength=1.75,
         CotyledonLengthRelStdDev=0.01,
@@ -65,11 +61,6 @@ class DicotGenerator(PlantGenerator):
             0.10, 0.55, 0.76, 0.91, 1.0, 0.91, 0.76, 0.55, 0.10, 0,
         ]),
         CotyledonThickness=0.02,  # relative to leaf width
-        CotyledonAngle=90,
-        CotyledonRotationAngle=360,
-        CotyledonRotationAngleWFunc='linear',
-        CotyledonRotationAngleWFuncSlope=1,
-        CotyledonRotationAngleWFuncIntercept=0.0,
         # Internode parameters
         InternodeLength=5.0,
         InternodeWidth=0.3,

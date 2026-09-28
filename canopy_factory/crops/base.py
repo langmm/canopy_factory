@@ -266,6 +266,13 @@ class ParameterValues(DictSet):
         r"""DictWrapper: Destination dictionary for added keys."""
         return self.simple
 
+    @cached_property
+    def nested_order(self):
+        r"""list: Order that nested parameters should be compared
+        against parameter names to check for prefix."""
+        return list(reversed(sorted(self.nested.values(),
+                                    key=lambda x: len(x.prefix))))
+
     def clear(self):
         r"""Clear the set parameters."""
         self.simple.clear()
@@ -297,23 +304,24 @@ class ParameterValues(DictSet):
             self[k] = value
             return
         except KeyError:
-            if k in self.instance.component_parameters:
-                try:
-                    self.instance.component.set(k, value)
-                    return
-                except KeyError:
-                    pass
-            if k in self.instance.external_parameters:
-                if k in self.instance.component.parameters:
-                    src = self.instance.component
-                else:
-                    src = self.instance.root
+            src_order = []
+            kisext = (k in self.instance.external_parameters)
+            if ((k in self.instance.component_parameters
+                 or (kisext and k in self.instance.component.parameters))):
+                src_order.append(self.instance.component)
+            if ((k in self.instance.cluster_component_parameters
+                 or (kisext and self.instance.cluster_component
+                     and k in self.instance.cluster_component.parameters))):
+                src_order.append(self.instance.cluster_component)
+            if kisext:
+                src_order.append(self.instance.root)
+            for src in src_order:
                 try:
                     src.set(k, value)
                     return
                 except KeyError:
                     pass
-            for kk, vv in self.nested.items():
+            for vv in self.nested_order:
                 if vv.prefixes(k):
                     vv.set(k, value)
                     return
@@ -366,31 +374,36 @@ class ParameterValues(DictSet):
                 if return_container:
                     v = self.instance
         except KeyError:
-            if v is NoDefault and k in self.instance.component_parameters:
+            src_order = []
+            kisext = (k in self.instance.external_parameters)
+            if ((k in self.instance.component_parameters
+                 or (kisext and k in self.instance.component.parameters))):
+                src_order.append(self.instance.component)
+            if ((k in self.instance.cluster_component_parameters
+                 or (kisext and self.instance.cluster_component
+                     and k in self.instance.cluster_component.parameters))):
+                src_order.append(self.instance.cluster_component)
+            if kisext and not src_order:
+                src_order.append(self.instance.root)
+            for src in src_order:
+                if v is not NoDefault:
+                    break
                 try:
-                    v = self.instance.component.get(
+                    v = src.get(
                         k, return_other=return_other,
                         return_container=return_container,
                         **kwargs
                     )
                 except KeyError:
                     pass
-            if v is NoDefault and k in self.instance.external_parameters:
-                if k in self.instance.component.parameters:
-                    src = self.instance.component
-                else:
-                    src = self.instance.root
-                try:
-                    v = src.get(k, return_other='instance',
-                                return_container=return_container)
-                except KeyError:
-                    pass
             if v is NoDefault:
-                for kk, vv in self.nested.items():
+                for vv in self.nested_order:
                     if vv.prefixes(k):
                         v = vv.get(
-                            vv.remove_prefix(k), return_other='instance',
-                            return_container=return_container)
+                            vv.remove_prefix(k),
+                            return_other='instance',
+                            return_container=return_container,
+                        )
                         break
             if v is NoDefault:
                 if default is NoDefault:
@@ -704,7 +717,7 @@ class ParameterIndex(SimpleWrapper):
     """
 
     universal_param = ['Time', 'Age', 'N', 'B']
-    parameter_names = ['Time', 'Age', 'N', 'B', 'X', 'W']
+    parameter_names = ['Time', 'Age', 'N', 'B', 'X', 'W', 'Np', 'Bp']
     parameter_names_units = {
         'Time': 'time',
         'Age': 'time',
@@ -858,6 +871,7 @@ class SimplePlantParameter(PlantParameterBase):
     _subschema_keys = ['oneOf', 'allOf']
     _external_properties = []
     _component_properties = []
+    _cluster_component_properties = []
     _index_properties = []
 
     def __init__(self, name, param, parent, required=False):
@@ -1053,6 +1067,7 @@ class SimplePlantParameter(PlantParameterBase):
             'property_dependencies',
             'property_dependencies_defaults',
             'component_properties',
+            'cluster_component_properties',
             'external_properties',
             'index_properties',
         ]
@@ -1154,6 +1169,48 @@ class SimplePlantParameter(PlantParameterBase):
         if self.parent is not None:
             out = f'{self.parent.fullname}{out}'
         return out
+
+    @property
+    def cluster_component(self):
+        r"""str: Top level component that this property belongs to."""
+        if not self.component:
+            return None
+        return self.component.cluster_component
+
+    @property
+    def next_stage_component(self):
+        r"""ComponentBase: Next stage component."""
+        return None
+
+    @property
+    def max_age_mature(self):
+        r"""units.Quantity: The age for the component and its
+        subcomponents to mature."""
+        out = self.parameters['AgeMature']
+        if self.subcomponents:
+            out = max(out, max(self.root.parameters[k].max_age_mature
+                               for k in self.subcomponents
+                               if k != self.name))
+        if self.next_stage_component:
+            out += self.next_stage_component.max_age_mature
+        return out
+
+    @property
+    def max_depth(self):
+        r"""int: Maximum number of subcomponent layers."""
+        out = 1
+        if self.subcomponents:
+            out += max(self.root.parameters[k].max_depth
+                       for k in self.subcomponents
+                       if k != self.name)
+        if self.next_stage_component:
+            out += self.next_stage_component.max_depth
+        return out
+
+    @property
+    def subcomponents(self):
+        r"""list: Subcomponents produced by this component."""
+        return []
 
     @property
     def component(self):
@@ -1313,23 +1370,34 @@ class SimplePlantParameter(PlantParameterBase):
             args_opt = [k.lower() for k in self.dependencies_index
                         if k.lower() not in args + ['x']]
             values = {k: k for k in args + args_opt}
-            for kinc, v in kwargs.items():
-                assert kinc.endswith(('inc', 'reset'))
-                if kinc.endswith('inc'):
-                    k = kinc.rsplit('inc', maxsplit=1)[0]
-                    if v is True:
-                        values[k] += ('+ageinc' if k == 'age' else '+1')
-                    elif isinstance(v, (str, int)):
-                        values[k] += f'+{v}'
-                elif kinc.endswith('reset'):
-                    k = kinc.rsplit('reset', maxsplit=1)[0]
-                    if v is True:
-                        if k == 'b':
-                            values[k] = '1'
-                        else:
-                            values[k] = '0'
-                    elif isinstance(v, (str, int)):
-                        values[k] = f'{v}'
+            for k in args + args_opt:
+                if f'{k}reset' not in kwargs:
+                    continue
+                v = kwargs.pop(f'{k}reset')
+                if v is True:
+                    if k == 'b':
+                        values[k] = '1'
+                    else:
+                        values[k] = '0'
+                elif isinstance(v, (str, int)):
+                    values[k] = f'{v}'
+            for k in args + args_opt:
+                if f'{k}shift' not in kwargs:
+                    continue
+                v = kwargs.pop(f'{k}shift')
+                if v is True:
+                    v = 1
+                vprev = values[k]
+                values[k] = f'({vprev} << {v})'
+            for k in args + args_opt:
+                if f'{k}inc' not in kwargs:
+                    continue
+                v = kwargs.pop(f'{k}inc')
+                if v is True:
+                    values[k] += ('+ageinc' if k == 'age' else '+1')
+                elif isinstance(v, (str, int)):
+                    values[k] += f'+{v}'
+            assert not kwargs
             out = [values[k] for k in args]
             if for_rule:
                 out += [values[k] for k in args_opt]
@@ -1404,12 +1472,26 @@ class SimplePlantParameter(PlantParameterBase):
         r"""iterable: Child parameter instances."""
         for v in self.parameters.nested.values():
             yield v
+        for k in self.subcomponents:
+            if k == self.name:
+                continue
+            yield self.root.parameters[k]
+        if self.next_stage_component:
+            yield self.next_stage_component
 
     @cached_property
     def component_parameters(self):
         r"""list: Set of variables that this parameter uses from the
         parent component."""
         return copy.deepcopy(self._component_properties)
+
+    @cached_property
+    def cluster_component_parameters(self):
+        r"""list: Set of variables that this parameter uses from the
+        parent cluster component."""
+        if not self.cluster_component:
+            return []
+        return copy.deepcopy(self._cluster_component_properties)
 
     @cached_property
     def variable_parameters(self):
@@ -1435,8 +1517,16 @@ class SimplePlantParameter(PlantParameterBase):
             v = self.get(k, return_other='instance')
             if isinstance(v, PlantParameterBase):
                 out += v.index_parameters
-        for child in self.children:
+        for child in self.parameters.nested.values():
             out += child.index_parameters
+        for k in self.subcomponents:
+            if k == self.name:
+                continue
+            child = self.root.parameters[k]
+            out += [x for x in child.index_parameters
+                    if x != child._whorl_var]
+        if self.next_stage_component:
+            out += self.next_stage_component.index_parameters
         return list(set(out))
 
     @cached_property
@@ -1450,6 +1540,11 @@ class SimplePlantParameter(PlantParameterBase):
             f'{self.component_name}{k}'
             for k in self.component_parameters
         ]
+        if self.cluster_component:
+            out += [
+                f'{self.cluster_component.name}{k}'
+                for k in self.cluster_component_parameters
+            ]
         return list(set(out))
 
     @cached_property
@@ -1460,7 +1555,7 @@ class SimplePlantParameter(PlantParameterBase):
             v = self.get(k, return_other='instance')
             if isinstance(v, PlantParameterBase):
                 out += v.dependencies
-        for child in self.children:
+        for child in self.parameters.nested.values():
             out += child.dependencies
         return list(set(out))
 
@@ -2956,6 +3051,18 @@ class ScalarPlantParameter(SimplePlantParameter):
             _help=('Dependence of {parents[0]} on the {component} '
                    'branch level'),
         ),
+        'NpFunc': FunctionPlantParameter.specialize_var(
+            'Np', normvar='NpMax',
+            cluster_component_properties=['NpMax'],
+            _help=('Dependence of {parents[0]} on the {component} '
+                   'phytomer number'),
+        ),
+        'BpFunc': FunctionPlantParameter.specialize_var(
+            'Bp', normvar='BpMax',
+            cluster_component_properties=['BpMax'],
+            _help=('Dependence of {parents[0]} on the {component} '
+                   'branch level'),
+        ),
         'MassFunc': FunctionPlantParameter.specialize(
             'mass_func',
             _help='Dependence of {parents[0]} on the {component} mass',
@@ -2969,13 +3076,13 @@ class ScalarPlantParameter(SimplePlantParameter):
     _required = ['']
     _modifiers = [
         'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc', 'BFunc',
-        'MassFunc',
+        'MassFunc', 'NpFunc', 'BpFunc',
     ]
     _property_dependencies = dict(
         SimplePlantParameter._property_dependencies,
         **{k: {'': True} for k in [
             'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc', 'WFunc',
-            'BFunc', 'MassFunc',
+            'BFunc', 'MassFunc', 'NpFunc', 'BpFunc',
         ]}
     )
     _property_dependencies_defaults = dict(
@@ -2987,6 +3094,7 @@ class ScalarPlantParameter(SimplePlantParameter):
                     k: True for k in [
                         'Dist', 'Func', 'XFunc', 'NFunc', 'AgeFunc',
                         'WFunc', 'BFunc', 'MassFunc',
+                        'NpFunc', 'BpFunc',
                     ]
                 },
             },
@@ -3644,6 +3752,9 @@ class ComponentBase(SimplePlantParameter):
     _name_plural = None
     _help = None
     _whorl_var = 'w'
+    _inherited_properties = []
+    _cluster_component = None
+    _subcomponent_section = None
     _properties = dict(
         ParameterCollection._properties,
         WMax={
@@ -3686,12 +3797,20 @@ class ComponentBase(SimplePlantParameter):
             _defaults={'': 0},
             _unit_dimension='angle',
         ),
-        PreviousStages={
-            'type': 'array',
-            'items': {
-                'type': 'string',
-            },
-            'description': 'Component(s) that comprise each stage.',
+        TiltAngle=ScalarPlantParameter.specialize(
+            'polar_angle',
+            _help=(
+                '{Component} rotation angle around forward axis after '
+                'RotationAngle and Angle applied'
+            ),
+            _defaults={'': 0},
+            _unit_dimension='angle',
+        ),
+        NextStage={
+            'type': 'string',
+            'description': (
+                'Component that replaces this one after it matures'
+            ),
         },
         Subcomponents={
             'type': 'array',
@@ -3722,13 +3841,89 @@ class ComponentBase(SimplePlantParameter):
         SimplePlantParameter._on_registration(cls)
 
     @classmethod
-    def _add_to_plant(cls, plant_cls):
-        pass
+    def _add_to_plant(cls, plant_cls, name=None, parent=None,
+                      cluster_component=None,
+                      inherited_properties=None, kws=None,
+                      subcomponent_kws=None):
+        if name is None:
+            name = cls._name
+        if name in plant_cls._components:
+            return
+        plant_cls._components.append(name)
+        if kws is None:
+            kws = {}
+        if subcomponent_kws is None:
+            subcomponent_kws = {}
+        if inherited_properties is None:
+            inherited_properties = []
+        if cluster_component is not None:
+            kws['_cluster_component'] = cluster_component
+        classes = [plant_cls]
+        if parent is not None:
+            classes.insert(0, parent)
+        for icls in classes:
+            inherited_properties += icls._inherited_properties
+            for k in ['Subcomponents', 'NextStage', 'AgeMature']:
+                if f'{name}{k}' in icls._defaults:
+                    kws.setdefault('defaults', {})
+                    kws['defaults'][k] = icls._defaults[f'{name}{k}']
+            for k in inherited_properties:
+                if k not in icls._properties:
+                    continue
+                if k not in cls._properties:
+                    kws.setdefault('properties', {})
+                    kws['properties'].setdefault(
+                        k, copy.deepcopy(icls._properties[k]))
+                kws.setdefault('external_properties', [])
+                if k not in kws['external_properties']:
+                    kws['external_properties'].append(k)
+        out = (
+            cls.specialize(f'{name}_{plant_cls._name}', **kws)
+            if kws else cls
+        )
+        plant_cls._properties[name] = out
+        if name not in plant_cls._required:
+            plant_cls._required.append(name)
+        for k in out._defaults.get('Subcomponents', []):
+            if k in plant_cls._components:
+                continue
+            kcls = get_class_registry().get('plant_component', k)
+            kcls._add_to_plant(
+                plant_cls, k, parent=out,
+                cluster_component=cluster_component,
+                inherited_properties=inherited_properties,
+                kws=copy.deepcopy(subcomponent_kws),
+                subcomponent_kws=subcomponent_kws,
+            )
+        if 'NextStage' in out._defaults:
+            kcls = get_class_registry().get(
+                'plant_component', out._defaults['NextStage'])
+            kcls._add_to_plant(
+                plant_cls, out._defaults['NextStage'], parent=parent,
+                cluster_component=cluster_component,
+                inherited_properties=inherited_properties,
+                subcomponent_kws=subcomponent_kws,
+            )
+        return out
+
+    @property
+    def cluster_component(self):
+        r"""str: Top level component that this property belongs to."""
+        if self._cluster_component is None:
+            return None
+        return self.root.parameters[self._cluster_component]
 
     @property
     def component(self):
         r"""str: Component that this property belongs to."""
         return self
+
+    @cached_property
+    def next_stage_component(self):
+        r"""ComponentBase: Next stage component."""
+        if 'NextStage' not in self.parameters:
+            return None
+        return self.root.parameters[self.parameters['NextStage']]
 
     @cached_property
     def subcomponents(self):
@@ -3751,12 +3946,6 @@ class ComponentBase(SimplePlantParameter):
                  or (((x - xmin) % xperiod) != 0))):
                 return False
         # age = idx["Age"]
-        # if "PreviousStages" in self.parameters:
-        #     for k in self.parameters["PreviousStages"]:
-        #         age_mature = self.get(f"{k}AgeMature", None)
-        #         if age_mature is None:
-        #             continue
-        #         age = max(0, age - age_mature)
         # if age >= self.get("AgeRemove"):
         #     if self.verbose_lpy:
         #         print(f"Removing {self.name}[{idx}]")
@@ -3799,25 +3988,6 @@ class ComponentBase(SimplePlantParameter):
         ]
         return out
 
-    def produce_stage(self, name, for_rule=False):
-        if for_rule:
-            return []
-        if name not in self.root.parameters:
-            return []
-        subcomponent = self.root.parameters[name]
-        if 'AgeMature' not in subcomponent.parameters:
-            return []
-        args = subcomponent.lsystem_args()
-        args_next = subcomponent.lsystem_args(for_rule=True)
-        out = [
-            f'age_mature_{name} = generator.{name}AgeMature({args})',
-            f'if age < age_mature_{name}:',
-            f'    produce {name}({args_next})',
-            'else:',
-            f'    age = age - age_mature_{name}',
-        ]
-        return out
-
     def produce_subcomponent(self, name, for_rule=False,
                              disconnect=False, dont_isolate=False,
                              whorl_var=None, whorl_min=0, whorl_max=None,
@@ -3851,8 +4021,6 @@ class ComponentBase(SimplePlantParameter):
         subcomponent = self.root.parameters[name]
         if whorl_var is None:
             whorl_var = subcomponent._whorl_var
-        if whorl_var not in ['w', 'W']:
-            kwargs.setdefault('wreset', 0)
         wvar = None if whorl_var is None else whorl_var.lower()
         if increment:
             assert wvar is not None
@@ -3863,10 +4031,10 @@ class ComponentBase(SimplePlantParameter):
                 kwargs[wvar] = wvar
         args = subcomponent.lsystem_args(for_rule=True, **kwargs)
         out = f"{subcomponent.name}({args})"
-        if disconnect:
-            out = f"{out} @Ge @Gc"
         if not dont_isolate:
             out = f"[{out}]"
+        if disconnect:
+            out = f"{out} @Ge @Gc"
         if whorl_var is None:
             return [f'nproduce {out}']
         # whorl_min = f'generator.{name}{wvar.title()}Min()'
@@ -3905,6 +4073,10 @@ class ComponentBase(SimplePlantParameter):
             list: Lsystem lines to add the subcomponents.
 
         """
+        section = ('production' if for_rule else 'homomorphism')
+        if ((self._subcomponent_section
+             and section != self._subcomponent_section)):
+            return []
         if dont_complete:
             kwargs["produce_first"] = False
         prefix = f'generator.{self.name}'
@@ -3917,6 +4089,10 @@ class ComponentBase(SimplePlantParameter):
         if 'Angle' in self.parameters:
             out += [
                 f'nproduce &({prefix}Angle({args}))',
+            ]
+        if 'TiltAngle' in self.parameters:
+            out += [
+                f'nproduce /({prefix}TiltAngle({args}))',
             ]
         if not self.subcomponents:
             return out
@@ -3938,7 +4114,7 @@ class ComponentBase(SimplePlantParameter):
             list: Lsystem lines to remove the component.
 
         """
-        args = self.lsystem_args(for_rule=for_rule)
+        args = self.lsystem_args(for_rule=False)
         out = [
             f'if not component.CheckProduceComponent({args}):'
         ]
@@ -3950,6 +4126,44 @@ class ComponentBase(SimplePlantParameter):
             out += [
                 '    produce [/(0)]',
             ]
+        return out
+
+    def produce_next_stage(self, for_rule=False):
+        r"""Get the Lsystem lines to produce the next stage if the
+        component is mature.
+
+        Args:
+            for_rule (bool, optional): If True, format for a rule.
+
+        Returns:
+            list: Lsystem lines to produce the next stage.
+
+        """
+        if not self.next_stage_component:
+            return []
+        section = ('production' if for_rule else 'homomorphism')
+        if ((self._subcomponent_section
+             and section != self._subcomponent_section)):
+            return []
+        stage_name = self.parameters['NextStage']
+        assert stage_name in self.root.parameters
+        next_stage = self.next_stage_component
+        args = self.lsystem_args()
+        args_next = next_stage.lsystem_args(for_rule=True)
+        out_next = [
+            'if generator.verbose_lpy:',
+            f'    print(f"Replacing '
+            f'{self.name}[{{age + age_mature}},{{n}}] '
+            f'with {stage_name}[{{age}},{{n}}]")',
+            f'produce {next_stage.name}({args_next})',
+        ]
+        out = [
+            f'age_mature = generator.{self.name}AgeMature({args})',
+            'if age >= age_mature:',
+            '    time = time + age_mature',
+            '    age = age - age_mature',
+        ]
+        out += ['    ' + x for x in out_next]
         return out
 
     def production_check_age(self, for_rule=False):
@@ -3972,8 +4186,9 @@ class ComponentBase(SimplePlantParameter):
             f'    produce {self.name}({args})',
         ]
         if self.hasmethod("CheckProduceAge"):
+            args_keys = self.lsystem_args(for_rule=False)
             out += [
-                f'elif component.CheckProduceAge({args}):'
+                f'elif component.CheckProduceAge({args_keys}):'
             ]
         else:
             out += ["else:"]
@@ -3984,6 +4199,7 @@ class ComponentBase(SimplePlantParameter):
     def production(self):
         r"""list: Lsystem production rule lines."""
         out = self.production_check_remove(for_rule=True)
+        out += self.produce_next_stage(for_rule=True)
         out += self.production_check_age(for_rule=True)
         out += self.produce_subcomponents(for_rule=True)
         if out:
@@ -4004,6 +4220,7 @@ class ComponentBase(SimplePlantParameter):
             'if generator.verbose_lpy:',
             f'    print(f"Homomorphism {self.name}[{{age}},{{n}}]")',
         ]
+        out += self.produce_next_stage()
         # out += self.production_check_age()
         out += self.produce_subcomponents(dont_complete=True)
         out += out_produce
@@ -4012,13 +4229,26 @@ class ComponentBase(SimplePlantParameter):
                 f'component = generator.parameters[\"{self.name}\"]',
                 f'with component.temporary_index({args}):'
             ] + ['    ' + x for x in out]
-        if "PreviousStages" in self.parameters:
-            out_last = out
-            out = []
-            for k in self.parameters["PreviousStages"]:
-                out += self.produce_stage(k)
-            out += out_last
         return out
+
+
+class ComplexComponentBase(ComponentBase):
+
+    _required = ['Subcomponents']
+    _subcomponent_section = 'homomorphism'
+
+    @classmethod
+    def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        # This prevents any subcomponents from being generated until
+        # the geometry is produced. Aging will be handled at the complex
+        # level but the subcomponents will not be produced until the
+        # homomorphism is evaluated.
+        if cls._subcomponent_section == 'homomorphism':
+            kwargs['subcomponent_kws'] = dict(
+                kwargs.get('subcomponent_kws', {}),
+                _subcomponent_section='homomorphism',
+            )
+        return super()._add_to_plant(plant_cls, name, **kwargs)
 
 
 class GeometricComponentBase(ComponentBase, OptionPlantParameter):
@@ -4298,7 +4528,6 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         if for_rule:
             # Delay subcomponents until geometry is generated
             return []
-        kwargs.setdefault("dont_isolate", True)
         if 'Profile' in self.parameters:
             kwargs.setdefault("disconnect", True)
         return super().produce_subcomponents(for_rule=for_rule, **kwargs)
@@ -4385,89 +4614,59 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
         return out
 
 
-class PetioleComponent(GeometricComponentBase):
-    r"""Petiole component."""
+class StemComponent(GeometricComponentBase):
+    r"""Simple stem component."""
 
-    _name = 'Petiole'
+    _name = 'Stem'
+    _whorl_var = None
     _properties = {
         k: v for k, v in GeometricComponentBase._properties.items()
-        if k not in ['Angle', 'RotationAngle']
+        if k not in ['Angle', 'RotationAngle', 'TiltAngle', 'Color']
     }
     _defaults = dict(
-        GeometricComponentBase._defaults,
+        {
+            k: v for k, v in GeometricComponentBase._defaults.items()
+            if not k.startswith((
+                    'Angle', 'RotationAngle', 'TiltAngle', 'Color'
+            ))
+        },
         Method='cylinder',
     )
 
+    @classmethod
+    def _add_to_plant(cls, plant_cls, name=None, kws=None, **kwargs):
+        if name is None:
+            name = cls._name
+        if name in plant_cls._components:
+            return
+        if kws is None:
+            kws = {}
+        defaults = kws.get('defaults', {})
+        for k, v in plant_cls._defaults.items():
+            if not k.startswith('InternodeWidth'):
+                continue
+            klocal = k.replace('Internode', name)
+            if klocal in plant_cls._defaults:
+                continue
+            defaults[k.replace('Internode', '')] = v
+        if defaults:
+            kws['defaults'] = defaults
+        return super()._add_to_plant(plant_cls, name,
+                                     kws=kws, **kwargs)
 
-class StagedComponent(ComponentBase):
 
-    _name = "Staged"
-    _properties = {
-        'Stages': {
-            'type': 'array',
-            'items': {
-                'type': 'string',
-            },
-            'description': 'Component(s) that comprise each stage.',
-        },
-    }
-    _required = ['Stages']
+class PetioleComponent(StemComponent):
+    r"""Petiole component."""
 
-    @cached_property
-    def subcomponents(self):
-        r"""list: Subcomponents produced by this component."""
-        out = self.get('Stages')
-        for k in out:
-            assert k in self.root.parameters
-        return out
-
-    def produce_subcomponents(self, for_rule=False, **kwargs):
-        r"""Get the Lsystem lines to add subcomponents.
-
-        Args:
-            for_rule (bool, optional): If True, format for a rule.
-            \*\*kwargs: Additional keyword arguments are passed to
-                produce_subcomponent for each subcomponent.
-
-        Returns:
-            list: Lsystem lines to add the subcomponents.
-
-        """
-        if for_rule:
-            return []
-        return super().produce_subcomponents(for_rule=for_rule, **kwargs)
-
-    @property
-    def production(self):
-        r"""list: Lsystem production rule lines."""
-        return self.produce_subcomponents(for_rule=True)
-
-    @property
-    def homomorphism(self):
-        r"""list: Lsystem homomorphism rule lines."""
-        return self.produce_subcomponents()
+    _name = 'Petiole'
+    _name_plural = 'Petioles'
 
 
 class WhorlComponent(ComponentBase):
 
     _name = 'Whorl'
     _required = ['Subcomponents']
-
-    def produce_subcomponents(self, for_rule=False, **kwargs):
-        r"""Get the Lsystem lines to add subcomponents.
-
-        Args:
-            for_rule (bool, optional): If True, format for a rule.
-            \*\*kwargs: Additional keyword arguments are passed to
-                produce_subcomponent for each subcomponent.
-
-        Returns:
-            list: Lsystem lines to add the subcomponents.
-
-        """
-        if not for_rule:
-            return []
-        return super().produce_subcomponents(for_rule=for_rule, **kwargs)
+    _subcomponent_section = 'production'
 
     @property
     def production(self):
@@ -4484,7 +4683,11 @@ class NodeComponent(WhorlComponent):
     r"""Node component."""
 
     _name = 'Node'
-    _defaults = {'Subcomponents': ['Cotyledon', 'Leaf', 'Fruit']}
+    _defaults = {
+        'Subcomponents': [
+            'CotyledonComplex', 'LeafComplex', 'FruitingComplex',
+        ],
+    }
     _whorl_var = None
 
 
@@ -4519,8 +4722,6 @@ class LeafComponent(GeometricComponentBase):
     )
     _defaults = dict(
         GeometricComponentBase._defaults,
-        NFirst=1,  # After cotyledons
-        Subcomponents=['Petiole'],
         ProfileClosed=False,
         ProfileSymmetry=[0],
         ProfileReverse=True,
@@ -4534,16 +4735,59 @@ class LeafComponent(GeometricComponentBase):
     )
 
 
+class LeafComplex(ComponentBase):
+
+    _name = 'LeafComplex'
+    _name_plural = 'LeafComplexes'
+    _defaults = dict(
+        ComponentBase._defaults,
+        Subcomponents=['Petiole', 'Leaf'],
+        NFirst=1,  # After cotyledons
+        Angle=70,
+        RotationAngle=360,
+        RotationAngleWFunc='linear',
+        RotationAngleWFuncSlope=1,
+        RotationAngleWFuncIntercept=0.0,
+    )
+
+    def produce_subcomponent(self, name, for_rule=False, **kwargs):
+        r"""Get the Lsystem lines to produce a subcomponent.
+
+        Args:
+            name (str): Subcomponent name.
+            for_rule (bool, optional): If True, format for a rule.
+            \*\*kwargs: Additional keyword arguments are passed to
+                lsystem_args for the subcomponent.
+
+        Returns:
+            list: Lsystem lines to produce the subcomponent.
+
+        """
+        if name.endswith('Petiole'):
+            kwargs.setdefault('dont_isolate', True)
+        return super().produce_subcomponent(name, for_rule=for_rule,
+                                            **kwargs)
+
+
 class CotyledonComponent(LeafComponent):
     r"""Cotyledon component."""
 
     _name = 'Cotyledon'
     _name_plural = None
+
+
+class CotyledonComplex(LeafComplex):
+
+    _name = 'CotyledonComplex'
+    _name_plural = 'CotyledonComplexes'
+
     _defaults = dict(
-        LeafComponent._defaults,
+        LeafComplex._defaults,
+        Subcomponents=['Petiole', 'Cotyledon'],
         NFirst=0,
         NLast=0,
         WMax=2,
+        Angle=90,
     )
 
 
@@ -4551,6 +4795,7 @@ class InternodeComponent(GeometricComponentBase):
     r"""Internode component."""
 
     _name = 'Internode'
+    _whorl_var = None
     _defaults = dict(
         GeometricComponentBase._defaults,
         Method='cylinder',
@@ -4570,21 +4815,41 @@ class ApexComponent(ComponentBase):
     _name = 'Apex'
     _name_plural = 'Apexes'
     _whorl_var = 'b'
+    _node_var = 'n'
     _homogeneous_age = False
     _defaults = dict(
         ComponentBase._defaults,
         Subcomponents=['Internode', 'Node', 'Apex'],
     )
 
+    @cached_property
+    def index_parameters(self):
+        r"""list: Set of index parameters that this parameter uses."""
+        out = copy.deepcopy(super().index_parameters)
+        for x in [self._node_var.title(), self._whorl_var.title()]:
+            if x not in out:
+                out.append(x)
+        return out
+
+    @cached_property
+    def apex_subcomponent(self):
+        r"""str: Subcomponent name generating the apex."""
+        for x in self.subcomponents:
+            if x.endswith(('Apex', 'Branch')):
+                return x
+        raise ValueError(f"Could not determine apex subcomponent: "
+                         f"{self.subcomponents}")
+
     def CheckProduceAge(self, *args, **kwargs):
         idx = ParameterIndex(*args, **kwargs)
-        if idx["N"] > self.get("NMax"):
+        node_var = self._node_var.title()
+        if idx[node_var] > self.get(f"{node_var}Max"):
             return True
         if self._homogeneous_age:
             return False
         if idx["Age"] >= self.get("Plastocron").value:
             return False
-        if idx["N"] == 0 and (idx["Age"] + idx["Time"] == 0):
+        if idx[node_var] == 0 and (idx["Age"] + idx["Time"] == 0):
             return False
         return True
 
@@ -4601,9 +4866,9 @@ class ApexComponent(ComponentBase):
             list: Lsystem lines to produce the subcomponent.
 
         """
-        is_apex = name.startswith(self.subcomponents[-1])
+        is_apex = name.endswith(self.apex_subcomponent)
         if is_apex:
-            kwargs.setdefault('ninc', 1)
+            kwargs.setdefault(f'{self._node_var}inc', 1)
             kwargs.setdefault('produce_first', self.name)
             kwargs.setdefault('increment', True)
         elif name.endswith('Internode'):
@@ -4611,9 +4876,11 @@ class ApexComponent(ComponentBase):
         out = super().produce_subcomponent(name, for_rule=for_rule,
                                            **kwargs)
         if is_apex:
+            nodeinc = kwargs[f'{self._node_var}inc']
             out = [
                 'if generator.verbose_lpy:',
-                f'    print(f"Next {self.name}: {{n + 1}}")',
+                f'    print(f"Next {self.name}: '
+                f'{{{self._node_var} + {nodeinc}}}")',
             ] + out
         return out
 
@@ -4637,9 +4904,10 @@ class ApexComponent(ComponentBase):
         out = []
         if not self._homogeneous_age:
             out += [
+                f'plastochron = generator.{self.name}Plastocron()',
                 'time = time + age',
-                'if age >= PLASTOCHRON:',
-                '    age = age - PLASTOCHRON',
+                'if age >= plastochron:',
+                '    age = age - plastochron',
                 'if generator.verbose_lpy:',
                 '    print(f"Node: {n} (t = {time})")',
             ]
@@ -4664,41 +4932,145 @@ class BranchComponent(ApexComponent):
     )
 
     @classmethod
-    def _add_to_plant(cls, plant_cls):
+    def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        if name is None:
+            name = cls._name
+        apex_name = name.replace('Branch', 'Apex')
         for k in list(plant_cls._defaults.keys()):
-            if not k.startswith('Apex'):
+            if not k.startswith(apex_name):
                 continue
-            kbranch = k.replace('Apex', 'Branch')
+            kbranch = k.replace(apex_name, name)
             if kbranch in plant_cls._defaults:
                 continue
             plant_cls._defaults[kbranch] = plant_cls._defaults[k]
-        return super()._add_to_plant(plant_cls)
+        return super()._add_to_plant(plant_cls, name, **kwargs)
 
 
-class PedicelComponent(PetioleComponent):
+class PedicelComponent(StemComponent):
     r"""Pedicel component."""
 
     _name = 'Pedicel'
+    _name_plural = 'Pedicels'
+
+
+class SepalComponent(GeometricComponentBase):
+    r"""Sepal component."""
+
+    _name = 'Sepal'
+    _properties = {
+        k: v for k, v in GeometricComponentBase._properties.items()
+        if k not in ['Color']
+    }
+    _defaults = dict(
+        {
+            k: v for k, v in GeometricComponentBase._defaults.items()
+            if not k.startswith('Color')
+        },
+        Method='sweep',
+        Length=1.0,
+        Width=1.0,
+        Thickness=0.01,
+        ProfileClosed=False,
+        ProfileSymmetry=[0],
+        ProfileReverse=True,
+        ProfileControlPoints=np.array([
+            [+0.0,  0.0],
+            [+0.1,  0.0],
+            [+0.2,  0.0],
+            [+0.5,  0.1],
+            [+1.0,  0.2],
+        ]),
+        Angle=90,
+        RotationAngle=360,
+        RotationAngleWFunc='linear',
+        RotationAngleWFuncSlope=1,
+        RotationAngleWFuncIntercept=0.0,
+    )
+
+
+class CalyxComponent(ComplexComponentBase):
+    r"""Calyx component."""
+
+    _name = 'Calyx'
+    _name_plural = 'Calyxes'
+    _defaults = {'Subcomponents': ['Sepal']}
+    _whorl_var = None
+    _subcomponent_section = 'homomorphism'
+
+
+class PistilComponent(GeometricComponentBase):
+    r"""Pistil component."""
+
+    _name = 'Pistil'
+    _defaults = dict(
+        GeometricComponentBase._defaults,
+        WMax=1,
+        Method='cylinder',
+        Length=1.0,
+        Width=1.0,
+        WidthXFunc='cos',
+        WidthXFuncAmplitude=0.5,
+        WidthXFuncPeriod=(4.0 / 3.0),
+        WidthXFuncXOffset=0.0,
+        WidthXFuncYOffset=0.5,
+    )
+
+
+class PetalComponent(GeometricComponentBase):
+    r"""Petal component."""
+
+    _name = 'Petal'
+    _defaults = dict(
+        GeometricComponentBase._defaults,
+        Method='sweep',
+        Color='YlOrRd',  # [255, 255, 0],
+        Length=1.0,
+        Width=1.0,
+        Thickness=0.01,
+        ProfileClosed=False,
+        ProfileSymmetry=[0],
+        ProfileReverse=True,
+        ProfileControlPoints=np.array([
+            [+0.0,  0.0],
+            [+0.1,  0.0],
+            [+0.2,  0.0],
+            [+0.5,  0.1],
+            [+1.0,  0.2],
+        ]),
+        Angle=70,
+        RotationAngle=360,
+        RotationAngleWFunc='linear',
+        RotationAngleWFuncSlope=1,
+        RotationAngleWFuncIntercept=0.0,
+    )
+
+
+class FlowerComponent(ComplexComponentBase):
+    r"""Flower component."""
+
+    _name = 'Flower'
+    _defaults = {
+        'Subcomponents': ['Pistil', 'Petal'],
+        'NextStage': 'Fruit',
+    }
 
 
 class BudComponent(GeometricComponentBase):
     r"""Bud component."""
 
     _name = 'Bud'
+    _properties = {
+        k: v for k, v in GeometricComponentBase._properties.items()
+        if k not in ['Color']
+    }
     _defaults = dict(
-        GeometricComponentBase._defaults,
-        Subcomponents=['Pedicel'],
+        {
+            k: v for k, v in GeometricComponentBase._defaults.items()
+            if not k.startswith('Color')
+        },
+        NextStage='Flower',
         Method='sphere',
-    )
-
-
-class FlowerComponent(GeometricComponentBase):
-    r"""Flower component."""
-
-    _name = 'Flower'
-    _defaults = dict(
-        GeometricComponentBase._defaults,
-        Subcomponents=['Pedicel'],
+        Length=1.0,
     )
 
 
@@ -4708,71 +5080,260 @@ class FruitComponent(GeometricComponentBase):
     _name = 'Fruit'
     _defaults = dict(
         GeometricComponentBase._defaults,
-        Subcomponents=['Pedicel'],
+        # Subcomponents=['Pedicel'],
         Method='sphere',
         Color=[255, 0, 0],
         ColorFuncVarNorm='AgeMature',
         ColorFuncVarMax='AgeMature',
         ColorFuncVarMin='None',
-        PreviousStages=["Bud", "Flower"],
     )
 
 
-# class LeafletPetiole(PetioleComponent):
+class FruitingComplex(ComplexComponentBase):
 
-#     _name = 'LeafletPetiole'
+    _name = 'FruitingComplex'
+    _name_plural = 'FruitingComplexes'
+    _defaults = dict(
+        ComponentBase._defaults,
+        Subcomponents=['Pedicel', 'Calyx', 'Bud'],
+    )
 
+    def produce_subcomponent(self, name, for_rule=False, **kwargs):
+        r"""Get the Lsystem lines to produce a subcomponent.
 
-# class LeafletInternode(PetioleComponent):
+        Args:
+            name (str): Subcomponent name.
+            for_rule (bool, optional): If True, format for a rule.
+            \*\*kwargs: Additional keyword arguments are passed to
+                lsystem_args for the subcomponent.
 
-#     _name = 'LeafletInternode'
+        Returns:
+            list: Lsystem lines to produce the subcomponent.
 
-
-# class LeafletNode(WhorlComponent):
-
-#     _name = 'LeafletNode'
-#     _defaults = {'Subcomponents': ['Leaflet']}
-
-
-# class LeafletApex(ApexComponent):
-
-#     _name = 'LeafletApex'
-#     _name_plural = 'LeafletApexes'
-#     _subcomponents = ['LeafletInternode', 'LeafletNode', 'LeafletApex']
-#     _homogeneous_age = True
-
-
-# class Leaflet(LeafComponent):
-
-#     _name = 'Leaflet'
-#     _name_plural = 'Leaflets'
-#     _subcomponents = ['LeafletPetiole']
+        """
+        if name.endswith('Pedicel'):
+            kwargs.setdefault('disconnect', True)  # For color
+            kwargs.setdefault('dont_isolate', True)
+        return super().produce_subcomponent(name, for_rule=for_rule,
+                                            **kwargs)
 
 
-# class CompoundLeaf(ComponentBase):
-#     r"""Compound leaf."""
+###############################################
+# CLUSTER
+###############################################
 
-#     _name = 'CompoundLeaf'
-#     _name_plural = 'CompoundLeaves'
-#     _subcomponents = ["Petiole", "LeafletApex"]
+class ClusterApexComponent(ApexComponent):
 
-#     def produce_subcomponent(self, name, for_rule=False, **kwargs):
-#         r"""Get the Lsystem lines to produce a subcomponent.
+    _name = 'ClusterApex'
+    _name_plural = 'ClusterApexes'
+    _whorl_var = 'bp'
+    _node_var = 'np'
+    _homogeneous_age = True
 
-#         Args:
-#             name (str): Subcomponent name.
-#             for_rule (bool, optional): If True, format for a rule.
-#             \*\*kwargs: Additional keyword arguments are passed to
-#                 lsystem_args for the subcomponent.
 
-#         Returns:
-#             list: Lsystem lines to produce the subcomponent.
+class ClusterStemComponent(StemComponent):
 
-#         """
-#         if name == "LeafletApex":
-#             kwargs.setdefault("nreset", True)
-#         return super().produce_subcomponent(name, for_rule=for_rule,
-#                                             **kwargs)
+    _name = 'ClusterStem'
+    _name_plural = 'ClusterStems'
+
+
+class ClusterComponent(ComponentBase):
+
+    _name = 'Cluster'
+    _required = ['Subcomponents']
+    _homogeneous_age = True
+    _inherited_properties = ['NpMax', 'BpMax']
+    _subcomponent_section = 'production'
+    _properties = dict(
+        ComponentBase._properties,
+        NpMax={
+            'type': 'integer',
+            'description': 'Number of nodes in a cluster',
+        },
+        BpMax={
+            'type': 'integer',
+            'description': 'Maximum number of cluster branches',
+        },
+    )
+    _defaults = dict(
+        ComponentBase._defaults,
+        Subcomponents=['Apex'],
+        BpMax=1,
+        NpMax=1,
+    )
+
+    @classmethod
+    def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        if name is None:
+            name = cls._name
+        kwargs['cluster_component'] = name
+        return super()._add_to_plant(plant_cls, name, **kwargs)
+
+    @cached_property
+    def apex_subcomponent(self):
+        r"""str: Subcomponent name generating the apex."""
+        for x in self.subcomponents:
+            if x.endswith('Apex'):
+                return x
+        raise ValueError(f"Could not determine apex subcomponent: "
+                         f"{self.subcomponents}")
+
+    def production_check_age(self, for_rule=False):
+        r"""Get the Lsystem lines to age a component if conditions don't
+        indicate that the subcomponents should be added.
+
+        Args:
+            for_rule (bool, optional): If True, format for a rule.
+
+        Returns:
+            list: Lsystem lines to age the component.
+
+        """
+        return []
+
+    def produce_subcomponent(self, name, for_rule=False, **kwargs):
+        r"""Get the Lsystem lines to produce a subcomponent.
+
+        Args:
+            name (str): Subcomponent name.
+            for_rule (bool, optional): If True, format for a rule.
+            \*\*kwargs: Additional keyword arguments are passed to
+                lsystem_args for the subcomponent.
+
+        Returns:
+            list: Lsystem lines to produce the subcomponent.
+
+        """
+        if name.endswith(self.apex_subcomponent):
+            subcomponent = self.root.parameters[self.apex_subcomponent]
+            kwargs.setdefault(f'{subcomponent._node_var}reset', 0)
+        return super().produce_subcomponent(name, for_rule=for_rule,
+                                            **kwargs)
+
+    def produce_geometry(self, for_rule=False):
+        r"""Get the LSystem lines for producing the geometry.
+
+        Args:
+            for_rule (bool, optional): If True, format for a rule.
+
+        Returns:
+            list: Lsystem lines to produce the component geometry.
+
+        """
+        return []
+
+
+###############################################
+# COMPOUND LEAF
+###############################################
+
+class LeafletPetiole(ClusterStemComponent):
+
+    _name = 'LeafletPetiole'
+    _name_plural = 'LeafletPetioles'
+
+
+class Leaflet(LeafComponent):
+
+    _name = 'Leaflet'
+    _name_plural = 'Leaflets'
+
+
+class LeafletComplex(LeafComplex):
+
+    _name = 'LeafletComplex'
+    _name_plural = 'LeafletComplexes'
+    _defaults = dict(
+        LeafComplex._defaults,
+        Subcomponents=['LeafletPetiole', 'Leaflet'],
+        NFirst=0,
+    )
+
+
+class CompoundLeafNode(NodeComponent):
+
+    _name = 'CompoundLeafNode'
+    _name_plural = 'CompoundLeafNodes'
+    _whorl_var = None
+    _defaults = {'Subcomponents': ['LeafletComplex']}
+
+
+class CompoundLeafInternode(ClusterStemComponent):
+
+    _name = 'CompoundLeafInternode'
+    _name_plural = 'CompoundLeafInternodes'
+
+
+class CompoundLeafApex(ClusterApexComponent):
+
+    _name = 'CompoundLeafApex'
+    _name_plural = 'CompoundLeafApexes'
+    _defaults = dict(
+        ClusterApexComponent._defaults,
+        Subcomponents=[
+            'CompoundLeafInternode', 'CompoundLeafNode',
+            'CompoundLeafApex',
+        ],
+    )
+
+
+class CompoundLeaf(ClusterComponent, LeafComplex):
+    r"""Compound leaf."""
+
+    _name = 'CompoundLeaf'
+    _name_plural = 'CompoundLeaves'
+    _defaults = dict(
+        ClusterComponent._defaults,
+        Subcomponents=["Petiole", "CompoundLeafApex"],
+    )
+
+
+###############################################
+# FRUIT CLUSTER
+###############################################
+
+class FruitClusterPedicel(PedicelComponent):
+
+    _name = 'FruitClusterPedicel'
+    _name_plural = 'FruitClusterPedicels'
+
+
+class FruitClusterNode(NodeComponent):
+
+    _name = 'FruitClusterNode'
+    _name_plural = 'FruitClusterNodes'
+    _whorl_var = None
+    _defaults = {'Subcomponents': ['FruitingComplex']}
+
+
+class FruitClusterInternode(ClusterStemComponent):
+
+    _name = 'FruitClusterInternode'
+    _name_plural = 'FruitClusterInternodes'
+
+
+class FruitClusterApex(ClusterApexComponent):
+
+    _name = 'FruitClusterApex'
+    _name_plural = 'FruitClusterApexes'
+    _defaults = dict(
+        ClusterApexComponent._defaults,
+        Subcomponents=[
+            'FruitClusterInternode', 'FruitClusterNode',
+            'FruitClusterApex',
+        ],
+    )
+
+
+class FruitCluster(ClusterComponent, FruitingComplex):
+    r"""Cluster of fruit."""
+
+    _name = 'FruitCluster'
+    _name_plural = 'FruitClusters'
+    _defaults = dict(
+        ClusterComponent._defaults,
+        Subcomponents=["FruitClusterPedicel", "FruitClusterApex"],
+    )
 
 
 ###############################################
@@ -4874,7 +5435,16 @@ class PlantGenerator(ParameterCollection):
         max_age_mature = cls._defaults['Plastocron']
         prev_components = cls._components
         cls._components = []
-        max_age_mature = cls._add_component(cls, 'Apex', max_age_mature)
+        ApexComponent._add_to_plant(cls)
+        for k in cls._components:
+            age_mature = cls._properties[k]._defaults.get(
+                'AgeMature', None)
+            if age_mature is not None:
+                if not isinstance(age_mature, rapidjson.units.Quantity):
+                    age_mature = rapidjson.units.Quantity(
+                        age_mature, 'days')
+                if age_mature > max_age_mature:
+                    max_age_mature = age_mature
         removed_components = tuple(
             set(prev_components) - set(cls._components))
         if 'Plastocron' in cls._defaults and 'NMax' in cls._defaults:
@@ -4889,51 +5459,12 @@ class PlantGenerator(ParameterCollection):
             if k in cls._required:
                 cls._required.remove(k)
         for k in list(cls._defaults.keys()):
-            if k.startswith(removed_components):
+            if ((k.startswith(removed_components)
+                 and not k.startswith(tuple(cls._components)))):
                 cls._defaults.pop(k)
         cls._arguments = []
         ParameterCollection._on_registration(cls)
         cls._add_parameter_arguments(cls, cls)
-
-    @staticmethod
-    def _add_component(cls, component, max_age_mature):
-        assert component not in cls._components
-        component_kws = {}
-        cls._components.append(component)
-        component_cls = get_class_registry().get('plant_component',
-                                                 component)
-        for k in cls._inherited_properties:
-            if k not in component_cls._properties:
-                component_kws.setdefault('properties', {})
-                component_kws['properties'].setdefault(
-                    k, copy.deepcopy(cls._properties[k]))
-            component_kws.setdefault('external_properties', [])
-            component_kws['external_properties'].append(k)
-        cls._properties[component] = component_cls.specialize(
-            f'{component}_{cls._name}', **component_kws
-        )
-        cls._properties[component]._add_to_plant(cls)
-        age_mature = None
-        if f'{component}AgeMature' in cls._defaults:
-            age_mature = cls._defaults[f'{component}AgeMature']
-        elif 'AgeMature' in component_cls._defaults:
-            age_mature = component_cls._defaults['AgeMature']
-        if age_mature is not None:
-            if not isinstance(age_mature, rapidjson.units.Quantity):
-                age_mature = rapidjson.units.Quantity(age_mature, 'days')
-            if age_mature > max_age_mature:
-                max_age_mature = age_mature
-        if component not in cls._required:
-            cls._required.append(component)
-        if f'{component}Subcomponents' in cls._defaults:
-            subcomponents = cls._defaults[f'{component}Subcomponents']
-        else:
-            subcomponents = component_cls._defaults.get('Subcomponents', [])
-        for k in subcomponents:
-            if k not in cls._components:
-                max_age_mature = cls._add_component(
-                    cls, k, max_age_mature)
-        return max_age_mature
 
     def __init__(self, param=None, seed=0, crop=None, verbose=False,
                  verbose_lpy=False, debug=False, debug_param=None,
@@ -4977,7 +5508,9 @@ class PlantGenerator(ParameterCollection):
 
     @classmethod
     def _property2component(cls, kname):
-        for k in cls._components:
+        sorted_components = reversed(sorted(
+            get_class_registry().keys('plant_component'), key=len))
+        for k in sorted_components:
             if kname.startswith(k):
                 return k
         return None
@@ -5104,10 +5637,12 @@ class PlantGenerator(ParameterCollection):
                 'production:',
                 '',
             ]
+            max_depth = 3
             for k in self._components:
                 if k not in self.parameters:
                     continue
                 v = self.parameters[k]
+                max_depth = max(max_depth, v.max_depth)
                 args = v.lsystem_args(for_rule=True)
                 vrule = ['    ' + x for x in v.production]
                 if not vrule:
@@ -5117,7 +5652,7 @@ class PlantGenerator(ParameterCollection):
                 ] + vrule + ['']
             out += [
                 'homomorphism:',
-                'maximum depth: 3',
+                f'maximum depth: {max_depth}',
                 '',
             ]
             for k in self._components:

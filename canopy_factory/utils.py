@@ -1654,7 +1654,8 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
             d.clear()
             component = None
             component_data = None
-            if ((components is not None or color is None
+            component_color = color
+            if ((components is not None or component_color is None
                  and not shape.appearance.name.startswith("Color"))):
                 from canopy_factory.crops.base import ColorPlantParameter
                 component, color_idx = ColorPlantParameter.parse_colorname(
@@ -1662,15 +1663,15 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
                 if plant_parameters is not None:
                     component_data = ColorPlantParameter.coloridx2data(
                         component, color_idx, plant_parameters)
-                if color is None and color_idx is not None:
+                if component_color is None and color_idx is not None:
                     if ((cmap is not None
                          and colormap_target == "component_idx")):
-                        color = cmap(float(color_idx) / 256.0)
+                        component_color = cmap(float(color_idx) / 256.0)
                     elif plant_parameters is not None:
-                        color = ColorPlantParameter.coloridx2color(
+                        component_color = ColorPlantParameter.coloridx2color(
                             component, color_idx, plant_parameters)
             shapedict = shape2dict(
-                shape, d=d, as_obj=as_obj, color=color,
+                shape, d=d, as_obj=as_obj, color=component_color,
                 verbose=verbose, **kwargs
             )
             igeom = cls.from_dict(shapedict)

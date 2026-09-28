@@ -50,15 +50,16 @@ Apex(time,age,n,b):
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
         produce Apex(time,age+ageinc,n,b)
+    plastochron = generator.ApexPlastocron()
     time = time + age
-    if age >= PLASTOCHRON:
-        age = age - PLASTOCHRON
+    if age >= plastochron:
+        age = age - plastochron
     if generator.verbose_lpy:
         print(f"Node: {n} (t = {time})")
     nproduce /(generator.ApexRotationAngle(time,age,n,b))
     nproduce &(generator.ApexAngle(time,age,n,b))
-    for w in range(0, generator.InternodeWMax()):
-        nproduce Internode(time,age,n,b)
+    nproduce /(generator.ApexTiltAngle(time,age,n,b))
+    nproduce Internode(time,age,n,b)
     nproduce [Node(time,age,n,b)]
     if generator.verbose_lpy:
         print(f"Next Apex: {n + 1}")
@@ -83,6 +84,7 @@ Internode(time,age,n,b):
 Node(time,age,n,b):
     nproduce /(generator.NodeRotationAngle(time,age,n,b))
     nproduce &(generator.NodeAngle(time,age,n,b))
+    nproduce /(generator.NodeTiltAngle(time,age,n,b))
     for w in range(0, generator.LeafWMax()):
         nproduce [Leaf(time,age,n,b)]
     produce [/(0)]
@@ -115,6 +117,7 @@ Internode(time,age,n,b):
             print(f"Homomorphism Internode[{age},{n}]")
         nproduce /(generator.InternodeRotationAngle(time,age,n,b))
         nproduce &(generator.InternodeAngle(time,age,n,b))
+        nproduce /(generator.InternodeTiltAngle(time,age,n,b))
         nproduce SetColor(generator.InternodeColor(time,age,n,b))
         length = generator.InternodeLength(time,age,n,b)
         nproduce F(0.001 * length)
@@ -139,6 +142,7 @@ Leaf(time,age,n,b):
             print(f"Homomorphism Leaf[{age},{n}]")
         nproduce /(generator.LeafRotationAngle(time,age,n,b))
         nproduce &(generator.LeafAngle(time,age,n,b))
+        nproduce /(generator.LeafTiltAngle(time,age,n,b))
         nproduce SetColor(generator.LeafColor(time,age,n,b))
         nproduce SetContour(generator.LeafProfile(time,age,n,b,x=0))
         length = generator.LeafLength(time,age,n,b)
