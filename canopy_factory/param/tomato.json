@@ -152,7 +152,7 @@
     "CompoundLeafTiltAngle": 0,
     "CompoundLeafWMax": 1,
     "CotyledonAgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAAGEA=-YGG-",
-    "CotyledonAngle": 90,
+    "CotyledonAngle": 0,
     "CotyledonBFirst": 0,
     "CotyledonBLast": -1,
     "CotyledonBPeriod": 1,
@@ -168,14 +168,17 @@
     "CotyledonColorFuncXOffset": 0.0,
     "CotyledonColorFuncYOffset": 0.0,
     "CotyledonComplexAgeMature": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo4LCJ1bml0cyI6ImRheSJ9-YGG-AAAAAAAAGEA=-YGG-",
-    "CotyledonComplexAngle": 0,
+    "CotyledonComplexAngle": 90,
     "CotyledonComplexBFirst": 0,
     "CotyledonComplexBLast": -1,
     "CotyledonComplexBPeriod": 1,
     "CotyledonComplexNFirst": 0,
     "CotyledonComplexNLast": 0,
     "CotyledonComplexNPeriod": 1,
-    "CotyledonComplexRotationAngle": 0,
+    "CotyledonComplexRotationAngle": 360,
+    "CotyledonComplexRotationAngleWFunc": "linear",
+    "CotyledonComplexRotationAngleWFuncIntercept": 0.0,
+    "CotyledonComplexRotationAngleWFuncSlope": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo0fQ==-YGG-AACAPw==-YGG-",
     "CotyledonComplexSubcomponents": [
         "Petiole",
         "Cotyledon"
@@ -199,10 +202,7 @@
     "CotyledonProfileSymmetry": [
         0
     ],
-    "CotyledonRotationAngle": 360,
-    "CotyledonRotationAngleWFunc": "linear",
-    "CotyledonRotationAngleWFuncIntercept": 0.0,
-    "CotyledonRotationAngleWFuncSlope": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo0fQ==-YGG-AACAPw==-YGG-",
+    "CotyledonRotationAngle": 0,
     "CotyledonThickness": 0.02,
     "CotyledonTiltAngle": 0,
     "CotyledonTwist": 0,
@@ -456,6 +456,9 @@
     "LeafletComplexRotationAngle": 90,
     "LeafletComplexRotationAngleNpFunc": "expression",
     "LeafletComplexRotationAngleNpFuncExpression": "1.0 if (Np % 2) == 0 else 3.0",
+    "LeafletComplexRotationAngleWFunc": "linear",
+    "LeafletComplexRotationAngleWFuncIntercept": 0.0,
+    "LeafletComplexRotationAngleWFuncSlope": "-YGG-eyJ0eXBlIjoic2NhbGFyIiwic3VidHlwZSI6ImZsb2F0IiwicHJlY2lzaW9uIjo0fQ==-YGG-AACAPw==-YGG-",
     "LeafletComplexSubcomponents": [
         "LeafletPetiole",
         "Leaflet"

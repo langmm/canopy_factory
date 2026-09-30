@@ -63,7 +63,7 @@ class ParametrizeCropTask(TaskBase):
                 'parameters used to generate 3D '
                 'representations of a canopy'
             ),
-            'composite_param': ['id', 'data_year'],
+            'composite_param': ['id', 'data_year', 'iteration_file'],
         },
         'lpy_model': {
             'directory': utils.cfg['directories']['lpy'],
@@ -184,35 +184,8 @@ class ParametrizeCropTask(TaskBase):
 
     def __init__(self, *args, **kwargs):
         super(ParametrizeCropTask, self).__init__(*args, **kwargs)
-        if (((isinstance(getattr(self.args, 'id', None), str)
-              and self.args.id.startswith('all')
-              or isinstance(getattr(self.args, 'id', None), list))
-             and not self.is_root)):
-            self.ensure_initialized()
-
-    def ensure_initialized(self):
-        r"""Initialize the output for another task."""
-        if self.is_root:
-            return
-        if isinstance(getattr(self.args, f'output_{self._name}', None),
-                      OutputArgument):
-            return
-        if ((isinstance(self.args.id, str)
-             and self.args.id.startswith('all'))):
-            self.args = copy.deepcopy(self.args)
-            self.args.id = utils.DataProcessor.base_id_from_file(
-                getattr(self.args, 'data', None), crop=self.args.crop,
-                year=(None if (isinstance(self.args.data_year, str)
-                               and self.args.data_year.startswith('all'))
-                      else self.args.data_year),
-            )
-        elif isinstance(self.args.id, list):
-            self.args = copy.deepcopy(self.args)
-            if len(self.args.id) > 0:
-                self.args.id = self.args.id[0]
-            else:
-                self.args.id = 'default'
-        self.finalize()
+        if not self.is_root:
+            self.replace_iterating_parameters()
 
     @classmethod
     def adjust_args_internal(cls, args, **kwargs):
@@ -354,6 +327,19 @@ class ParametrizeCropTask(TaskBase):
             return parameters[f'Age{name.title()}']
         else:
             raise NotImplementedError(f'Invalid age \"{name}\"')
+
+    def get_ages(self):
+        r"""Get various ages defining the generated crops development.
+
+        Returns:
+            dict: Mapping of age names to values.
+
+        """
+        out = {
+            k: self.get_age(k)
+            for k in TimeArgument._age_strings
+        }
+        return out
 
     def get_age(self, name):
         r"""Get the age at which the generated crop is mature.
@@ -578,7 +564,8 @@ class LayoutTask(TaskBase):
             'base_prefix': True,
             'ext': '.png',
             'description': 'a plot of the layout',
-            'composite_param': ['canopy', 'periodic_canopy']
+            'composite_param': ['canopy', 'periodic_canopy'],
+            'is_plot': True,
         },
     }
     _arguments = [
@@ -783,6 +770,10 @@ class LayoutTask(TaskBase):
         args.plot_length = args.ncols * args.plant_spacing
         args.axis_cols = np.cross(args.axis_up, args.axis_rows)
         args.axis_east = np.cross(args.axis_north, args.axis_up)
+        # planting_density = (
+        #     1.0 / (args.plant_spacing * args.row_spacing)).to(
+        #         'hectare**-1')
+        # print(f'PLANTING DENSITY {planting_density}')
         # 74k 89k 104k 119k 133k
         # 76.2cm 51cm
         # 71712.34743198083 by default
@@ -1245,6 +1236,9 @@ class PlantMesh(utils.RegisteredClassBase):
     _names_body_calc = [
         'areas', 'height',
     ]
+    _names_sparse = [
+        'face_start', 'face_stop',
+    ]
     _required_args = [
         'canopy', 'plantid', 'mesh_units', 'mesh_format',
         'ground_height', 'location_stddev',
@@ -1259,12 +1253,12 @@ class PlantMesh(utils.RegisteredClassBase):
         'axis_up', 'axis_rows', 'axis_cols',
     ]
 
-    def __init__(self, args, mesh=None, componentdata=None, **kwargs):
-        if componentdata is None:
-            componentdata = {}
+    def __init__(self, args, mesh=None, body=None, **kwargs):
+        if body is None:
+            body = {}
         self.args = argparse.Namespace()
         self._mesh = mesh
-        self.componentdata = componentdata
+        self.body = body
         if isinstance(args, dict):
             for k in self._required_args:
                 setattr(self.args, k, args[k])
@@ -1273,13 +1267,18 @@ class PlantMesh(utils.RegisteredClassBase):
             for k in self._required_args:
                 setattr(self.args, k, getattr(args, k))
         missing = []
-        for k in self._names_body + self._names_header:
+        for k in self._names_body + self._names_sparse:
+            if ((k not in self.body
+                 and k not in self._names_optional)):
+                missing.append(k)
+        for k in self._names_header:
             if k not in kwargs:
                 setattr(self, k, None)
                 if k in self._names_optional:
                     continue
                 missing.append(k)
-            setattr(self, k, kwargs.pop(k))
+            else:
+                setattr(self, k, kwargs.pop(k))
         if kwargs or missing:
             raise ValueError(f"Extra ({list(kwargs.keys())}) or "
                              f"missing ({missing}) arguments")
@@ -1294,8 +1293,7 @@ class PlantMesh(utils.RegisteredClassBase):
         cls = self.__class__
         clone = cls.__new__(cls)
         memo[id(self)] = clone
-        for k in self._names_header + self._names_body + [
-                "args", "componentdata"]:
+        for k in self._names_header + ["args", "body"]:
             if k in ["mesh_file"]:
                 clone.mesh_file = None
                 continue
@@ -1307,29 +1305,36 @@ class PlantMesh(utils.RegisteredClassBase):
     def from_components(cls, args, mesh, components,
                         mesh_file=None):
         component_order = sorted(list(components.keys()))
-        plantids = args.plantid * np.ones(
-            (mesh.count_elements('face'), ), dtype=np.uint32)
-        componentids = np.zeros(
-            (mesh.count_elements('face'), ), dtype=np.uint32)
-        componentdata = {}
+        ncomponents = sum(len(v) for v in components.values())
+        body = {
+            'face_start': np.empty((ncomponents, ), dtype=np.int64),
+            'face_stop': np.empty((ncomponents, ), dtype=np.int64),
+            'plantids': args.plantid * np.ones(
+                (ncomponents, ), dtype=np.uint32),
+            'componentids': np.empty((ncomponents, ), dtype=np.uint32),
+        }
+        icomp = 0
         for i, k in enumerate(component_order):
             for prev, count, data in components[k]:
-                componentids[prev:(prev + count)] = i
-                if not data:
-                    continue
-                for kdata, vdata in data.items():
-                    if kdata not in componentdata:
-                        componentdata[kdata] = np.zeros(
-                            (mesh.count_elements('face'), ),
-                            dtype=np.float64
-                        )
-                    if isinstance(vdata, units.Quantity):
-                        vdata = vdata.value
-                    componentdata[kdata][prev:(prev + count)] = vdata
+                body['face_start'][icomp] = prev
+                body['face_stop'][icomp] = prev + count - 1
+                body['componentids'][icomp] = i
+                if data:
+                    for kdata, vdata in data.items():
+                        if kdata not in body:
+                            body[kdata] = np.zeros(
+                                (ncomponents, ),
+                                dtype=np.float64
+                            )
+                        if isinstance(vdata, units.Quantity):
+                            vdata = vdata.value
+                        body[kdata][icomp] = vdata
+                icomp += 1
+        idx = np.argsort(body['face_start'])
+        body = {k: v[idx] for k, v in body.items()}
         out = cls(args, mesh=mesh, mesh_file=mesh_file,
                   component_order=component_order,
-                  plantids=plantids, componentids=componentids,
-                  componentdata=componentdata)
+                  body=body)
         # if out.args.x.value > 0 or out.args.y.value > 0:
         #     out.shift(out.args.x, out.args.y)
         return out
@@ -1339,12 +1344,35 @@ class PlantMesh(utils.RegisteredClassBase):
         body = utils.read_csv(fname)
         header = body.pop("HEADER_JSON")
         args = header.pop("args")
-        componentdata = {}
-        for k in list(body.keys()):
-            if k not in cls._names_body:
-                componentdata[k] = body.pop(k)
-        body.update(header)
-        return cls(args, componentdata=componentdata, **body)
+        header['mesh_file'] = os.path.join(
+            os.path.dirname(fname), header['mesh_file'])
+        return cls(args, body=body, **header)
+
+    @classmethod
+    def expand_sparse(cls, body):
+        r"""Expand sparse face ID ranges into one value per face.
+
+        Args:
+            body (dict): Columns including ``face_start`` and
+                ``face_stop`` ranges.
+
+        Returns:
+            dict: Columns expanded to one value per face.
+
+        """
+        starts = np.asarray(body[cls._names_sparse[0]], dtype=np.int64)
+        stops = np.asarray(body[cls._names_sparse[1]], dtype=np.int64)
+        nfaces = int(stops[-1]) + 1 if len(stops) else 0
+        out = {}
+        for k, v in body.items():
+            if k in cls._names_sparse:
+                continue
+            v = np.asarray(v)
+            dense = np.zeros((nfaces, ), dtype=v.dtype)
+            for i, (start, stop) in enumerate(zip(starts, stops)):
+                dense[int(start):int(stop) + 1] = v[i]
+            out[k] = dense
+        return out
 
     def write(self, fname):
         if not self.mesh_file:
@@ -1352,6 +1380,7 @@ class PlantMesh(utils.RegisteredClassBase):
                 os.path.splitext(fname)[0]
                 + utils._inv_geom_ext[self.args.mesh_format]
             )
+        assert os.path.dirname(fname) == os.path.dirname(self.mesh_file)
         utils.write_3D(self.mesh, self.mesh_file,
                        file_format=self.args.mesh_format)
         utils.write_csv(self.json, fname)
@@ -1360,24 +1389,41 @@ class PlantMesh(utils.RegisteredClassBase):
     def mesh(self):
         if self._mesh is None:
             self._mesh = utils.read_3D(self.mesh_file)
+        assert self._mesh.nface == self.nfaces
         return self._mesh
 
     @cached_property
+    def nfaces(self):
+        stops = self.body[self._names_sparse[1]]
+        return int(stops[-1]) + 1 if len(stops) else 0
+
+    @cached_property
+    def facedata(self):
+        return self.expand_sparse(self.body)
+
+    @cached_property
     def face_properties(self):
-        out = [k for k in self._names_body
-               if getattr(self, k) is not None]
-        out += list(self.componentdata.keys())
+        out = [k for k in self.body.keys()
+               if k not in self._names_sparse]
         out += self._names_body_calc
         return out
 
     def get_face_property(self, name):
-        if name in self._names_body + self._names_body_calc:
+        if name in self._names_body_calc:
             return getattr(self, name)
-        return self.componentdata[name]
+        return self.facedata[name]
 
     def face_property_mask(self, k, v):
         assert k in self.face_properties
         return (self.get_face_property(k) == v)
+
+    @property
+    def plantids(self):
+        return self.facedata['plantids']
+
+    @property
+    def componentids(self):
+        return self.facedata['componentids']
 
     @cached_property
     def mesh_dict(self):
@@ -1463,12 +1509,8 @@ class PlantMesh(utils.RegisteredClassBase):
         out['args'] = {
             k: getattr(self.args, k) for k in self._required_args
         }
-        return out
-
-    @property
-    def body(self):
-        out = {k: getattr(self, k) for k in self._names_body}
-        out.update(self.componentdata)
+        if 'mesh_file' in out:
+            out['mesh_file'] = os.path.basename(out['mesh_file'])
         return out
 
     @property
@@ -1499,20 +1541,24 @@ class PlantMesh(utils.RegisteredClassBase):
         self.mesh.add_colors(*args, **kwargs)
 
     def get_plant(self, plantid, mesh_file=None):
-        mask = (self.plantids == plantid)
-        mesh = utils.select_faces(self.mesh, mask)
+        compmask = (self.body['plantids'] == plantid)
         kws = {k: getattr(self, k) for k in self._names_header
                if k not in ['mesh_file', 'field_info']}
-        for k in self._names_body:
-            kws[k] = getattr(self, k)[mask]
-        kws["componentdata"] = {}
-        for k, v in self.componentdata.items():
-            kws["componentdata"][k] = v[mask]
+        body = {}
+        for k, v in self.body.items():
+            body[k] = v[compmask].copy()
+        first_face = body['face_start'].min()
+        last_face = body['face_stop'].max()
+        body['face_start'] -= first_face
+        body['face_stop'] -= first_face
+        facemask = slice(first_face, last_face + 1)
+        # facemask = (self.plantids == plantid)
+        mesh = utils.select_faces(self.mesh, facemask)
         args = copy.deepcopy(self.args)
         args.ncol = 1
         args.nrow = 1
         args.plantid = plantid
-        return type(self)(args, mesh=mesh, **kws)
+        return type(self)(args, mesh=mesh, body=body, **kws)
 
     def append(self, other):
         if isinstance(other, list):
@@ -1533,7 +1579,8 @@ class PlantMesh(utils.RegisteredClassBase):
                     import pdb
                     pdb.set_trace()
                     raise
-        other_componentids = other.componentids
+        nfaces_prev = self.nfaces
+        other_componentids = other.body['componentids'].copy()
         if other.component_order != self.component_order:
             for i, name in enumerate(other.component_order):
                 assert name in self.component_order
@@ -1542,20 +1589,18 @@ class PlantMesh(utils.RegisteredClassBase):
                     + len(self.component_order)
                 )
             other_componentids -= len(self.component_order)
-        for k in self._names_body:
-            if k == "componentids":
-                self.componentids = np.hstack([
-                    self.componentids, other_componentids])
-            else:
-                setattr(self, k, np.hstack([
-                    getattr(self, k), getattr(other, k)]))
         assert (
-            list(self.componentdata.keys())
-            == list(other.componentdata.keys())
+            list(self.body.keys())
+            == list(other.body.keys())
         )
-        for k, v in other.componentdata.items():
-            self.componentdata[k] = np.hstack([
-                self.componentdata[k], v])
+        for k, v in other.body.items():
+            if k == "componentids":
+                self.body[k] = np.hstack([
+                    self.body[k], other_componentids])
+            elif k in self._names_sparse:
+                self.body[k] = np.hstack([self.body[k], v + nfaces_prev])
+            else:
+                self.body[k] = np.hstack([self.body[k], v])
         self.mesh.append(other.mesh)
         self.clear_cached_properties()
 
@@ -1639,7 +1684,7 @@ class PlantMesh(utils.RegisteredClassBase):
         xo = x.to(self.args.mesh_units).value
         yo = y.to(self.args.mesh_units).value
         if plantid is not None:
-            self.plantids += plantid
+            self.body['plantids'] += plantid
         self._mesh = utils.shift_mesh(
             self.mesh, xo, yo, plantid=plantid,
             axis_up=self.args.axis_up,
@@ -1708,6 +1753,10 @@ class GenerateTask(TaskBase):
             'upstream': ['parametrize', 'lpy_model'],
             'merge_all': 'all_combined',
             'composite_param': ['canopy'],
+            'force_reload': True,
+            'sidecar_files': {
+                'mesh': lambda x: os.path.splitext(x)[0] + '.obj'
+            },
         },
     }
     _external_tasks = {
@@ -1803,6 +1852,14 @@ class GenerateTask(TaskBase):
             'action': 'store_true',
             'help': 'Enable debug messages within the lpy model',
         }),
+        (('--nproc', ), {
+            'type': int, 'default': 1,
+            'help': (
+                'Number of processes to split the iterations'
+                ' between'
+            ),
+            'suffix_param': {'cond': False},
+        }),
     ]
 
     @classmethod
@@ -1834,14 +1891,7 @@ class GenerateTask(TaskBase):
         """
         if not cls.mesh_generated(args):
             return []
-        if args.data:
-            return utils.DataProcessor.from_file(args.data).ids
-        elif args.data_year and not utils.DataProcessor._ignore_data:
-            data = utils.DataProcessor.output_name(args.crop,
-                                                   args.data_year)
-            if os.path.isfile(data):
-                return utils.DataProcessor.from_file(data).ids
-        return ['default']
+        return super().all_ids_class(args)
 
     @classmethod
     def base_param_class(cls, args):
@@ -2127,7 +2177,7 @@ class GenerateTask(TaskBase):
             ObjDict: Generated mesh.
 
         """
-        self.get_parameters()
+        # self.get_parameters()
         x = self.args.x
         y = self.args.y
         plantid = self.args.plantid
@@ -2161,6 +2211,7 @@ class GenerateTask(TaskBase):
         # Remainder of field
         if self.args.canopy == 'unique':
             kwargs_pool = []
+            shifts_pool = []
             for i in range(self.args.nrows):
                 ix = i * self.args.row_spacing
                 for j in range(self.args.ncols):
@@ -2171,25 +2222,28 @@ class GenerateTask(TaskBase):
                         args_overwrite,
                         plantid=plantid,
                     )
+                    ishifts = (x + ix + posdev(), y + iy + posdev())
                     kwargs_pool.append(ikwargs)
+                    shifts_pool.append(ishifts)
                     # The performance of the single plant generation
                     # needs improved
-                    imesh = self.run_iteration(
-                        args_overwrite=ikwargs,
-                        output_name="generate",
-                        copy_outputs_from=inst,
-                    )
-                    mesh.append(imesh.shifted(x + ix + posdev(),
-                                              y + iy + posdev()))
+                    # imesh = self.run_iteration(
+                    #     args_overwrite=ikwargs,
+                    #     output_name="generate",
+                    #     copy_outputs_from=inst,
+                    # )
+                    # mesh.append(imesh.shifted(x + ix + posdev(),
+                    #                           y + iy + posdev()))
                     plantid += 1
-            # 45.3042 seconds for serial
-            # 81.7037 seconds for parallel due to IO
-            # results = self.run_iterations(
-            #     kwargs_pool, nproc=None,
-            #     output_name="generate",
-            #     copy_outputs_from=inst,
-            # )
-            # mesh.append(results)
+            results = self.run_iterations(
+                kwargs_pool, nproc=self.args.nproc,
+                output_name="filename_generate",
+                # copy_outputs_from=inst,
+            )
+            for imeshfile, ishifts in zip(results, shifts_pool):
+                self.log(f"Appending {imeshfile}")
+                imesh = self.read_output('generate', imeshfile)
+                mesh.append(imesh.shifted(*ishifts))
         elif self.args.canopy == 'tile':
             for i in range(self.args.nrows):
                 ix = i * self.args.row_spacing

@@ -45,9 +45,12 @@ class SuffixGenerator(object):
         outputs (list, optional): Outputs that this suffix is valid for.
         skip_outputs (list, optional): Outputs that this suffix is not
             valid for.
+        plot_outputs (list, optional): Plot outputs.
         require_all (bool, optional): If True, require that all arguments
             in a set have values.
         disabled (bool, optional): If True, the suffix is disabled.
+        only_for_plots (bool, optional): If True, suffix is only enabled
+            for plots.
         index (int, optional): Index that should be used for ordering
             suffixes.
 
@@ -56,9 +59,9 @@ class SuffixGenerator(object):
     def __init__(self, arg=NoDefault, value=NoDefault, prefix=NoDefault,
                  suffix=NoDefault, cond=NoDefault, noteq=NoDefault,
                  default=NoDefault, title=NoDefault, conv=NoDefault,
-                 sep='_', outputs=NoDefault,
-                 skip_outputs=NoDefault, require_all=False,
-                 disabled=False, index=0):
+                 sep='_', outputs=NoDefault, skip_outputs=NoDefault,
+                 plot_outputs=NoDefault, require_all=False,
+                 disabled=False, only_for_plots=False, index=0):
         if prefix is NoDefault:
             prefix = ''
         if suffix is NoDefault:
@@ -69,6 +72,8 @@ class SuffixGenerator(object):
             outputs = [outputs]
         if isinstance(skip_outputs, str):
             skip_outputs = [skip_outputs]
+        if isinstance(plot_outputs, str):
+            plot_outputs = [plot_outputs]
         self.arg = arg
         self.value = value
         self.prefix = prefix
@@ -81,8 +86,10 @@ class SuffixGenerator(object):
         self.sep = sep
         self.outputs = outputs
         self.skip_outputs = skip_outputs
+        self.plot_outputs = plot_outputs
         self.require_all = require_all
         self.disabled = disabled
+        self.only_for_plots = only_for_plots
         self.index = index
         super(SuffixGenerator, self).__init__()
 
@@ -108,6 +115,10 @@ class SuffixGenerator(object):
             return False
         if ((self.skip_outputs is not NoDefault
              and output in self.skip_outputs)):
+            return False
+        if ((self.only_for_plots
+             and (self.plot_outputs is NoDefault
+                  or output not in self.plot_outputs))):
             return False
         return True
 
@@ -301,6 +312,7 @@ class ArgumentDescriptionABC(abc.ABC):
     ]
     _properties_lists = [
         'suffix_outputs', 'suffix_skip_outputs',
+        'suffix_plot_outputs',
     ]
     _properties_dicts = [
         'suffix_param',
@@ -640,19 +652,15 @@ class ArgumentDescriptionABC(abc.ABC):
                 return False
             if self.suffix_param is NoDefault:
                 return True
-            if 'outputs' in self.suffix_param:
+            for kparam in ['outputs', 'skip_outputs', 'plot_outputs']:
                 for k, v in value.items():
-                    if k in self.suffix_param['outputs']:
-                        self.suffix_param['outputs'].remove(k)
-                        self.suffix_param['outputs'] += v
-            if 'skip_outputs' in self.suffix_param:
-                for k, v in value.items():
-                    if k in self.suffix_param['skip_outputs']:
-                        self.suffix_param['skip_outputs'].remove(k)
-                        self.suffix_param['skip_outputs'] += v
+                    if k in self.suffix_param[kparam]:
+                        self.suffix_param[kparam].remove(k)
+                        self.suffix_param[kparam] += v
             return True
         elif name in ['append_suffix_outputs',
-                      'append_suffix_skip_outputs']:
+                      'append_suffix_skip_outputs',
+                      'append_suffix_plot_outputs']:
             if (not value) or (not self.generates_suffix):
                 return False
             if self.suffix_param is NoDefault:
@@ -660,26 +668,34 @@ class ArgumentDescriptionABC(abc.ABC):
             outputs = self.suffix_param.get('outputs', NoDefault)
             skip_outputs = self.suffix_param.get(
                 'skip_outputs', NoDefault)
+            plot_outputs = self.suffix_param.get(
+                'plot_outputs', NoDefault)
             if outputs is NoDefault:
                 outputs = []
             if skip_outputs is NoDefault:
                 skip_outputs = []
+            if plot_outputs is NoDefault:
+                plot_outputs = []
             if name == 'append_suffix_skip_outputs':
                 dest = skip_outputs
+                exclude = outputs
+            elif name == 'append_suffix_plot_outputs':
+                dest = plot_outputs
+                exclude = skip_outputs
             else:
                 dest = outputs
+                exclude = skip_outputs
+            exclude = dest + exclude
             if isinstance(value, list):
                 dest += [
-                    x for x in value
-                    if x not in outputs + skip_outputs
+                    x for x in value if x not in exclude
                 ]
             else:
                 assert isinstance(value, dict)
                 for k, v in value.items():
-                    if k is None:
+                    if k is None or name == 'append_suffix_plot_outputs':
                         dest += [
-                            x for x in v
-                            if x not in outputs + skip_outputs
+                            x for x in v if x not in exclude
                         ]
                     elif k in skip_outputs:
                         skip_outputs += [
@@ -695,8 +711,11 @@ class ArgumentDescriptionABC(abc.ABC):
                 outputs = NoDefault
             if not skip_outputs:
                 skip_outputs = NoDefault
+            if not plot_outputs:
+                plot_outputs = NoDefault
             self.suffix_param['outputs'] = outputs
             self.suffix_param['skip_outputs'] = skip_outputs
+            self.suffix_param['plot_outputs'] = plot_outputs
             return True
         elif name == 'add_class':
             self.add_class(value)

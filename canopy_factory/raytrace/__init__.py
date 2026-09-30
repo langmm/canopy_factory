@@ -16,7 +16,7 @@ from canopy_factory.utils import (
     scene2geom,
 )
 from canopy_factory.cli import (
-    TaskBase, TemporalTaskBase, ExploreParametersTaskBase,
+    TaskBase, ExploreParametersTaskBase,
     OptimizationTaskBase,
 )
 from canopy_factory.crops import GenerateTask, LayoutTask
@@ -1739,6 +1739,7 @@ class TotalsTask(ExploreParametersTaskBase):
             'description': 'a plot of raytraced query totals',
             'merge_all': True,
             'merge_all_output': 'totals',
+            'is_plot': True,
         },
     }
     _external_tasks = {
@@ -1929,11 +1930,12 @@ class TotalsTask(ExploreParametersTaskBase):
                     return ''
                 return f" ({v_units})"
 
+            xlabel = xlabel.replace('_', ' ')
+            ylabel = ylabel.replace('_', ' ')
             xlabel += add_units_label(x)
             ylabel += add_units_label(y)
             ax.set_xlabel(xlabel, weight=self.args.figure_font_weight)
-            ax.set_ylabel(ylabel.replace('_', ' '),
-                          weight=self.args.figure_font_weight)
+            ax.set_ylabel(ylabel, weight=self.args.figure_font_weight)
         layout_task = self.output_task('layout')
         locStr = None
         full_label = None
@@ -2052,18 +2054,21 @@ class TotalsTask(ExploreParametersTaskBase):
         """
         return (x.args.time.time, x.get_output('raytrace_stats'))
 
-    def finalize_step_local(self, x):
+    def finalize_step_local(self, x, args):
         r"""Finalize the output from a remote step locally.
 
         Args:
             x (object): Result of remote step.
+            args (dict): Arguments that produced x.
 
         Returns:
             object: Finalized step result.
 
         """
         if not self.crop_model_engine:
-            return x
+            if self.args.vary == 'time':
+                return x
+            return (args[self.args.vary], x[1])
         assert self.args.vary == 'time'
         value = x[1]
         # TODO: Get intercepted light for next step
@@ -2120,10 +2125,7 @@ class TotalsTask(ExploreParametersTaskBase):
         """
         assert self.args.id != 'all'
         assert not isinstance(self.args.id, list)
-        if self.args.vary == 'time':
-            vary_values = [x[0] for x in xlist]
-        else:
-            vary_values = [x[self.args.vary] for x in self.step_args()]
+        vary_values = [x[0] for x in xlist]
         values = [x[1] for x in xlist]
         out = RayTraceTask.join_query_stats(values, per_plant=True)
         out['vary_values'] = vary_values
@@ -2149,7 +2151,7 @@ class TotalsTask(ExploreParametersTaskBase):
                 kws = {k: v for k, v in zip(merged_param, param)}
                 labels = []
                 for k, v in kws.items():
-                    if k in ['id', 'canopy']:
+                    if k in ['id', 'canopy', 'iteration_file']:
                         labels.append(str(v))
                     else:
                         labels.append(f'{k} = {v}')
@@ -2180,7 +2182,7 @@ class TotalsTask(ExploreParametersTaskBase):
         return super(TotalsTask, self)._generate_output(name)
 
 
-class AnimateTask(TemporalTaskBase):
+class AnimateTask(ExploreParametersTaskBase):
     r"""Class for producing an animation."""
 
     _name = 'animate'
@@ -2191,6 +2193,7 @@ class AnimateTask(TemporalTaskBase):
     _step_task = RenderTask
     _step_args_preserve = ['render_colormap']
     _step_outputs_write = ['render', 'generate']
+    _step_vary_default = 'time'
     _output_info = {
         'animate': {
             'base_output': 'render',
@@ -2324,11 +2327,12 @@ class AnimateTask(TemporalTaskBase):
         return (x.args.time.time, x.output_file('render'),
                 x.get_output('render'))
 
-    def finalize_step_local(self, x):
+    def finalize_step_local(self, x, args):
         r"""Finalize the output from a remote step locally.
 
         Args:
             x (object): Result of remote step.
+            args (dict): Arguments that produced x.
 
         Returns:
             object: Finalized step result.
@@ -2337,6 +2341,10 @@ class AnimateTask(TemporalTaskBase):
         tframe, old_frame, old_data = x[:]
         if not self.args.inset_totals:
             return old_frame
+        if self.args.vary == 'time':
+            xframe = tframe
+        else:
+            xframe = args[self.args.vary]
         new_suffix = self._arguments['inset_totals'].generate_suffix(
             self.args, 'animate')
         new_frame = f'_{new_suffix}'.join(os.path.splitext(old_frame))
@@ -2348,7 +2356,7 @@ class AnimateTask(TemporalTaskBase):
             dpi = self._inset_figure.get_dpi()
             figsize = ((width_px + 1) / dpi, (height_px + 1) / dpi)
             self._inset_figure.set_size_inches(*figsize)
-        self.totals_task.mark_time(tframe)
+        self.totals_task.mark_vary_value(xframe)
         add_data = self.totals_task.raw_figure_data
         add_data = add_data[:, :old_data.shape[1], :]
         new_data = np.concatenate([old_data, add_data], axis=0)
@@ -2432,15 +2440,16 @@ class MatchQuery(OptimizationTaskBase):
             cls=self._step_task,
             args_overwrite=args_overwrite,
         )
-        out = self.finalize_step(inst, force_output=True)
+        out = self.finalize_step(inst, args_overwrite, force_output=True)
         self.log(f'GOAL: {out}', force=True)
         return out
 
-    def finalize_step(self, x, force_output=False):
+    def finalize_step(self, x, args, force_output=False):
         r"""Finalize the output from a step.
 
         Args:
             x (object): Result of step.
+            args (dict): Arguments that produced x.
             force_output (bool, optional): If True, force output to
                 disk.
 

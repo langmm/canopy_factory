@@ -288,9 +288,18 @@ def assert_nested_allclose(assert_allclose):
             b_header = b.header
             a_header.pop('mesh_file')
             b_header.pop('mesh_file')
-            for k in ['header', 'body', 'mesh_dict']:
-                v_a = getattr(a, k)
-                v_b = getattr(b, k)
+            for k in ['header', 'mesh_dict'] + list(a.body.keys()):
+                # This can be re-enabled if test data is regenerated to
+                # index components of the same type and age separately
+                # , 'body']:
+                if k in a._names_sparse:
+                    continue
+                if k in a.body:
+                    v_a = a.get_face_property(k)
+                    v_b = b.get_face_property(k)
+                else:
+                    v_a = getattr(a, k)
+                    v_b = getattr(b, k)
                 if k == 'header':
                     v_a.pop('mesh_file')
                     v_b.pop('mesh_file')

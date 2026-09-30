@@ -97,7 +97,7 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
         r"""TaskBase: Task instance for testing."""
         out = task_class.from_kwargs(instance_kwargs)
         out._testing_default_files = {}
-        testid = str(uuid.uuid4())
+        testid = '_TEST_OUTPUT_' + str(uuid.uuid4())
         outputs_remove = out._outputs_local
         for k in out._outputs_total:
             kout = out.output_argument(k)
@@ -122,9 +122,9 @@ class TestTask(object, metaclass=utils.RegisteredMetaClass):
             yield out
         finally:
             for k in outputs_remove:
-                kout = out.output_file(k)
-                if os.path.isfile(kout):
-                    os.remove(kout)
+                kout = out.output_argument(k)
+                if kout.exists:
+                    kout.remove(skip_test_output=True, force=True)
 
     @pytest.fixture
     def fname_actual(self, instance, output):
@@ -278,7 +278,8 @@ class TestGenerateTask(TestTask):
         'arguments': {
             'values': [
                 {'canopy': 'single', 'data_year': '2024'},
-                {'crop': 'maize', 'id': 'default', 'canopy': 'unique'},
+                {'crop': 'maize', 'id': 'default', 'canopy': 'unique',
+                 'nrows': 2, 'ncols': 2},
                 {'crop': 'maize', 'id': 'default', 'canopy': 'tile'},
                 {'crop': 'maize', 'id': 'B73_WT', 'canopy': 'single',
                  'piecewise_param': 'N', 'data_year': '2024'},
@@ -395,7 +396,8 @@ class TestTotalsTask(TestTask):
     _params = {
         'arguments': {
             'values': [
-                dict(x, start_time='noon', duration='1 hr',
+                dict(x, start_time='noon', value_range='1 hr',
+                     step_count=1,
                      periodic_canopy=x.get("periodic_canopy", False))
                 for x in TestRayTraceTask._params['arguments']['values']
                 if x.get('canopy', None) != 'single' and 'time' not in x

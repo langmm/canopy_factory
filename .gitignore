@@ -1,3 +1,7 @@
+# Test image data
+tests/data/render
+tests/data/totals_plot
+
 *~
 /lpy/
 cplantbox/

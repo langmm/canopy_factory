@@ -112,7 +112,7 @@ Node(time,age,n,b,w,np,bp):
     for w in range(0, generator.CotyledonComplexWMax()):
         nproduce [CotyledonComplex(time,age,n,b,w)]
     for w in range(0, generator.CompoundLeafWMax()):
-        nproduce [CompoundLeaf(time,age,n,b,np,bp)]
+        nproduce [CompoundLeaf(time,age,n,b,w,np,bp)]
     for w in range(0, generator.FruitClusterWMax()):
         nproduce [FruitCluster(time,age,n,b,w,np,bp)]
     produce [/(0)]
@@ -134,7 +134,7 @@ CotyledonComplex(time,age,n,b,w):
     nproduce /(generator.CotyledonComplexTiltAngle(time,age,n,b,w=w))
     nproduce Petiole(time,age,n,b)
     for w in range(0, generator.CotyledonWMax()):
-        nproduce [Cotyledon(time,age,n,b,w)]
+        nproduce [Cotyledon(time,age,n,b)]
     produce [/(0)]
 
 Petiole(time,age,n,b):
@@ -150,54 +150,54 @@ Petiole(time,age,n,b):
                      OUTPUT_TIME - (time + age))
         produce Petiole(time,age+ageinc,n,b)
 
-Cotyledon(time,age,n,b,w):
+Cotyledon(time,age,n,b):
     component = generator.parameters["Cotyledon"]
-    if not component.CheckProduceComponent(time,age,n,b,w=w):
+    if not component.CheckProduceComponent(time,age,n,b):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce Cotyledon(time,age,n,b,w)
+        produce Cotyledon(time,age,n,b)
     else:
         if generator.verbose_lpy:
             print(f"Ageing Cotyledon[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce Cotyledon(time,age+ageinc,n,b,w)
+        produce Cotyledon(time,age+ageinc,n,b)
 
-CompoundLeaf(time,age,n,b,np,bp):
+CompoundLeaf(time,age,n,b,w,np,bp):
     component = generator.parameters["CompoundLeaf"]
-    if not component.CheckProduceComponent(time,age,n,b,np=np,bp=bp):
+    if not component.CheckProduceComponent(time,age,n,b,w=w,np=np,bp=bp):
         produce *
-    nproduce /(generator.CompoundLeafRotationAngle(time,age,n,b,np=np,bp=bp))
-    nproduce &(generator.CompoundLeafAngle(time,age,n,b,np=np,bp=bp))
-    nproduce /(generator.CompoundLeafTiltAngle(time,age,n,b,np=np,bp=bp))
+    nproduce /(generator.CompoundLeafRotationAngle(time,age,n,b,w=w,np=np,bp=bp))
+    nproduce &(generator.CompoundLeafAngle(time,age,n,b,w=w,np=np,bp=bp))
+    nproduce /(generator.CompoundLeafTiltAngle(time,age,n,b,w=w,np=np,bp=bp))
     nproduce Petiole(time,age,n,b)
     for bp in range(0, generator.CompoundLeafApexBpMax()):
-        nproduce [CompoundLeafApex(time,age,n,b,0,bp)]
+        nproduce [CompoundLeafApex(time,age,n,b,w,0,bp)]
     produce [/(0)]
 
-CompoundLeafApex(time,age,n,b,np,bp):
+CompoundLeafApex(time,age,n,b,w,np,bp):
     component = generator.parameters["CompoundLeafApex"]
-    if not component.CheckProduceComponent(time,age,n,b,np=np,bp=bp):
+    if not component.CheckProduceComponent(time,age,n,b,w=w,np=np,bp=bp):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce CompoundLeafApex(time,age,n,b,np,bp)
-    elif component.CheckProduceAge(time,age,n,b,np=np,bp=bp):
+        produce CompoundLeafApex(time,age,n,b,w,np,bp)
+    elif component.CheckProduceAge(time,age,n,b,w=w,np=np,bp=bp):
         if generator.verbose_lpy:
             print(f"Ageing CompoundLeafApex[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce CompoundLeafApex(time,age+ageinc,n,b,np,bp)
-    nproduce /(generator.CompoundLeafApexRotationAngle(time,age,n,b,np=np,bp=bp))
-    nproduce &(generator.CompoundLeafApexAngle(time,age,n,b,np=np,bp=bp))
-    nproduce /(generator.CompoundLeafApexTiltAngle(time,age,n,b,np=np,bp=bp))
+        produce CompoundLeafApex(time,age+ageinc,n,b,w,np,bp)
+    nproduce /(generator.CompoundLeafApexRotationAngle(time,age,n,b,w=w,np=np,bp=bp))
+    nproduce &(generator.CompoundLeafApexAngle(time,age,n,b,w=w,np=np,bp=bp))
+    nproduce /(generator.CompoundLeafApexTiltAngle(time,age,n,b,w=w,np=np,bp=bp))
     nproduce CompoundLeafInternode(time,age,n,b)
-    nproduce [CompoundLeafNode(time,age,n,b,np)]
+    nproduce [CompoundLeafNode(time,age,n,b,w,np)]
     if generator.verbose_lpy:
         print(f"Next CompoundLeafApex: {np + 1}")
     for bpinc in range(0 + 1, generator.CompoundLeafApexBpMax()):
-        nproduce [CompoundLeafApex(time,age,n,b,np+1,bp+bpinc)]
+        nproduce [CompoundLeafApex(time,age,n,b,w,np+1,bp+bpinc)]
     bpinc = 0
-    produce [CompoundLeafApex(time,age,n,b,np+1,bp+bpinc)]
+    produce [CompoundLeafApex(time,age,n,b,w,np+1,bp+bpinc)]
 
 CompoundLeafInternode(time,age,n,b):
     component = generator.parameters["CompoundLeafInternode"]
@@ -212,29 +212,29 @@ CompoundLeafInternode(time,age,n,b):
                      OUTPUT_TIME - (time + age))
         produce CompoundLeafInternode(time,age+ageinc,n,b)
 
-CompoundLeafNode(time,age,n,b,np):
-    nproduce /(generator.CompoundLeafNodeRotationAngle(time,age,n,b,np=np))
-    nproduce &(generator.CompoundLeafNodeAngle(time,age,n,b,np=np))
-    nproduce /(generator.CompoundLeafNodeTiltAngle(time,age,n,b,np=np))
+CompoundLeafNode(time,age,n,b,w,np):
+    nproduce /(generator.CompoundLeafNodeRotationAngle(time,age,n,b,w=w,np=np))
+    nproduce &(generator.CompoundLeafNodeAngle(time,age,n,b,w=w,np=np))
+    nproduce /(generator.CompoundLeafNodeTiltAngle(time,age,n,b,w=w,np=np))
     for w in range(0, generator.LeafletComplexWMax()):
-        nproduce [LeafletComplex(time,age,n,b,np)]
+        nproduce [LeafletComplex(time,age,n,b,w,np)]
     produce [/(0)]
 
-LeafletComplex(time,age,n,b,np):
+LeafletComplex(time,age,n,b,w,np):
     component = generator.parameters["LeafletComplex"]
-    if not component.CheckProduceComponent(time,age,n,b,np=np):
+    if not component.CheckProduceComponent(time,age,n,b,w=w,np=np):
         produce *
     if (time + age) >= OUTPUT_TIME:
-        produce LeafletComplex(time,age,n,b,np)
+        produce LeafletComplex(time,age,n,b,w,np)
     else:
         if generator.verbose_lpy:
             print(f"Ageing LeafletComplex[{age},{n}]")
         ageinc = min(generator.AgeInc(),
                      OUTPUT_TIME - (time + age))
-        produce LeafletComplex(time,age+ageinc,n,b,np)
-    nproduce /(generator.LeafletComplexRotationAngle(time,age,n,b,np=np))
-    nproduce &(generator.LeafletComplexAngle(time,age,n,b,np=np))
-    nproduce /(generator.LeafletComplexTiltAngle(time,age,n,b,np=np))
+        produce LeafletComplex(time,age+ageinc,n,b,w,np)
+    nproduce /(generator.LeafletComplexRotationAngle(time,age,n,b,w=w,np=np))
+    nproduce &(generator.LeafletComplexAngle(time,age,n,b,w=w,np=np))
+    nproduce /(generator.LeafletComplexTiltAngle(time,age,n,b,w=w,np=np))
     nproduce LeafletPetiole(time,age,n,b)
     for w in range(0, generator.LeafletWMax()):
         nproduce [Leaflet(time,age,n,b)]
@@ -526,7 +526,7 @@ CotyledonComplex(time,age,n,b,w):
         nproduce /(generator.CotyledonComplexTiltAngle(time,age,n,b,w=w))
         nproduce Petiole(time,age,n,b)
         for w in range(0, generator.CotyledonWMax()):
-            nproduce [Cotyledon(time,age,n,b,w)]
+            nproduce [Cotyledon(time,age,n,b)]
         produce &(90)@o^(90)
 
 Petiole(time,age,n,b):
@@ -550,34 +550,34 @@ Petiole(time,age,n,b):
             else:
                 nproduce F(DX)
 
-Cotyledon(time,age,n,b,w):
+Cotyledon(time,age,n,b):
     component = generator.parameters["Cotyledon"]
-    with component.temporary_index(time,age,n,b,w=w):
-        if not component.CheckProduceComponent(time,age,n,b,w=w):
+    with component.temporary_index(time,age,n,b):
+        if not component.CheckProduceComponent(time,age,n,b):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism Cotyledon[{age},{n}]")
-        nproduce /(generator.CotyledonRotationAngle(time,age,n,b,w=w))
-        nproduce &(generator.CotyledonAngle(time,age,n,b,w=w))
-        nproduce /(generator.CotyledonTiltAngle(time,age,n,b,w=w))
-        nproduce SetColor(generator.CotyledonColor(time,age,n,b,w=w))
-        nproduce SetContour(generator.CotyledonProfile(time,age,n,b,w=w,x=0))
-        length = generator.CotyledonLength(time,age,n,b,w=w)
+        nproduce /(generator.CotyledonRotationAngle(time,age,n,b))
+        nproduce &(generator.CotyledonAngle(time,age,n,b))
+        nproduce /(generator.CotyledonTiltAngle(time,age,n,b))
+        nproduce SetColor(generator.CotyledonColor(time,age,n,b))
+        nproduce SetContour(generator.CotyledonProfile(time,age,n,b,x=0))
+        length = generator.CotyledonLength(time,age,n,b)
         nproduce F(0.001 * length)
         xprev = 0.0
         for x in component.XIterator():
             DX = length * (x - xprev)
             xprev = x
-            nproduce _(generator.CotyledonWidth(time,age,n,b,w=w,x=x))
-            nproduce &(generator.CotyledonBend(time,age,n,b,w=w,x=x)*DX)
-            nproduce /(generator.CotyledonTwist(time,age,n,b,w=w,x=x)*DX)
-            nproduce SetContour(generator.CotyledonProfile(time,age,n,b,w=w,x=x))
+            nproduce _(generator.CotyledonWidth(time,age,n,b,x=x))
+            nproduce &(generator.CotyledonBend(time,age,n,b,x=x)*DX)
+            nproduce /(generator.CotyledonTwist(time,age,n,b,x=x)*DX)
+            nproduce SetContour(generator.CotyledonProfile(time,age,n,b,x=x))
             if x == 1:
                 produce F(DX)
             else:
                 nproduce F(DX)
 
-CompoundLeafApex(time,age,n,b,np,bp):
+CompoundLeafApex(time,age,n,b,w,np,bp):
     produce &(90)@o^(90)
 
 CompoundLeafInternode(time,age,n,b):
@@ -601,16 +601,16 @@ CompoundLeafInternode(time,age,n,b):
             else:
                 nproduce F(DX)
 
-LeafletComplex(time,age,n,b,np):
+LeafletComplex(time,age,n,b,w,np):
     component = generator.parameters["LeafletComplex"]
-    with component.temporary_index(time,age,n,b,np=np):
-        if not component.CheckProduceComponent(time,age,n,b,np=np):
+    with component.temporary_index(time,age,n,b,w=w,np=np):
+        if not component.CheckProduceComponent(time,age,n,b,w=w,np=np):
             produce [/(0)]
         if generator.verbose_lpy:
             print(f"Homomorphism LeafletComplex[{age},{n}]")
-        nproduce /(generator.LeafletComplexRotationAngle(time,age,n,b,np=np))
-        nproduce &(generator.LeafletComplexAngle(time,age,n,b,np=np))
-        nproduce /(generator.LeafletComplexTiltAngle(time,age,n,b,np=np))
+        nproduce /(generator.LeafletComplexRotationAngle(time,age,n,b,w=w,np=np))
+        nproduce &(generator.LeafletComplexAngle(time,age,n,b,w=w,np=np))
+        nproduce /(generator.LeafletComplexTiltAngle(time,age,n,b,w=w,np=np))
         nproduce LeafletPetiole(time,age,n,b)
         for w in range(0, generator.LeafletWMax()):
             nproduce [Leaflet(time,age,n,b)]
