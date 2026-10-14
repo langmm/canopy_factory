@@ -1285,7 +1285,7 @@ class PlantMesh(utils.RegisteredClassBase):
         'plantids', 'componentids',
     ]
     _names_body_calc = [
-        'areas', 'height',
+        'areas', 'height', 'face_centers',
     ]
     _names_sparse = [
         'face_start', 'face_stop',
@@ -1541,6 +1541,13 @@ class PlantMesh(utils.RegisteredClassBase):
     def mesh_dict(self):
         r"""dict: Mesh data as arrays of vertices and faces."""
         return utils.get_mesh_dict(self.mesh)
+
+    @cached_property
+    def face_centers(self):
+        r"""np.ndarray: Centers of each face."""
+        faces = self.mesh_dict['face']
+        vertices = self.mesh_dict['vertex']
+        return vertices[faces, :].mean(axis=1)
 
     @cached_property
     def areas(self):

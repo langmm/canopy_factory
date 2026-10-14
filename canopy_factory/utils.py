@@ -744,6 +744,8 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
         """
         if not (getattr(self, 'verbose', True) or force):
             return
+        if callable(message):
+            message = message()
         kwargs.setdefault('prefix', self.log_prefix)
         source = None
         if cls is None:
@@ -3366,11 +3368,9 @@ class DictWrapper(MutableMapping):
                 be returned without the prefix removed.
 
         Returns:
-            dict_items: Items view.
+            list: List of key/value pairs.
 
         """
-        if not raw:
-            return super(DictWrapper, self).items()
         return [x for x in self._get_iterator(raw=raw)]
 
     def setdefault(self, k, v):
@@ -3773,6 +3773,10 @@ class DictWrapper(MutableMapping):
 
         """
         kwargs.setdefault('raw', True)
+        if not (assert_no_change
+                or getattr(getattr(self, 'logger', None), 'verbose', False)):
+            yield
+            return
         keys0 = set(self.keys(**kwargs))
         try:
             yield
@@ -3845,8 +3849,13 @@ class SimpleWrapper(DictWrapper):
 
         """
         if prev is None:
-            prev = []
-        for k, v in self._wrapped.items():
+            prev = set()
+        wrapped = self._wrapped
+        if isinstance(wrapped, DictWrapper):
+            items = wrapped._get_iterator(raw=False)
+        else:
+            items = wrapped.items()
+        for k, v in items:
             try:
                 kx = self._reverse_key(k)
             except KeyError:
@@ -3857,7 +3866,10 @@ class SimpleWrapper(DictWrapper):
                 yield (k, v)
             else:
                 yield (kx, v)
-            prev.append(kx)
+            prev.add(kx)
+
+    def __contains__(self, k):
+        return self._forward_key(k) in self._wrapped
 
     def __getitem__(self, k):
         return self._wrapped[self._forward_key(k)]
@@ -4118,6 +4130,12 @@ class DictSet(DictWrapper):
                 return x
         raise ImmutableDictException("No immutable members")
 
+    def __contains__(self, k):
+        for x in self.members:
+            if k in x:
+                return True
+        return False
+
     def __getitem__(self, k):
         for x in self.members:
             if k in x:
@@ -4149,27 +4167,27 @@ class DictSet(DictWrapper):
             del x[k]
 
     def __iter__(self):
-        prev = []
+        prev = set()
         for x in self.members:
             for k, v in x.items():
                 if k in prev:
                     continue
                 yield k
-                prev.append(k)
+                prev.add(k)
 
     def _get_iterator(self, raw=False, prev=None):
         r"""Yield member key/item pairs from the set's members.
 
         Args:
             raw (bool, optional): If True, raw keys should be yielded.
-            prev (list, optional): Set of keys already yielded.
+            prev (set, optional): Set of keys already yielded.
 
         Yields:
             tuple: Member items.
 
         """
         if prev is None:
-            prev = []
+            prev = set()
         for x in self.members:
             for k, v in x._get_iterator(raw=raw, prev=prev):
                 yield (k, v)

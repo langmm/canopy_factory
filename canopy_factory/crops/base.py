@@ -1028,12 +1028,14 @@ class SimplePlantParameter(PlantParameterBase):
         keys0 = list(param0.keys())
         schema = self.schema()
         self.initialization_error = None
-        self.log(f'PROVIDED:\n{pprint.pformat(param)}')
+        self.log(lambda: f'PROVIDED:\n{pprint.pformat(param)}')
         with param.updating(self):
             self.parameters.clear()
             self.initialized = self._parse_single(param, schema)
         if self.initialized:
-            self.log(f'Parsed param:\n{pprint.pformat(self.parameters)}')
+            self.log(
+                lambda: f'Parsed param:\n'
+                f'{pprint.pformat(self.parameters)}')
         elif self.required:
             self.error(rapidjson.NormalizationError,
                        f'Failed to initialize required parameter:\n'
@@ -1041,9 +1043,11 @@ class SimplePlantParameter(PlantParameterBase):
         else:
             self.log('MISSING PARAMETERS')
         if self.initialized:
-            self.log(f'BEFORE:\n{pprint.pformat(param0)}')
-            self.log(f'SCHEMA:\n{pprint.pformat(schema)}')
-            self.log(f'AFTER:\n{pprint.pformat(param.provided)}')
+            self.log(lambda: f'BEFORE:\n{pprint.pformat(param0)}')
+            self.log(lambda: f'SCHEMA:\n{pprint.pformat(schema)}')
+            self.log(
+                lambda: f'AFTER:\n'
+                f'{pprint.pformat(param.provided)}')
         else:
             DictWrapper.assert_keys_match(param.provided, keys0,
                                           logger=self)
@@ -1052,9 +1056,10 @@ class SimplePlantParameter(PlantParameterBase):
             self.error(AssertionError,
                        f'Unparsed param:\n{pprint.pformat(param.provided)}')
         if self.initialized:
-            msg = f'INITIALIZED:\n{pprint.pformat(self.contents)}'
             # debug = ((not in_init) or self.parent == self.root)
-            self.log(msg, debug=self.is_debug_param)
+            self.log(
+                lambda: f'INITIALIZED:\n{pprint.pformat(self.contents)}',
+                debug=self.is_debug_param)
 
     @classmethod
     def _get_default(cls, name, param=None):
@@ -2077,7 +2082,8 @@ class SimplePlantParameter(PlantParameterBase):
             self.log(f'{idstr}: {schema}')
         if child_param is None:
             child_param = param.local_parameters
-            self.log(f'CHILDREN:\n{pprint.pformat(child_param)}')
+            self.log(
+                lambda: f'CHILDREN:\n{pprint.pformat(child_param)}')
         if required is None:
             required = self.required
         # Parse subschemas w/ parameter classes via recursion
@@ -2183,7 +2189,7 @@ class SimplePlantParameter(PlantParameterBase):
                     f'{missing_errors_str}'
                 )
             # Update parameters on the class
-            self.log(f"ADDING:\n{pprint.pformat(out)}")
+            self.log(lambda: f"ADDING:\n{pprint.pformat(out)}")
             self.parameters.update(**out)
             return True
         except rapidjson.NormalizationError as e:

@@ -500,22 +500,9 @@ class RayTraceTask(TaskBase):
 
         """
         values = {k: v for k, v in values.items()}
-        for k in self._query_options_adm:
-            if k in values:
-                continue
-            out = self.mesh.get_face_property(k)
-            if self.args.canopy == 'virtual':
-                out = [out]
-                if k == 'plantids':
-                    assert out[0].min() == 0
-                    maxid = out[0].max() + 1
-                    for ivert in range(1, self.nvirtual + 1):
-                        out.append(out[0] + ivert * maxid)
-                else:
-                    for ivert in range(1, self.nvirtual + 1):
-                        out.append(out[0])
-                out = np.hstack(out)
-            values[k] = out
+        for k, v in self.get_face_property(self._query_options_adm).items():
+            if k not in values:
+                values[k] = v
         return values
 
     @classmethod
@@ -1116,12 +1103,42 @@ class RayTraceTask(TaskBase):
         mesh.add_colors('vertex', vertex_colors)
         return mesh.mesh
 
+    def get_face_property(self, query=None):
+        r"""Get values for properties of faces in the mesh, scaled
+        appropriately for virtual canopies.
+
+        Args:
+            query (str, list, optional): Name of the field(s) that should
+                be calculated.
+
+        Returns:
+            dict: Dictionary of ray tracer queries.
+
+        """
+        if query is None:
+            query = self.mesh.face_properties
+        if isinstance(query, list):
+            return {k: self.get_face_property(k) for k in query}
+        out = self.mesh.get_face_property(query)
+        if self.args.canopy == 'virtual':
+            out = [out]
+            if query == 'plantids':
+                assert out[0].min() == 0
+                maxid = out[0].max() + 1
+                for ivert in range(1, self.nvirtual + 1):
+                    out.append(out[0] + ivert * maxid)
+            else:
+                for ivert in range(1, self.nvirtual + 1):
+                    out.append(out[0])
+            out = np.hstack(out)
+        return out
+
     def raytrace_scene(self, query=None):
         r"""Run the ray tracer on the selected geometry.
 
         Args:
-            query (str, optional): Name of the field that should be
-                calculated.
+            query (str, list, optional): Name of the fields that should
+                be calculated.
 
         Returns:
             dict: Dictionary of ray tracer queries.

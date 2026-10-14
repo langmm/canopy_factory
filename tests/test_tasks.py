@@ -312,13 +312,13 @@ class TestRayTraceTask(TestTask):
             'values': [
                 {'crop': 'maize', 'id': 'default', 'canopy': 'single'},
                 {'crop': 'maize', 'id': 'default', 'canopy': 'virtual',
-                 'periodic_canopy': True},
+                 'periodic_canopy': True, 'nrays': 128},
                 {'crop': 'maize', 'id': 'default',
                  'canopy': 'virtual_single'},
                 # {'crop': 'maize', 'id': 'default', 'canopy': 'virtual',
                 #  'time': '2024-06-20 13:54:43.950993-05:00'},
                 # {'crop': 'maize', 'id': 'default', 'canopy': 'virtual',
-                #  'periodic_canopy': True,
+                #  'periodic_canopy': True, 'nrays': 128,
                 #  'time': '2024-06-20 13:54:43.950993-05:00'},
             ],
             'ids': [
