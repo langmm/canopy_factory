@@ -26,6 +26,18 @@ from canopy_factory.crops import (
 ############################################################
 
 def _piecewise_properties_suffix(x):
+    r"""Build a suffix describing configured piecewise parameters.
+
+    Args:
+        x (object): Object with ``piecewise_param``,
+            ``piecewise_param_values``, ``piecewise_files``, and
+            ``piecewise_ids`` attributes.
+
+    Returns:
+        str: Underscore-joined parameter and value/ID pairs, or an empty
+            string if piecewise parameters are not configured.
+
+    """
     if not (x.piecewise_param and x.piecewise_param_values
             and (x.piecewise_files or x.piecewise_ids)):
         return ''
@@ -152,6 +164,12 @@ class ParametrizeCropTask(TaskBase):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register unit arguments and complete class registration.
+
+        Args:
+            cls (type): Class being registered.
+
+        """
         units_args = {
             'output': {
                 'defaults': {
@@ -1025,6 +1043,15 @@ class LayoutTask(TaskBase):
         return out
 
     def _get_color(self, plantid):
+        r"""Return the color that should be used to plot a plant.
+
+        Args:
+            plantid (int): ID of the plant to get the color for.
+
+        Returns:
+            str: Color for the plant.
+
+        """
         if plantid == 0 and self.args.canopy.startswith('virtual'):
             return self.args.real_plant_color
         if self.isExteriorPlant(plantid):
@@ -1175,6 +1202,13 @@ class LayoutTask(TaskBase):
 
 class FieldPositionGenerator:
 
+    r"""Class for generating random plant positions within a field.
+
+    Positions are drawn from a normal distribution seeded by the starting
+    plant ID so that the same sequence of deviations is produced when
+    plants are generated out of order.
+
+    """
     def __init__(self, args):
         self.args = args
         self.generator = None
@@ -1182,10 +1216,18 @@ class FieldPositionGenerator:
         self.reset()
 
     def reset(self):
+        r"""Reset the generator to the starting plant ID."""
         self.generator = np.random.default_rng(seed=self.args.plantid)
         self.current_plantid = self.args.plantid
 
     def _generate(self):
+        r"""Generate the position deviation for the next plant.
+
+        Returns:
+            tuple: Row and column deviations as quantities, both zero for
+                the first plant in the field.
+
+        """
         if self.current_plantid == self.args.plantid:
             out = tuple([
                 parse_quantity(0.0, self.args.plant_spacing.units)
@@ -1218,6 +1260,15 @@ class FieldPositionGenerator:
 
 class PlantMesh(utils.RegisteredClassBase):
 
+    r"""Class for per-face plant geometry data and its backing mesh.
+
+    Stores one row per mesh face giving the owning plant ID, component
+    ID, and any per-component data such as ``Age``, along with the mesh
+    file the faces reference. Face ranges are serialized sparsely using
+    ``face_start`` and ``face_stop`` so that runs of faces sharing a
+    component are stored only once.
+
+    """
     _registry_key = 'file'
     _registry_name = 'plant'
     _names_header = [
@@ -1304,6 +1355,22 @@ class PlantMesh(utils.RegisteredClassBase):
     @classmethod
     def from_components(cls, args, mesh, components,
                         mesh_file=None):
+        r"""Construct a PlantMesh from per-component face ranges.
+
+        Args:
+            args (argparse.Namespace, dict): Arguments describing the plant
+                and its field.
+            mesh (object): Mesh containing all of the component faces.
+            components (dict): Mapping from component name to a list of
+                ``(first_face, nfaces, data)`` tuples, where ``data``
+                optionally maps per-component data names to values.
+            mesh_file (str, optional): Path to the file the mesh is stored
+                in.
+
+        Returns:
+            PlantMesh: Instance built from the provided components.
+
+        """
         component_order = sorted(list(components.keys()))
         ncomponents = sum(len(v) for v in components.values())
         body = {
@@ -1341,6 +1408,16 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @classmethod
     def from_file(cls, fname):
+        r"""Read a PlantMesh from a CSV file.
+
+        Args:
+            fname (str): Path to the CSV file to read. The mesh file stored
+                in the header is resolved relative to this path.
+
+        Returns:
+            PlantMesh: Instance read from the file.
+
+        """
         body = utils.read_csv(fname)
         header = body.pop("HEADER_JSON")
         args = header.pop("args")
@@ -1375,6 +1452,16 @@ class PlantMesh(utils.RegisteredClassBase):
         return out
 
     def write(self, fname):
+        r"""Write the mesh and its face data to files.
+
+        The backing mesh is written next to ``fname`` using the configured
+        mesh format if ``mesh_file`` is not already set.
+
+        Args:
+            fname (str): Path to the CSV file that the face data should be
+                written to.
+
+        """
         if not self.mesh_file:
             self.mesh_file = (
                 os.path.splitext(fname)[0]
@@ -1387,6 +1474,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @property
     def mesh(self):
+        r"""object: Mesh, read from file if it is not already loaded."""
         if self._mesh is None:
             self._mesh = utils.read_3D(self.mesh_file)
         assert self._mesh.nface == self.nfaces
@@ -1394,47 +1482,74 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def nfaces(self):
+        r"""int: Total number of faces in the mesh."""
         stops = self.body[self._names_sparse[1]]
         return int(stops[-1]) + 1 if len(stops) else 0
 
     @cached_property
     def facedata(self):
+        r"""dict: Face data with sparse face ranges expanded."""
         return self.expand_sparse(self.body)
 
     @cached_property
     def face_properties(self):
+        r"""list: Names of the per-face properties that are available."""
         out = [k for k in self.body.keys()
                if k not in self._names_sparse]
         out += self._names_body_calc
         return out
 
     def get_face_property(self, name):
+        r"""Return a per-face property by name.
+
+        Args:
+            name (str): Name of the property to return.
+
+        Returns:
+            np.ndarray: Values of the property, one per face.
+
+        """
         if name in self._names_body_calc:
             return getattr(self, name)
         return self.facedata[name]
 
     def face_property_mask(self, k, v):
+        r"""Return a mask selecting faces with a given property value.
+
+        Args:
+            k (str): Name of the property to test.
+            v: Value that selected faces should match.
+
+        Returns:
+            np.ndarray: Boolean mask over the faces.
+
+        """
         assert k in self.face_properties
         return (self.get_face_property(k) == v)
 
     @property
     def plantids(self):
+        r"""np.ndarray: Plant ID assigned to each face."""
         return self.facedata['plantids']
 
     @property
     def componentids(self):
+        r"""np.ndarray: Component ID assigned to each face."""
         return self.facedata['componentids']
 
     @cached_property
     def mesh_dict(self):
+        r"""dict: Mesh data as arrays of vertices and faces."""
         return utils.get_mesh_dict(self.mesh)
 
     @cached_property
     def areas(self):
+        r"""units.Quantity: Area of each face in the mesh."""
         return parse_quantity(self.mesh.areas, self.args.mesh_units**2)
 
     @cached_property
     def vert_heights(self):
+        r"""np.ndarray: Height of each vertex above the ground."""
         return (
             np.dot(self.mesh_dict['vertex'], self.args.axis_up)
             - self.args.ground_height.value
@@ -1442,6 +1557,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def vert_ground(self):
+        r"""np.ndarray: Ground-projected coordinates of each vertex."""
         return utils.project_onto_ground(
             self.mesh_dict['vertex'],
             self.args.axis_rows, self.args.axis_cols,
@@ -1449,6 +1565,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def height(self):
+        r"""units.Quantity: Mean height above ground of each face."""
         if len(self.mesh_dict['face']) == 0:
             face_heights = parse_quantity(
                 np.zeros((0, ), dtype=self.vert_heights.dtype),
@@ -1461,6 +1578,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def field_mins(self):
+        r"""units.Quantity: Lower corner of the field bounding box."""
         return parse_quantity(
             self.vert_ground.min(axis=0) if len(self.vert_ground)
             else np.zeros((2, ), self.vert_ground.dtype),
@@ -1469,6 +1587,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def field_maxs(self):
+        r"""units.Quantity: Upper corner of the field bounding box."""
         return parse_quantity(
             self.vert_ground.max(axis=0) if len(self.vert_ground)
             else np.zeros((2, ), self.vert_ground.dtype),
@@ -1477,20 +1596,24 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def unique_plantids(self):
+        r"""list: Sorted unique plant IDs contained in the mesh."""
         return sorted(np.unique(self.plantids))
 
     @cached_property
     def planting_density(self):
+        r"""units.Quantity: Planting density of the field."""
         return 1.0 / (self.args.plant_spacing * self.args.row_spacing)
 
     @cached_property
     def field_area(self):
+        r"""units.Quantity: Area of the field bounding box."""
         return utils.safe_op(
             np.prod, (self.field_maxs - self.field_mins)
         )
 
     @cached_property
     def leaf_area(self):
+        r"""units.Quantity: Total one-sided area of all leaves."""
         if 'Leaf' in self.component_order:
             idx = (self.componentids
                    == self.component_order.index('Leaf'))
@@ -1501,10 +1624,12 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def LAI(self):
+        r"""units.Quantity: Leaf area index of the field."""
         return self.leaf_area * self.planting_density
 
     @property
     def header(self):
+        r"""dict: Header data written to the output file."""
         out = {k: getattr(self, k) for k in self._names_header}
         out['args'] = {
             k: getattr(self.args, k) for k in self._required_args
@@ -1515,6 +1640,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @property
     def json(self):
+        r"""dict: Header and body data as a JSON-serializable dict."""
         out = {
             'HEADER_JSON': self.header
         }
@@ -1522,6 +1648,12 @@ class PlantMesh(utils.RegisteredClassBase):
         return out
 
     def set_units(self, new_units):
+        r"""Scale the mesh into new units in place.
+
+        Args:
+    new_units (units.Units): Units to convert the mesh to.
+
+        """
         if new_units == self.args.mesh_units:
             return
         self._mesh = utils.scale_mesh(
@@ -1533,14 +1665,41 @@ class PlantMesh(utils.RegisteredClassBase):
         self.clear_cached_properties()
 
     def in_units(self, new_units):
+        r"""Return a copy of the mesh converted to new units.
+
+        Args:
+    new_units (units.Units): Units to convert the mesh to.
+
+        Returns:
+            PlantMesh: Copy of the mesh in the requested units.
+
+        """
         out = copy.deepcopy(self)
         out.set_units(new_units)
         return out
 
     def add_colors(self, *args, **kwargs):
+        r"""Add colors to the underlying mesh.
+
+        Args:
+            *args: Positional arguments passed to the mesh.
+            **kwargs: Keyword arguments passed to the mesh.
+
+        """
         self.mesh.add_colors(*args, **kwargs)
 
     def get_plant(self, plantid, mesh_file=None):
+        r"""Extract a single plant from the mesh.
+
+        Args:
+            plantid (int): ID of the plant to extract.
+            mesh_file (str, optional): Path to the file that the plant mesh
+                is stored in.
+
+        Returns:
+            PlantMesh: Instance containing only the requested plant.
+
+        """
         compmask = (self.body['plantids'] == plantid)
         kws = {k: getattr(self, k) for k in self._names_header
                if k not in ['mesh_file', 'field_info']}
@@ -1561,6 +1720,16 @@ class PlantMesh(utils.RegisteredClassBase):
         return type(self)(args, mesh=mesh, body=body, **kws)
 
     def append(self, other):
+        r"""Append the faces of one or more other meshes in place.
+
+        The other mesh's component IDs are remapped to this mesh's
+        component order and its face ranges are offset so that they
+        follow the existing faces.
+
+        Args:
+            other (PlantMesh, list): Mesh or list of meshes to append.
+
+        """
         if isinstance(other, list):
             for x in other:
                 self.append(x)
@@ -1606,6 +1775,7 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @cached_property
     def nplants(self):
+        r"""int: Total number of plants across all combined fields."""
         out = (self.args.ncols * self.args.nrows)
         if not self.field_info:
             return out
@@ -1614,6 +1784,15 @@ class PlantMesh(utils.RegisteredClassBase):
         return out
 
     def append_plant(self, other, **kwargs):
+        r"""Append one or more plants at their next field position.
+
+        Args:
+            other (PlantMesh, list): Plant mesh or list of plant meshes to
+                append.
+            **kwargs: Additional keyword arguments are passed to
+                :meth:`plantpos`.
+
+        """
         if isinstance(other, list):
             for x in other:
                 self.append_plant(x, **kwargs)
@@ -1628,6 +1807,20 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @classmethod
     def stack_plants(cls, meshes, nrows, ncols):
+        r"""Combine plant meshes into a field of the given size.
+
+        The first mesh is used as the base and the remaining meshes are
+        appended at successive plant positions.
+
+        Args:
+            meshes (list): Plant meshes to stack.
+            nrows (int): Number of rows in the resulting field.
+            ncols (int): Number of columns in the resulting field.
+
+        Returns:
+            PlantMesh: Field containing all of the provided plants.
+
+        """
         out = copy.deepcopy(meshes[0])
         out.args.nrows = nrows
         out.args.ncols = ncols
@@ -1638,6 +1831,15 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @classmethod
     def stack(cls, meshes):
+        r"""Combine meshes by appending their faces.
+
+        Args:
+            meshes (list): Meshes to combine, used in order.
+
+        Returns:
+            PlantMesh: Combined mesh.
+
+        """
         out = copy.deepcopy(meshes[0])
         for x in meshes[1:]:
             out.append(x)
@@ -1645,12 +1847,24 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @classmethod
     def field_offset(cls, args, row_spacing=None):
+        r"""Return the offset to the next field along the row axis.
+
+        Args:
+            args (argparse.Namespace): Arguments for the current field.
+            row_spacing (units.Quantity, optional): Row spacing of the
+                current field. Defaults to ``args.row_spacing``.
+
+        Returns:
+            units.Quantity: Row-axis offset for the next field.
+
+        """
         if row_spacing is None:
             row_spacing = args.row_spacing
         return args.x + args.row_spacing * (args.nrows + 2)
 
     @cached_property
     def field_edge(self):
+        r"""units.Quantity: Row-axis edge of all combined fields."""
         out = self.field_offset(self.args)
         if not self.field_info:
             return out
@@ -1659,6 +1873,13 @@ class PlantMesh(utils.RegisteredClassBase):
         return out
 
     def append_field(self, other):
+        r"""Append one or more fields next to the current field.
+
+        Args:
+            other (PlantMesh, list): Field mesh or list of field meshes to
+                append.
+
+        """
         if isinstance(other, list):
             for x in other:
                 self.append_field(x)
@@ -1675,12 +1896,30 @@ class PlantMesh(utils.RegisteredClassBase):
 
     @classmethod
     def stack_fields(cls, meshes):
+        r"""Combine meshes by appending them as adjacent fields.
+
+        Args:
+            meshes (list): Field meshes to combine, used in order.
+
+        Returns:
+            PlantMesh: Combined field mesh.
+
+        """
         out = copy.deepcopy(meshes[0])
         for x in meshes[1:]:
             out.append_field(x)
         return out
 
     def shift(self, x, y, plantid=None):
+        r"""Shift the mesh and its data in place.
+
+        Args:
+            x (units.Quantity): Distance to shift along the row axis.
+            y (units.Quantity): Distance to shift along the column axis.
+                plantid (int, optional): Amount to add to every plant ID.
+                If not provided, the plant IDs are left unchanged.
+
+        """
         xo = x.to(self.args.mesh_units).value
         yo = y.to(self.args.mesh_units).value
         if plantid is not None:
@@ -1697,17 +1936,54 @@ class PlantMesh(utils.RegisteredClassBase):
         self.clear_cached_properties()
 
     def shifted(self, *args, **kwargs):
+        r"""Return a copy of the mesh shifted by the given amount.
+
+        Args:
+            *args: Positional arguments are passed to :meth:`shift`.
+            **kwargs: Keyword arguments are passed to :meth:`shift`.
+
+        Returns:
+            PlantMesh: Shifted copy of the mesh.
+
+        """
         out = copy.deepcopy(self)
         out.shift(*args, **kwargs)
         return out
 
     def get_generator(self, args=None):
+        r"""Return a position generator for the mesh's field.
+
+        Args:
+            args (argparse.Namespace, optional): Arguments to seed the
+                generator with. Defaults to ``self.args``.
+
+        Returns:
+            FieldPositionGenerator: Generator for plant positions.
+
+        """
         if args is None:
             args = self.args
         return FieldPositionGenerator(args)
 
     def plantpos(self, plantid, args=None, generator=None,
                  row_spacing=None, plant_spacing=None):
+        r"""Return the row and column position of a plant.
+
+        Args:
+            plantid (int): ID of the plant to locate.
+            args (argparse.Namespace, optional): Arguments describing the
+                field. Defaults to ``self.args``.
+            generator (FieldPositionGenerator, optional): Generator used
+                to produce the random position deviations.
+            row_spacing (units.Quantity, optional): Override for the row
+                spacing.
+            plant_spacing (units.Quantity, optional): Override for the
+                plant spacing.
+
+        Returns:
+            tuple: Row and column position of the plant.
+
+        """
         if args is None:
             args = self.args
         field_offset = 0.0 * args.row_spacing
@@ -2185,6 +2461,12 @@ class GenerateTask(TaskBase):
         generator = np.random.default_rng(seed=plantid)
 
         def posdev():
+            r"""Return a random position deviation.
+
+            Returns:
+                units.Quantity: Offset drawn from a normal distribution.
+
+            """
             return parse_quantity(generator.normal(
                 0.0,
                 self.args.location_stddev * self.args.plant_spacing.value

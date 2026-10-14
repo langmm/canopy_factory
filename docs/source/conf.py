@@ -34,6 +34,8 @@ rst_epilog = """
 
 extensions = [
     'sphinx.ext.autodoc',
+    "sphinx.ext.autosummary",
+    "sphinx.ext.napoleon",
     'sphinx.ext.doctest',
     'sphinx.ext.intersphinx',
     'sphinx.ext.todo',
@@ -42,8 +44,10 @@ extensions = [
     'sphinx.ext.ifconfig',
     'sphinx.ext.viewcode',
     'sphinx.ext.githubpages',
-    'sphinx.ext.napoleon',
     # 'sphinxarg.ext',
+    "myst_parser",
+    "numpydoc",
+    "sphinx_copybutton",
 ]
 
 templates_path = ['_templates']
@@ -58,5 +62,20 @@ napoleon_custom_sections = [
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'alabaster'
+html_theme = "sphinx_book_theme"
 html_static_path = ['_static']
+html_title = f"{project} {release}"
+html_theme_options = {
+    "repository_url": "https://github.com/langmm/canopy_factory",
+    "repository_branch": "main",
+    "path_to_docs": "docs",
+    "use_edit_page_button": True,
+    "use_issues_button": True,
+    "use_repository_button": True,
+}
+html_context = {
+    "github_user": "langmm",
+    "github_repo": project,
+    "github_version": "main",
+    "doc_path": "docs",
+}

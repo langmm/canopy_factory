@@ -40,6 +40,17 @@ class PlantParameterBase(SubparserBase):
     @staticmethod
     def _add_parameter_arguments(cls, dst, name=None,
                                  existing=None, **kws):
+        r"""Add argument descriptions for all argument properties.
+
+        Args:
+            cls (type): Plant parameter class to add arguments for.
+            dst (SubparserBase): Destination parser to add arguments to.
+            name (str, optional): Name prefix for the generated arguments.
+            existing (list, optional): Destinations of arguments already added.
+            \*\*kws: Additional keyword arguments are passed to
+                :meth:`_add_parameter_argument`.
+
+        """
         if existing is None:
             existing = [x.dest for x in dst._arguments]
         if name is None:
@@ -53,6 +64,25 @@ class PlantParameterBase(SubparserBase):
     @staticmethod
     def _add_parameter_argument(cls, dst, name, existing, k, v,
                                 parents=None, dependencies=None, **kws):
+        r"""Add an argument description for a single property.
+
+        Nested parameter classes are traversed recursively and their
+        arguments are added with a name prefix.
+
+        Args:
+            cls (type): Plant parameter class the property belongs to.
+            dst (SubparserBase): Destination parser to add the argument to.
+            name (str): Name prefix for the generated argument.
+            existing (list): Destinations of arguments already added.
+            k (str): Name of the property.
+            v (dict, type): JSON schema for the property or a nested
+                parameter class.
+            parents (list, optional): Parent (name, class) pairs.
+            dependencies (list, optional): Property dependency dictionaries.
+            \*\*kws: Additional keyword arguments are passed to
+                :meth:`_property2argument`.
+
+        """
         if existing is None:
             existing = [x.dest for x in dst._arguments]
         if name is None:
@@ -81,6 +111,23 @@ class PlantParameterBase(SubparserBase):
     @staticmethod
     def _property2argument(cls, dst, name, k, json,
                            dependencies=None, parents=None, **kws):
+        r"""Convert a JSON schema property into an argument description.
+
+        Args:
+            cls (type): Plant parameter class the property belongs to.
+            dst (SubparserBase): Destination parser to add the argument to.
+            name (str): Name prefix for the generated argument.
+            k (str): Name of the property.
+            json (dict): JSON schema for the property.
+            dependencies (list, optional): Property dependency dictionaries.
+            parents (list, optional): Parent (name, class) pairs.
+            \*\*kws: Additional keyword arguments are passed to the
+                argument description.
+
+        Returns:
+            ArgumentDescription: Description of the generated argument.
+
+        """
         kname = name if name.endswith(k) else name + k
         kwargs = jsonschema2argument(json, no_defaults=True)
         kname_arg = kname.replace('_', '-')
@@ -129,6 +176,20 @@ class PlantParameterBase(SubparserBase):
 
     @staticmethod
     def _format_help(cls, dst, msg, name, k, parents=None):
+        r"""Format a help message using class and component information.
+
+        Args:
+            cls (type): Plant parameter class the message belongs to.
+            dst (SubparserBase): Destination parser the argument is added to.
+            msg (str): Help message template containing format keys.
+            name (str): Name prefix for the property.
+            k (str): Name of the property.
+            parents (list, optional): Parent (name, class) pairs.
+
+        Returns:
+            str: Formatted help message.
+
+        """
         kname = name if name.endswith(k) else name + k
         fmtkws = {
             'class_name': cls._name,
@@ -152,6 +213,17 @@ class PlantParameterBase(SubparserBase):
 
     @classmethod
     def _get_required_properties(cls, name=None):
+        r"""Get the names of required properties.
+
+        Args:
+            name (str, optional): Restrict the result to properties nested
+                under this property name.
+
+        Returns:
+            list: Names of required properties, including nested properties
+                with their parent prefix.
+
+        """
         if name is None:
             out = []
             for k in cls._required:
@@ -165,6 +237,19 @@ class PlantParameterBase(SubparserBase):
     @classmethod
     def _get_property_dependencies(cls, name, prefix='', existing=None,
                                    base=None):
+        r"""Get dependency dictionaries for a property.
+
+        Args:
+            name (str): Name of the property.
+            prefix (str, optional): Prefix to add to dependency names.
+            existing (list, optional): Existing dependency dictionaries to
+                extend.
+            base (dict, optional): Base dependency dictionary to append.
+
+        Returns:
+            list: Property dependency dictionaries.
+
+        """
         out = [] if existing is None else copy.deepcopy(existing)
         out.append({} if base is None else copy.deepcopy(base))
         if name not in cls._property_dependencies:
@@ -218,12 +303,22 @@ def DelayedPlantParameter(name, **kwargs):
     spec_name = kwargs.pop('specialize_name', None)
 
     def parameter_class():
+        r"""Get the registered plant parameter class.
+
+        Returns:
+            type: Registered plant parameter class, specialized if a
+                specialization name was provided.
+
+        """
         cls = get_class_registry().get('plant_parameter', name)
         if spec_name is not None:
             cls = cls.specialize(spec_name, **kwargs)
         return cls
 
     class DelayedPlantParameterMeta(type):
+        r"""Metaclass that defers access to the registered parameter class.
+
+        """
 
         def __call__(self, *args, **kwargs):
             return parameter_class()(*args, **kwargs)
@@ -232,6 +327,9 @@ def DelayedPlantParameter(name, **kwargs):
             return getattr(parameter_class(), k)
 
     class _DelayedPlantParameter(object, metaclass=DelayedPlantParameterMeta):
+        r"""Placeholder parameter class resolved on registration.
+
+        """
         pass
 
     return _DelayedPlantParameter
@@ -693,9 +791,27 @@ class ParameterCache(SimpleWrapper):
                 self.pop_index()
 
     def _forward_key(self, k):
+        r"""Wrap a key with the current index for storage.
+
+        Args:
+            k (str): Key to wrap.
+
+        Returns:
+            tuple: Key paired with the current index.
+
+        """
         return (k, self.index)
 
     def _reverse_key(self, k):
+        r"""Unwrap a stored key to recover the original key.
+
+        Args:
+            k (tuple): Wrapped key.
+
+        Returns:
+            str: Original key.
+
+        """
         return k[0]
 
 
@@ -942,6 +1058,17 @@ class SimplePlantParameter(PlantParameterBase):
 
     @classmethod
     def _get_default(cls, name, param=None):
+        r"""Get the default value for a property.
+
+        Args:
+            name (str): Name of the property.
+            param (PlantParameterBase, optional): Parameter instance used to
+                evaluate the dependencies of nested parameter classes.
+
+        Returns:
+            object: Default value or :class:`NoDefault` if there is none.
+
+        """
         if name in cls._defaults:
             return cls._defaults[name]
         property_entry = cls._properties[name]
@@ -960,6 +1087,24 @@ class SimplePlantParameter(PlantParameterBase):
     @classmethod
     def _eval_cond(cls, param, k, cond, prefix='', value=None,
                    include_defaults=False):
+        r"""Evaluate a property dependency condition.
+
+        Args:
+            param (dict, PlantParameterBase): Parameter values to evaluate
+                against.
+            k (str): Name of the property the condition applies to.
+            cond (bool, list): Condition to evaluate. A bool checks for the
+                presence or absence of a value and a list checks membership.
+            prefix (str, optional): Prefix to add to the property name.
+            value (object, optional): Value to evaluate. If not provided, it
+                is read from param.
+            include_defaults (bool, optional): If True, use class defaults for
+                missing values.
+
+        Returns:
+            bool: True if the condition is met.
+
+        """
         k = f'{prefix}{k}'
         default = NoDefault
         if include_defaults:
@@ -1289,6 +1434,7 @@ class SimplePlantParameter(PlantParameterBase):
 
     @property
     def no_class_defaults(self):
+        r"""bool: True if class defaults should not be applied."""
         if self.parent is not None:
             return self.root._no_class_defaults
         return self._no_class_defaults
@@ -1327,6 +1473,12 @@ class SimplePlantParameter(PlantParameterBase):
 
     @debugging.setter
     def debugging(self, value):
+        r"""Set whether debugging is active, propagating to the root.
+
+        Args:
+            value (bool): New debugging state.
+
+        """
         if self.parent:
             self.root.debugging = value
             return
@@ -1589,6 +1741,20 @@ class SimplePlantParameter(PlantParameterBase):
 
     def _nullify_constant_var(self, idx, var=None, context=None,
                               make_copy=False):
+        r"""Remove constant variables from an index.
+
+        Args:
+            idx (ParameterIndex): Index to modify.
+            var (str, list, optional): Constant variable(s) to remove. If not
+                provided, :attr:`constants_index` is used.
+            context (object, optional): Unused evaluation context.
+            make_copy (bool, optional): If True, copy the index before
+                modifying it.
+
+        Returns:
+            ParameterIndex: Index with constant variables removed.
+
+        """
         if make_copy:
             idx = copy.copy(idx)
         if var is None:
@@ -1845,6 +2011,17 @@ class SimplePlantParameter(PlantParameterBase):
         return out
 
     def _extract_parameters(self, schema, param):
+        r"""Extract parameter classes from a schema.
+
+        Args:
+            schema (dict): JSON schema to split.
+            param (ParameterDict): Parameter values used to detect nested
+                parameters.
+
+        Returns:
+            dict: Schema fragments for the extracted parameter classes.
+
+        """
         parameters = {'properties': {}, 'required': []}
         for k in list(schema.get('properties', {}).keys()):
             if isinstance(schema['properties'][k], type):
@@ -1875,6 +2052,27 @@ class SimplePlantParameter(PlantParameterBase):
     def _parse_single(self, param, schema, child_param=None,
                       parameters=None, required=None, idstr='',
                       subschema_errors=None):
+        r"""Parse a single schema against the parameter values.
+
+        Args:
+            param (ParameterDict): Parameter values to parse.
+            schema (dict): JSON schema to parse against.
+            child_param (ParameterDict, optional): Child parameters to
+                populate.
+            parameters (dict, optional): Extracted parameter classes.
+            required (bool, optional): If True, errors are raised instead of
+                logged.
+            idstr (str, optional): Identifier used in log messages.
+            subschema_errors (list, optional): List to append errors to.
+
+        Returns:
+            bool: True if the schema was satisfied.
+
+        Raises:
+            rapidjson.NormalizationError: If oneOf or allOf subschemas do not
+                match as required.
+
+        """
         if idstr:
             self.log(f'{idstr}: {schema}')
         if child_param is None:
@@ -2136,6 +2334,12 @@ class OptionPlantParameter(SimplePlantParameter):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register option properties and dependencies on a class.
+
+        Args:
+            cls (type): Parameter class being registered.
+
+        """
         opt = cls._name_option
         cls._properties = copy.deepcopy(cls._properties)
         cls._property_dependencies = copy.deepcopy(
@@ -2166,6 +2370,21 @@ class OptionPlantParameter(SimplePlantParameter):
 
     @classmethod
     def _get_property_dependencies(cls, name, prefix='', **kwargs):
+        r"""Get dependency dictionaries for a property.
+
+        Extends the base implementation to merge dependencies for the
+        option property.
+
+        Args:
+            name (str): Name of the property.
+            prefix (str, optional): Prefix to add to dependency names.
+            \*\*kwargs: Additional keyword arguments are passed to the base
+                implementation.
+
+        Returns:
+            list: Property dependency dictionaries.
+
+        """
         out = super(
             OptionPlantParameter, cls)._get_property_dependencies(
                 name, prefix=prefix, **kwargs)
@@ -2843,6 +3062,18 @@ class ColorPlantParameter(SimplePlantParameter):
 
     @classmethod
     def create_colorlist_actual(cls, c0, c1, name="temporary"):
+        r"""Create a color list from a colormap or two endpoint colors.
+
+        Args:
+            c0 (str, tuple): Colormap name or first endpoint color.
+            c1 (tuple, optional): Second endpoint color. Only used when c0 is
+                not a colormap name.
+            name (str, optional): Name for the generated colormap.
+
+        Returns:
+            list: Color list with 256 entries.
+
+        """
         cmap = None
         if isinstance(c0, str):
             import matplotlib as mpl
@@ -2857,12 +3088,24 @@ class ColorPlantParameter(SimplePlantParameter):
         ]
 
     def create_colorlist_data(cls):
+        r"""Create a grayscale color list derived from the data.
+
+        Returns:
+            list: Color list with 256 entries.
+
+        """
         return [
             tuple(int(v) for _ in range(3))
             for v in range(256)
         ]
 
     def create_colorlist(self):
+        r"""Create the color list for the parameter.
+
+        Returns:
+            list: Color list derived from the parameter values.
+
+        """
         vnorm = self.get('DataVarNorm', None)
         if vnorm is None:
             c0 = self.get('')
@@ -3238,6 +3481,12 @@ class CurvePlantParameter(SimplePlantParameter):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register patch and curve properties on a class.
+
+        Args:
+            cls (type): Parameter class being registered.
+
+        """
         SimplePlantParameter._on_registration(cls)
         cls._patch_properties = [k for k in cls._properties.keys()
                                  if k.startswith('Patch')]
@@ -3727,6 +3976,12 @@ class ParameterCollection(SimplePlantParameter):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register parameters declared in ``_parameters`` on a class.
+
+        Args:
+            cls (type): Parameter class being registered.
+
+        """
         SimplePlantParameter._on_registration(cls)
         cls._properties = copy.deepcopy(cls._properties)
         for k, v in cls._parameters.items():
@@ -3834,6 +4089,12 @@ class ComponentBase(SimplePlantParameter):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register a component class, deriving help and plural names.
+
+        Args:
+            cls (type): Component class being registered.
+
+        """
         if cls._name:
             cls._help = cls._name.lower()
             if not cls._name_plural:
@@ -3845,6 +4106,26 @@ class ComponentBase(SimplePlantParameter):
                       cluster_component=None,
                       inherited_properties=None, kws=None,
                       subcomponent_kws=None):
+        r"""Add a component class to a plant class.
+
+        Args:
+            plant_cls (type): Plant class to add the component to.
+            name (str, optional): Name of the component. Defaults to the
+                component's name.
+            parent (type, optional): Parent component class.
+            cluster_component (str, optional): Name of the cluster component
+                the component belongs to.
+            inherited_properties (list, optional): Properties inherited from
+                parent classes.
+            kws (dict, optional): Additional keyword arguments passed to
+                specialize.
+            subcomponent_kws (dict, optional): Keyword arguments passed to
+                subcomponents.
+
+        Returns:
+            type: The added component class.
+
+        """
         if name is None:
             name = cls._name
         if name in plant_cls._components:
@@ -3934,6 +4215,16 @@ class ComponentBase(SimplePlantParameter):
         return out
 
     def CheckProduceComponent(self, *args, **kwargs):
+        r"""Produce a component if the index falls within its range.
+
+        Args:
+            \*args: Positional arguments used to construct the index.
+            \*\*kwargs: Keyword arguments used to construct the index.
+
+        Returns:
+            bool: True if the component was produced.
+
+        """
         kwargs["unit_system"] = self.root.unit_system
         idx = ParameterIndex(*args, **kwargs)
         for var in ["N", "B"]:
@@ -4233,12 +4524,28 @@ class ComponentBase(SimplePlantParameter):
 
 
 class ComplexComponentBase(ComponentBase):
+    r"""Base class for components using a homomorphism stage."""
 
     _required = ['Subcomponents']
     _subcomponent_section = 'homomorphism'
 
     @classmethod
     def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        r"""Add a complex component class to a plant class.
+
+        Subcomponents are deferred until the homomorphism is evaluated so
+        that the geometry can be produced by the complex as a whole.
+
+        Args:
+            plant_cls (type): Plant class to add the component to.
+            name (str, optional): Name of the component.
+            \*\*kwargs: Additional keyword arguments are passed to
+                :meth:`ComponentBase._add_to_plant`.
+
+        Returns:
+            type: The added component class.
+
+        """
         # This prevents any subcomponents from being generated until
         # the geometry is produced. Aging will be handled at the complex
         # level but the subcomponents will not be produced until the
@@ -4436,6 +4743,12 @@ class GeometricComponentBase(ComponentBase, OptionPlantParameter):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register a geometry component class, deriving help and names.
+
+        Args:
+            cls (type): Component class being registered.
+
+        """
         if cls._name:
             cls._help = cls._name.lower()
             if not cls._name_plural:
@@ -4635,6 +4948,22 @@ class StemComponent(GeometricComponentBase):
 
     @classmethod
     def _add_to_plant(cls, plant_cls, name=None, kws=None, **kwargs):
+        r"""Add a stem component class to a plant class.
+
+        Internode width defaults are inherited from the plant class.
+
+        Args:
+            plant_cls (type): Plant class to add the component to.
+            name (str, optional): Name of the component.
+            kws (dict, optional): Additional keyword arguments passed to
+                specialize.
+            \*\*kwargs: Additional keyword arguments are passed to
+                :meth:`ComponentBase._add_to_plant`.
+
+        Returns:
+            type: The added component class.
+
+        """
         if name is None:
             name = cls._name
         if name in plant_cls._components:
@@ -4663,6 +4992,7 @@ class PetioleComponent(StemComponent):
 
 
 class WhorlComponent(ComponentBase):
+    r"""Component for a whorl of subcomponents."""
 
     _name = 'Whorl'
     _required = ['Subcomponents']
@@ -4736,6 +5066,7 @@ class LeafComponent(GeometricComponentBase):
 
 
 class LeafComplex(ComponentBase):
+    r"""Complex component for a leaf and its petiole."""
 
     _name = 'LeafComplex'
     _name_plural = 'LeafComplexes'
@@ -4777,6 +5108,7 @@ class CotyledonComponent(LeafComponent):
 
 
 class CotyledonComplex(LeafComplex):
+    r"""Complex component for a cotyledon."""
 
     _name = 'CotyledonComplex'
     _name_plural = 'CotyledonComplexes'
@@ -4841,6 +5173,16 @@ class ApexComponent(ComponentBase):
                          f"{self.subcomponents}")
 
     def CheckProduceAge(self, *args, **kwargs):
+        r"""Determine if an apex should age rather than produce.
+
+        Args:
+            \*args: Positional arguments used to construct the index.
+            \*\*kwargs: Keyword arguments used to construct the index.
+
+        Returns:
+            bool: True if the apex should age.
+
+        """
         idx = ParameterIndex(*args, **kwargs)
         node_var = self._node_var.title()
         if idx[node_var] > self.get(f"{node_var}Max"):
@@ -4933,6 +5275,20 @@ class BranchComponent(ApexComponent):
 
     @classmethod
     def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        r"""Add a branch component class to a plant class.
+
+        Branch defaults are copied from the corresponding apex defaults.
+
+        Args:
+            plant_cls (type): Plant class to add the component to.
+            name (str, optional): Name of the component.
+            \*\*kwargs: Additional keyword arguments are passed to
+                :meth:`ComponentBase._add_to_plant`.
+
+        Returns:
+            type: The added component class.
+
+        """
         if name is None:
             name = cls._name
         apex_name = name.replace('Branch', 'Apex')
@@ -5090,6 +5446,7 @@ class FruitComponent(GeometricComponentBase):
 
 
 class FruitingComplex(ComplexComponentBase):
+    r"""Complex component for a fruit and its support organs."""
 
     _name = 'FruitingComplex'
     _name_plural = 'FruitingComplexes'
@@ -5123,6 +5480,7 @@ class FruitingComplex(ComplexComponentBase):
 ###############################################
 
 class ClusterApexComponent(ApexComponent):
+    r"""Apex component with cluster-specific index variables."""
 
     _name = 'ClusterApex'
     _name_plural = 'ClusterApexes'
@@ -5132,12 +5490,14 @@ class ClusterApexComponent(ApexComponent):
 
 
 class ClusterStemComponent(StemComponent):
+    r"""Stem component used inside a cluster."""
 
     _name = 'ClusterStem'
     _name_plural = 'ClusterStems'
 
 
 class ClusterComponent(ComponentBase):
+    r"""Component for a cluster of branches and nodes."""
 
     _name = 'Cluster'
     _required = ['Subcomponents']
@@ -5164,6 +5524,18 @@ class ClusterComponent(ComponentBase):
 
     @classmethod
     def _add_to_plant(cls, plant_cls, name=None, **kwargs):
+        r"""Add a cluster component class to a plant class.
+
+        Args:
+            plant_cls (type): Plant class to add the component to.
+            name (str, optional): Name of the component.
+            \*\*kwargs: Additional keyword arguments are passed to
+                :meth:`ComponentBase._add_to_plant`.
+
+        Returns:
+            type: The added component class.
+
+        """
         if name is None:
             name = cls._name
         kwargs['cluster_component'] = name
@@ -5228,18 +5600,21 @@ class ClusterComponent(ComponentBase):
 ###############################################
 
 class LeafletPetiole(ClusterStemComponent):
+    r"""Petiole joining a leaflet to a compound leaf."""
 
     _name = 'LeafletPetiole'
     _name_plural = 'LeafletPetioles'
 
 
 class Leaflet(LeafComponent):
+    r"""Leaflet component of a compound leaf."""
 
     _name = 'Leaflet'
     _name_plural = 'Leaflets'
 
 
 class LeafletComplex(LeafComplex):
+    r"""Complex component for a leaflet."""
 
     _name = 'LeafletComplex'
     _name_plural = 'LeafletComplexes'
@@ -5251,6 +5626,7 @@ class LeafletComplex(LeafComplex):
 
 
 class CompoundLeafNode(NodeComponent):
+    r"""Node of a compound leaf, producing a leaflet complex."""
 
     _name = 'CompoundLeafNode'
     _name_plural = 'CompoundLeafNodes'
@@ -5259,12 +5635,14 @@ class CompoundLeafNode(NodeComponent):
 
 
 class CompoundLeafInternode(ClusterStemComponent):
+    r"""Internode between compound leaf nodes."""
 
     _name = 'CompoundLeafInternode'
     _name_plural = 'CompoundLeafInternodes'
 
 
 class CompoundLeafApex(ClusterApexComponent):
+    r"""Apex of a compound leaf, producing nodes and internodes."""
 
     _name = 'CompoundLeafApex'
     _name_plural = 'CompoundLeafApexes'
@@ -5293,12 +5671,14 @@ class CompoundLeaf(ClusterComponent, LeafComplex):
 ###############################################
 
 class FruitClusterPedicel(PedicelComponent):
+    r"""Pedicel supporting a fruit cluster."""
 
     _name = 'FruitClusterPedicel'
     _name_plural = 'FruitClusterPedicels'
 
 
 class FruitClusterNode(NodeComponent):
+    r"""Node of a fruit cluster, producing a fruiting complex."""
 
     _name = 'FruitClusterNode'
     _name_plural = 'FruitClusterNodes'
@@ -5307,12 +5687,14 @@ class FruitClusterNode(NodeComponent):
 
 
 class FruitClusterInternode(ClusterStemComponent):
+    r"""Internode between fruit cluster nodes."""
 
     _name = 'FruitClusterInternode'
     _name_plural = 'FruitClusterInternodes'
 
 
 class FruitClusterApex(ClusterApexComponent):
+    r"""Apex of a fruit cluster, producing nodes and internodes."""
 
     _name = 'FruitClusterApex'
     _name_plural = 'FruitClusterApexes'
@@ -5426,6 +5808,15 @@ class PlantGenerator(ParameterCollection):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Register a plant generator class.
+
+        Builds the component hierarchy, computes the age at maturity, and
+        collects the command line arguments.
+
+        Args:
+            cls (type): Plant generator class being registered.
+
+        """
         if cls._plant_name is not None:
             cls._help = (f'Generate a 3D geometry for a '
                          f'{cls._plant_name} canopy')
@@ -5508,6 +5899,15 @@ class PlantGenerator(ParameterCollection):
 
     @classmethod
     def _property2component(cls, kname):
+        r"""Get the component name a property belongs to.
+
+        Args:
+            kname (str): Full property name.
+
+        Returns:
+            str: Name of the component the property belongs to or None.
+
+        """
         sorted_components = reversed(sorted(
             get_class_registry().keys('plant_component'), key=len))
         for k in sorted_components:
@@ -5517,6 +5917,16 @@ class PlantGenerator(ParameterCollection):
 
     @classmethod
     def from_dict(cls, parameters):
+        r"""Create a plant generator instance from a parameter dict.
+
+        Args:
+            parameters (dict, PlantGenerator): Parameter values or an
+                existing instance.
+
+        Returns:
+            PlantGenerator: Plant generator instance.
+
+        """
         if isinstance(parameters, cls):
             return parameters
         out_cls = get_class_registry().get("crop", parameters["crop"])
@@ -5554,6 +5964,18 @@ class PlantGenerator(ParameterCollection):
 
     @staticmethod
     def _add_parameter_arguments(cls, dst, **kws):
+        r"""Add argument descriptions for a plant generator class.
+
+        Adds data identifiers and years as choices for the ``id`` and
+        ``data_year`` arguments.
+
+        Args:
+            cls (type): Plant generator class to add arguments for.
+            dst (SubparserBase): Destination parser to add arguments to.
+            \*\*kws: Additional keyword arguments are passed to the base
+                implementation.
+
+        """
         PlantParameterBase._add_parameter_arguments(cls, dst, **kws)
         if not cls._name:
             return
@@ -5594,6 +6016,15 @@ class PlantGenerator(ParameterCollection):
         try:
 
             def header(msg):
+                r"""Format a log header for a section of the Lsystem.
+
+                Args:
+                    msg (str): Section name.
+
+                Returns:
+                    str: Formatted header string.
+
+                """
                 return '\n'.join([
                     '',
                     60 * '#',
@@ -5677,6 +6108,13 @@ class PlantGenerator(ParameterCollection):
         return '\n'.join(out)
 
     def ProduceComponent(self, name, idx):
+        r"""Record that a component was produced.
+
+        Args:
+            name (str): Name of the component.
+            idx (ParameterIndex): Index of the produced component.
+
+        """
         self._component_ledger.setdefault(name, {})
         idx0 = copy.copy(idx)
         idx0["Time"] = None
@@ -5685,10 +6123,28 @@ class PlantGenerator(ParameterCollection):
         self._component_ledger[name][idx0]["Age"] = idx["Age"]
 
     def RemoveComponent(self, name, idx):
+        r"""Record that a component was removed.
+
+        Args:
+            name (str): Name of the component.
+            idx (ParameterIndex): Index of the removed component.
+
+        """
         # TODO: Trace separately
         self.ProduceComponent(name, idx)
 
     def mass_regulated_growth(self, component, idx):
+        r"""Get the mass-regulated growth fraction for a component.
+
+        Args:
+            component (str): Name of the component.
+            idx (ParameterIndex): Index of the component.
+
+        Returns:
+            float: Fraction of the required mass that is available or None if
+                the component has no cohorts.
+
+        """
         if component not in self.component_cohorts:
             return None
         cohorts = self.component_cohorts[component]
@@ -5701,6 +6157,7 @@ class PlantGenerator(ParameterCollection):
 
     @cached_property
     def component_cohorts(self):
+        r"""dict: Cohorts of components grouped by time and mass."""
         out = {}
         for k, v in self._component_ledger.items():
             component = self.parameters[k]

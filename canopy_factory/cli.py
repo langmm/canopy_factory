@@ -37,6 +37,15 @@ class SetBase(object):
 
     @classmethod
     def _is_set_attribute(cls, k):
+        r"""Check if an attribute is used to store the set itself.
+
+        Args:
+            k (str): Attribute name.
+
+        Returns:
+            bool: True if the attribute is a set attribute.
+
+        """
         return (k in cls._set_attributes or hasattr(cls, k))
 
     def __getattr__(self, k):
@@ -181,6 +190,13 @@ class ActionSet(SetBase):
 
 
 class SubParsersAction(argparse._SubParsersAction):
+    r"""Argparse subparsers action with instrumented parsers.
+
+    Extends the base argparse subparsers action to track subparser
+    names, defaults, and positional index and to provide helper
+    methods for retrieving and modifying subparsers.
+
+    """
 
     def __init__(self, *args, default=None, choices=None, func=None,
                  positional_index=0, subparser_name=None, **kwargs):
@@ -432,6 +448,19 @@ class InstrumentedParser(argparse.ArgumentParser):
                     yield xx
 
     def _action_irrelevant(self, action, args):
+        r"""Check if an argument action is irrelevant for the arguments.
+
+        Dependency information is recorded on the relevant argument
+        actions so that it can be added to their help strings.
+
+        Args:
+            action (argparse.Action): Action to check.
+            args (argparse.Namespace): Arguments parsed so far.
+
+        Returns:
+            bool: True if the action is irrelevant, False otherwise.
+
+        """
         if action.help == argparse.SUPPRESS:
             return False
         if not getattr(action, 'dependencies', None):
@@ -496,6 +525,12 @@ class InstrumentedParser(argparse.ArgumentParser):
         return changes
 
     def _add_irrelevant_args_to_help(self, args):
+        r"""Append dependency information to argument help strings.
+
+        Args:
+            args (argparse.Namespace): Arguments parsed so far.
+
+        """
         for action in self._actions:
             if action.help == argparse.SUPPRESS:
                 continue
@@ -525,6 +560,16 @@ class InstrumentedParser(argparse.ArgumentParser):
             x._add_irrelevant_args_to_help(args)
 
     def add_subparser_defaults(self, args):
+        r"""Get the parser and subparser defaults for the arguments.
+
+        Args:
+            args (argparse.Namespace): Arguments parsed so far.
+
+        Returns:
+            tuple: Positional index and default name of the selected
+                subparser, or None if no default is set.
+
+        """
         if self._subparsers_action is None:
             return None
         value = getattr(args, self._subparsers_action.dest, None)
@@ -969,6 +1014,12 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Finalize class attributes when the class is registered.
+
+        Args:
+            cls (CompositeArgument): Class being registered.
+
+        """
         if cls.name is None or not cls._is_factory_class:
             cls.name = cls._name
         if isinstance(cls._arguments_prefixed, list):
@@ -985,6 +1036,13 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
 
     @classmethod
     def composite_argument(cls):
+        r"""Get the composite argument description for this class.
+
+        Returns:
+            arguments.CompositeArgumentDescription: Composite argument
+                description.
+
+        """
         if ((cls._composite_argument is None
              or (cls._composite_argument.name != cls.name))):
             assert cls.name is not None
@@ -1068,6 +1126,12 @@ class CompositeArgument(arguments.RegisteredArgumentClassDict):
         argument_suffix = suffix
 
         class FactoryCompositeClass(cls):
+            r"""Dynamically generated composite argument subclass.
+
+            This class is created by the class factory to modify the
+            arguments of the base class for a specific configuration.
+
+            """
 
             _registry_name = registry_name
             _is_factory_class = True
@@ -2087,6 +2151,18 @@ class OutputArgument(CompositeArgument):
             os.remove(x)
 
     def _base_generator(self, args, name, **kwargs):
+        r"""Generate the file name from the base output.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments.
+            name (str): Name of the output.
+            **kwargs: Additional keyword arguments are passed to the
+                base output's generate method.
+
+        Returns:
+            str: Generated file name.
+
+        """
         assert name == self.output_name
         base = self.base_output
         assert base is not None
@@ -2128,6 +2204,24 @@ class OutputArgument(CompositeArgument):
         return fname
 
     def _generate(self, args, wildcards=None, skipped=None):
+        r"""Generate the file name from the output part generators.
+
+        Args:
+            args (argparse.Namespace): Parsed arguments that the file
+                name should be generated from.
+            wildcards (list, optional): List of arguments that wildcards
+                should be used for in the generated output file name.
+            skipped (list, optional): List of arguments that should be
+                skipped in the generated output file name.
+
+        Returns:
+            str: Generated file name.
+
+        Raises:
+            FilenameGenerationError: If the output is disabled by the
+                generated parts.
+
+        """
         from canopy_factory.utils import FilenameGenerationError
         if self.exclude_dynamic_suffix_param:
             var = getattr(args, self.exclude_dynamic_suffix_param)
@@ -2294,6 +2388,7 @@ class ColorMapArgument(CompositeArgument):
 
     @vmin.setter
     def vmin(self, value):
+        r"""Set the minimum value mapped to colormap."""
         self.args['color_vmin'] = value
 
     @property
@@ -2305,6 +2400,7 @@ class ColorMapArgument(CompositeArgument):
 
     @vmax.setter
     def vmax(self, value):
+        r"""Set the maximum value mapped to colormap."""
         self.args['color_vmax'] = value
 
     @property
@@ -3514,6 +3610,18 @@ class LightArgument(CompositeArgument):
 
     @classmethod
     def parse_spectrum(cls, fname):
+        r"""Parse a spectrum from a file.
+
+        Args:
+            fname (str): File to read the spectrum from.
+
+        Returns:
+            object: Parsed spectrum.
+
+        Raises:
+            NotImplementedError: This method is not yet implemented.
+
+        """
         # TODO:
         # Read
         # integrate total
@@ -3527,6 +3635,20 @@ class LightArgument(CompositeArgument):
 
     @classmethod
     def integrate_spectrum(cls, spectrum, start, stop):
+        r"""Integrate a spectrum between a start and stop value.
+
+        Args:
+            spectrum (object): Spectrum to integrate.
+            start (object): Lower bound of the integration.
+            stop (object): Upper bound of the integration.
+
+        Returns:
+            object: Integrated value.
+
+        Raises:
+            NotImplementedError: This method is not yet implemented.
+
+        """
         raise NotImplementedError
 
 
@@ -4102,6 +4224,12 @@ class TaskBase(SubparserBase):
     # Methods for building arguments
     @staticmethod
     def _build_arguments(cls):
+        r"""Build the arguments for the task class.
+
+        Args:
+            cls (type): Task class whose arguments should be built.
+
+        """
         SubparserBase._build_arguments(cls)
         for k in ['_output_info', '_outputs_required', '_outputs_local']:
             setattr(cls, k, copy.deepcopy(getattr(cls, k)))
@@ -4177,6 +4305,25 @@ class TaskBase(SubparserBase):
     def _copy_external_arguments(dst, src, include=None, exclude=None,
                                  modifications=None, optional=False,
                                  increment_suffix_index=None, **kwargs):
+        r"""Copy arguments from an external task into this class.
+
+        Args:
+            dst (type): Class that arguments should be copied into.
+            src (type): Class that arguments should be copied from.
+            include (list, optional): Argument names that should be
+                included.
+            exclude (list, optional): Argument names that should be
+                excluded.
+            modifications (dict, optional): Modifications that should be
+                applied to the copied arguments.
+            optional (bool, optional): If True, copied outputs are
+                optional.
+            increment_suffix_index (int, optional): Amount to increment
+                the suffix index by.
+            **kwargs: Additional keyword arguments are passed to the
+                argument copy method.
+
+        """
         if modifications is None:
             modifications = {}
         modifications = copy.deepcopy(modifications)
@@ -4315,6 +4462,17 @@ class TaskBase(SubparserBase):
 
         """
         def _read_output(task, name, fname):
+            r"""Read an output file for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to read.
+                fname (str): File to read.
+
+            Returns:
+                object: Contents of the output file.
+
+            """
             if fname is None:
                 fname = task.output_file(name, return_disabled=True)
             if not os.path.isfile(fname):
@@ -4380,6 +4538,13 @@ class TaskBase(SubparserBase):
         """
 
         def _write_output(task, name):
+            r"""Write an output value to a file for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to write.
+
+            """
             output_arg = task._output_argument(task.args, name)
             if not output_arg.enabled_for_write:
                 raise RuntimeError(f'Write to disk not enabled for '
@@ -4480,6 +4645,20 @@ class TaskBase(SubparserBase):
 
     @staticmethod
     def _call_output_task(cls, method, name, args=None):
+        r"""Call a method on the task responsible for an output.
+
+        Args:
+            cls (type): Class to start the output task search from.
+            method (callable): Method to call on the output task.
+            name (str, list, optional): Name(s) of the output(s).
+            args (tuple, optional): Additional positional arguments to
+                pass to the method.
+
+        Returns:
+            object: Result of the method, or a dictionary of results if
+                multiple names were provided.
+
+        """
         if args is None:
             args = tuple([])
         if isinstance(name, list):
@@ -4564,6 +4743,16 @@ class TaskBase(SubparserBase):
         """
 
         def _output_enabled(task, name):
+            r"""Check if an output is enabled for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to check.
+
+            Returns:
+                bool: True if the output is enabled.
+
+            """
             output = getattr(args, f'output_{name}')
             if for_write and (output.dont_write or output.unmerged_param):
                 return False
@@ -4586,6 +4775,16 @@ class TaskBase(SubparserBase):
         """
 
         def _output_enabled(task, name):
+            r"""Check if an output is enabled for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to check.
+
+            Returns:
+                bool: True if the output is enabled.
+
+            """
             return task._output_enabled(task.args, name,
                                         for_write=for_write)
 
@@ -4713,6 +4912,17 @@ class TaskBase(SubparserBase):
         """
 
         def _output_file(task, name):
+            r"""Get the generated file name for an output.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output.
+
+            Returns:
+                str: Generated file name, or False if the output is not
+                    enabled.
+
+            """
             output = task._output_argument(args, name,
                                            copy_args=copy_args)
             # if ((copy_args
@@ -4765,6 +4975,16 @@ class TaskBase(SubparserBase):
 
         """
         def _output_file(task, name):
+            r"""Get the generated file name for an output.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output.
+
+            Returns:
+                str: Generated file name.
+
+            """
             return task._output_file(
                 task.args, name, return_disabled=return_disabled,
                 wildcards=wildcards, skipped=skipped,
@@ -4841,6 +5061,13 @@ class TaskBase(SubparserBase):
         assert not copy_args
 
         def _remove_output(task, name):
+            r"""Remove an output file for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to remove.
+
+            """
             output = task._output_argument(args, name)
             output.remove(args=args, wildcards=wildcards, skipped=skipped,
                           force=force, skip_test_output=skip_test_output)
@@ -4865,6 +5092,13 @@ class TaskBase(SubparserBase):
 
         """
         def _remove_output(task, name):
+            r"""Remove an output file for a task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to remove.
+
+            """
             if remove_local:
                 task._outputs.pop(name, None)
             return task._remove_output(task.args, name=name, **kwargs)
@@ -4880,6 +5114,13 @@ class TaskBase(SubparserBase):
 
         """
         def _cache_output(task, name):
+            r"""Cache an output on the root task.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to cache.
+
+            """
             fname = task.output_file(name, return_disabled=True)
             task._cached_outputs[fname] = task.get_output(name)
 
@@ -4983,6 +5224,16 @@ class TaskBase(SubparserBase):
             name = name.split('filename_', 1)[-1]
 
         def _get_output(task, name):
+            r"""Get an output for a task, generating or loading it.
+
+            Args:
+                task (TaskBase): Task that produced the output.
+                name (str): Name of the output to get.
+
+            Returns:
+                object: Output value or file name.
+
+            """
             if name in task._outputs:
                 if return_fname:
                     fname = task.output_file(name)
@@ -5210,6 +5461,17 @@ class TaskBase(SubparserBase):
 
     @classmethod
     def _over2iterations(cls, over):
+        r"""Convert iteration values into a list of override dicts.
+
+        Args:
+            over (dict): Mapping of parameter names to the values that
+                should be iterated over.
+
+        Returns:
+            list: Dictionaries of parameter overrides, one per
+                combination of iteration values.
+
+        """
         keys = list(over.keys())
         for k in keys:
             if not isinstance(over[k], list):
@@ -5331,6 +5593,8 @@ class TaskBase(SubparserBase):
         output_names = self.enabled_outputs()
         if output_name is None:
             output_name = self._name
+        # TODO: Allow this to be delayed or disabled if only one
+        #   output is needed
         for k in output_names:
             assert getattr(self.args, f'overwrite_{k}') is False
             if not self.output_exists(k):
@@ -5446,6 +5710,9 @@ class TaskBase(SubparserBase):
         if nproc is None or nproc == 1 or remote_callback:
             kwargs.setdefault('output_name', 'instance')
         else:
+            # TODO: Save on remove process and reload on current
+            #   process by default?
+            # kwargs.setdefault('output_name', f'filename_{cls._name}')
             kwargs.setdefault('output_name', cls._name)
         first_inst = None
         first_result = None
@@ -5510,6 +5777,16 @@ class TaskBase(SubparserBase):
 
     @classmethod
     def _run_iteration_wrap(cls, args_tuple):
+        r"""Run a single iteration, returning its output.
+
+        Args:
+            args_tuple (tuple): Tuple of serialized arguments and
+                keyword arguments for the iteration.
+
+        Returns:
+            object: Output of the iteration.
+
+        """
         args_dict, kwargs = args_tuple[:]
         remote_callback = kwargs.pop("remote_callback", None)
         output_name = kwargs.pop("output_name", None)
@@ -5778,6 +6055,12 @@ class IterationTaskBase(TaskBase):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Finalize class attributes when the class is registered.
+
+        Args:
+            cls (IterationTaskBase): Class being registered.
+
+        """
         if cls._step_task is not None:
             step_prop = cls._external_tasks.get(cls._step_task, {})
             # Force the step parameters to be first in the suffix
@@ -6159,6 +6442,17 @@ class ExploreParametersTaskBase(IterationTaskBase):
                               stop_var='stop_time',
                               range_var='value_range',
                               values_var='values'):
+        r"""Initialize time range arguments from the parsed arguments.
+
+        Args:
+            cls (type): Task class whose arguments should be adjusted.
+            args (argparse.Namespace): Parsed arguments.
+            start_var (str, optional): Name of the start argument.
+            stop_var (str, optional): Name of the stop argument.
+            range_var (str, optional): Name of the range argument.
+            values_var (str, optional): Name of the values argument.
+
+        """
         # TODO: Add support for times
         cls._arguments.getnested('location').adjust_args(args)
         cls._arguments[range_var].adjust_args(args)
@@ -6229,6 +6523,17 @@ class ExploreParametersTaskBase(IterationTaskBase):
                             stop_var='stop_time',
                             range_var='value_range',
                             values_var=None):
+        r"""Finalize time range arguments from the parsed arguments.
+
+        Args:
+            cls (type): Task class whose arguments should be adjusted.
+            args (argparse.Namespace): Parsed arguments.
+            start_var (str, optional): Name of the start argument.
+            stop_var (str, optional): Name of the stop argument.
+            range_var (str, optional): Name of the range argument.
+            values_var (str, optional): Name of the values argument.
+
+        """
         values = None
         if values_var:
             values = getattr(args, values_var)
@@ -6387,6 +6692,12 @@ class OptimizationTaskBase(IterationTaskBase):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Finalize class attributes when the class is registered.
+
+        Args:
+            cls (OptimizationTaskBase): Class being registered.
+
+        """
         if cls._step_task is not None:
             cls._output_info = copy.deepcopy(cls._output_info)
             cls._output_info.setdefault(cls._name, {})
@@ -6412,6 +6723,18 @@ class OptimizationTaskBase(IterationTaskBase):
 
     @classmethod
     def _delayed_suffix_generator(cls, *args, **kwargs):
+        r"""Generate the suffix for an output file name.
+
+        Args:
+            *args: Positional arguments are passed to the arguments'
+                suffix generator.
+            **kwargs: Keyword arguments are passed to the arguments'
+                suffix generator.
+
+        Returns:
+            str: Generated suffix.
+
+        """
         return cls._arguments.suffix_generator(*args, **kwargs)
 
     @cached_property
@@ -6570,178 +6893,6 @@ class OptimizationTaskBase(IterationTaskBase):
                 output_name=output_name,
             )
         return super(OptimizationTaskBase, self)._generate_output(name)
-
-
-class TemporalTaskBase(IterationTaskBase):
-    r"""Base class for tasks that iterate over another class."""
-
-    _step_task = None
-    _step_vary = 'time'
-    # Prevent harder later tasks from being dumped on a single processor
-    _default_chunksize = 4
-    _arguments = [
-        arguments.CompositeArgumentDescription(
-            'start_time', 'time',
-            description=' to start at',
-            defaults={'hour': 'sunrise'},
-            suffix_param={},
-        ),
-        arguments.CompositeArgumentDescription(
-            'stop_time', 'time',
-            description=' to stop at',
-            defaults={'hour': 'sunset'},
-            name_base='start_time',
-            suffix_param={},
-        ),
-        (('--step-count', ), {
-            'type': int,
-            'help': ('The number of time steps that should be taken '
-                     'between the start and end time. If not provided, '
-                     'the number of time steps will be determined from '
-                     '\"step_interval\"'),
-            'suffix_param': {},
-        }),
-        (('--duration', ), {
-            'units': 'hours',
-            'help': 'The time that the animation should last',
-        }),
-        (('--step-interval', ), {
-            'units': 'hours',
-            'help': ('The interval (in hours) that should be used '
-                     'between time steps. If not provided, '
-                     '\"step_count\" will be used to calculate the '
-                     'step interval. If \"step_count\" is not '
-                     'provided, a step interval of 1 hour will be '
-                     'used.'),
-        }),
-        (('--dont-age', ), {
-            'action': 'store_true',
-            'help': (
-                'Don\' age the generated scene. Currently this is set '
-                'to true if the start and end date are the same, but '
-                'this may change in the future.'
-            )
-        }),
-    ]
-
-    @classmethod
-    def adjust_args_internal(cls, args, **kwargs):
-        r"""Adjust the parsed arguments including setting defaults that
-        depend on other provided arguments.
-
-        Args:
-            args (argparse.Namespace): Parsed arguments.
-            **kwargs: Additional keyword arguments are passed to the
-                parent class's method.
-
-        """
-        cls._arguments.getnested('location').adjust_args(args)
-        cls._arguments['duration'].adjust_args(args)
-        if args.duration is None and not (args.step_interval is None
-                                          or args.step_count is None):
-            args.duration = args.step_interval * args.step_count
-        start_set = cls._arguments['start_time'].any_arguments_set(args)
-        stop_set = cls._arguments['stop_time'].any_arguments_set(args)
-        if not (start_set or stop_set):
-            start_set = True  # Force default for start
-        if args.duration is not None:
-            if start_set and not stop_set:
-                cls._arguments['start_time'].adjust_args(args)
-                args.stop_time = (
-                    args.start_time.time
-                    + utils.quantity2timedelta(args.duration)
-                )
-            elif stop_set and not start_set:
-                cls._arguments['stop_time'].adjust_args(args)
-                args.start_time = (
-                    args.stop_time.time
-                    - utils.quantity2timedelta(args.duration)
-                )
-        elif not stop_set:
-            if ((args.start_age == "planting"
-                 and args.start_time is None
-                 and args.start_hour is None)):
-                args.start_time = "noon"
-            cls._arguments['start_time'].adjust_args(args)
-            if args.start_time.crop_age_string == 'planting':
-                assert not args.dont_age
-                args.stop_age = 'mature'
-                args.planting_date = args.start_time.date
-                args.stop_doy = None
-                args.stop_date = None
-                if args.start_time.solar_time_string:
-                    args.stop_hour = (
-                        args.start_time.solar_time_string
-                    )
-            elif args.start_time.solar_time_string == 'sunrise':
-                args.stop_hour = 'sunset'
-                args.stop_date = args.start_time.date
-                if args.start_time.crop_age_string:
-                    args.stop_age = (
-                        args.start_time.crop_age_string
-                    )
-            else:
-                args.duration = units.Quantity(24.0, 'hours')
-        if start_set:
-            # Ensure that planting date is set
-            cls._arguments['start_time'].adjust_args(args)
-            if args.start_time.crop_age_string == 'planting':
-                args.planting_date = args.start_time.date
-        super(TemporalTaskBase, cls).adjust_args_internal(args, **kwargs)
-        if args.stop_time.time == args.start_time.time:
-            args.stop_time = args.stop_time.time.replace(
-                hour=0, minute=0, microsecond=0)
-            cls._arguments['stop_time'].adjust_args(args, overwrite=True)
-        assert args.stop_time.time > args.start_time.time
-        duration = args.stop_time.time - args.start_time.time
-        duration = utils.timedelta2quantity(duration)
-        if not args.step_count:
-            if not args.step_interval:
-                ndays = int(duration.to('days'))
-                if ndays > 2:
-                    args.step_interval = units.Quantity(1.0, 'days')
-                else:
-                    args.step_interval = units.Quantity(1.0, 'hours')
-            args.step_count = int(duration / args.step_interval)
-        elif not args.step_interval:
-            args.step_interval = duration / args.step_count
-        args.start_time.update_args(args, name='time')
-        if args.start_time.date == args.stop_time.date:
-            for k in ['crop_age_string', 'solar_date_string']:
-                vstart = getattr(args.start_time, k)
-                vstop = getattr(args.stop_time, k)
-                if vstart == vstop:
-                    continue
-                if vstart:
-                    assert vstop is None
-                    args.stop_time.setarg(k, vstart)
-                else:
-                    assert vstart is None
-                    args.star_time.setarg(k, vstop)
-            args.stop_time.ignore_date = True
-            # TODO: Update this?
-            args.dont_age = True
-        if args.dont_age:
-            args.start_time.ignore_age = True
-
-    def step_args(self):
-        r"""Yield the updates that should be made to the arguments for
-        each step.
-
-        Yields:
-            dict: Step arguments.
-
-        """
-        dt = self.args.step_interval
-        iargs = None
-        for i in range(self.args.step_count):
-            iargs = self.args.start_time.iteration_args(
-                i * dt, dont_age=self.args.dont_age)
-            yield iargs
-        iargs.setdefault('location', self.args.location)
-        time = TimeArgument.from_kwargs(iargs)
-        if time.time < self.args.stop_time.time:
-            yield self.args.stop_time.iteration_args()
 
 
 #################################################################

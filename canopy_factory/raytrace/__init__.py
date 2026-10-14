@@ -77,6 +77,15 @@ def generate_rays(ray_origins, ray_directions,
 
 
 def unique(x):
+    r"""Get the unique values in a list while preserving order.
+
+    Args:
+        x (list): Values to remove duplicates from.
+
+    Returns:
+        list: Unique values in the order they first appear.
+
+    """
     out = []
     for xx in x:
         if xx not in out:
@@ -364,6 +373,7 @@ class RayTraceTask(TaskBase):
 
     @cached_args_property
     def nvirtual(self):
+        r"""int: Number of virtual copies of the canopy."""
         if not self.args.canopy.startswith('virtual'):
             return 0
         return np.prod(self.args.virtual_canopy_count_array) - 1
@@ -401,6 +411,7 @@ class RayTraceTask(TaskBase):
 
     @cached_property
     def component_order(self):
+        r"""list: Order of the plant components in the mesh."""
         return self.mesh.component_order
 
     @cached_property
@@ -479,6 +490,15 @@ class RayTraceTask(TaskBase):
         raise NotImplementedError(query)
 
     def _fill_in_admin_queries(self, values):
+        r"""Fill in the administrative query values for the mesh.
+
+        Args:
+            values (dict): Query values for each face.
+
+        Returns:
+            dict: Query values with administrative queries added.
+
+        """
         values = {k: v for k, v in values.items()}
         for k in self._query_options_adm:
             if k in values:
@@ -500,6 +520,13 @@ class RayTraceTask(TaskBase):
 
     @classmethod
     def _fill_in_calculated_queries(cls, values, query):
+        r"""Fill in query values that are calculated from other queries.
+
+        Args:
+            values (dict): Query values for each face.
+            query (str, list): Query value(s) that are required.
+
+        """
         for k in cls._query_options_depends.keys():
             if k in values:
                 continue
@@ -509,6 +536,17 @@ class RayTraceTask(TaskBase):
 
     @classmethod
     def _check_plantids(cls, values, per_plant):
+        r"""Get the unique plant IDs and check them against per_plant.
+
+        Args:
+            values (dict): Query values for each face.
+            per_plant (bool, int): If an int is provided, the number of
+                unique plant IDs must match it.
+
+        Returns:
+            np.ndarray: Unique plant IDs.
+
+        """
         plantids_unique = np.unique(values['plantids'])
         if not isinstance(per_plant, bool):
             if ((len(plantids_unique) != per_plant
@@ -554,6 +592,15 @@ class RayTraceTask(TaskBase):
             per_plant = False
 
         def create_dst(v):
+            r"""Create an empty container matching the structure of v.
+
+            Args:
+                v (object): Value to create an empty match for.
+
+            Returns:
+                object: Empty container matching v's structure.
+
+            """
             if isinstance(v, dict):
                 return {
                     k: create_dst(vv) for k, vv in v.items()
@@ -561,6 +608,16 @@ class RayTraceTask(TaskBase):
             return []
 
         def to_value(v, v0):
+            r"""Convert a value for stacking against a reference value.
+
+            Args:
+                v (object): Value to convert.
+                v0 (object): Reference value used for shape and units.
+
+            Returns:
+                object: Converted value.
+
+            """
             out = v if not (isinstance(v, np.ndarray) and v.shape) else v.T
             if isinstance(v, units.QuantityArray):
                 out = out.value
@@ -663,6 +720,16 @@ class RayTraceTask(TaskBase):
 
         """
         def func(values, query):
+            r"""Calculate the average of the query over all faces.
+
+            Args:
+                values (dict): Query values for each face.
+                query (str): Query value to average.
+
+            Returns:
+                units.Quantity: Average query value.
+
+            """
             return utils.safe_op(np.mean, values[query],
                                  value_on_empty=0.0)
 
@@ -685,6 +752,16 @@ class RayTraceTask(TaskBase):
 
         """
         def func(values, query):
+            r"""Calculate the sum of the query over all faces.
+
+            Args:
+                values (dict): Query values for each face.
+                query (str): Query value to sum.
+
+            Returns:
+                units.Quantity: Total query value.
+
+            """
             return utils.safe_op(np.sum, values[query],
                                  value_on_empty=0.0)
 
@@ -711,6 +788,20 @@ class RayTraceTask(TaskBase):
         """
 
         def func(values, query, nbins=20, density=False):
+            r"""Calculate the profile of the query over canopy height.
+
+            Args:
+                values (dict): Query values for each face.
+                query (str): Query value to profile.
+                nbins (int, optional): Number of bins to use in the
+                    profile.
+                density (bool, optional): If True, the profile will be
+                    normalized by the number of values in each bin.
+
+            Returns:
+                dict: Bins and histogram of the query values.
+
+            """
             x = values[query]
             x_units = None
             if isinstance(x, units.QuantityArray):
@@ -754,6 +845,16 @@ class RayTraceTask(TaskBase):
         """
 
         def func(values, query):
+            r"""Calculate the limits of the query.
+
+            Args:
+                values (dict): Query values for each face.
+                query (str): Query value to calculate limits for.
+
+            Returns:
+                dict: Linear and log limits for the query.
+
+            """
             x = values[query]
             x_units = None
             if isinstance(x, units.QuantityArray):
@@ -803,6 +904,15 @@ class RayTraceTask(TaskBase):
         }
 
         def get_base(x):
+            r"""Get the base query name and track its prefix.
+
+            Args:
+                x (str): Query name to parse.
+
+            Returns:
+                str: Base query name without the prefix.
+
+            """
             for prefix in self._query_options_calc_prefix:
                 if x.startswith(prefix):
                     out = x.split(prefix, 1)[-1]
@@ -1919,6 +2029,16 @@ class TotalsTask(ExploreParametersTaskBase):
             ylabel = query if query in ['LAI'] else query.title()
 
             def add_units_label(v):
+                r"""Get a string label for the units of a value.
+
+                Args:
+                    v (object): Value to get the units for.
+
+                Returns:
+                    str: Units label including surrounding space or an
+                        empty string.
+
+                """
                 v_units = ''
                 if isinstance(v, units.QuantityArray):
                     if v.units:

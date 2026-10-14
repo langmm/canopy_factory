@@ -169,10 +169,30 @@ class ClassRegistry(object):
 
     @classmethod
     def _class2str(self, cls):
+        r"""Get the string name of a class.
+
+        Args:
+            cls (type): Class to get the name of.
+
+        Returns:
+            str: Class name.
+
+        """
         return str(cls).rsplit('.', 1)[-1].split("\'")[0]
 
     @classmethod
     def _instance2str(self, instance, cls=None):
+        r"""Get the string name to use for an instance.
+
+        Args:
+            instance (object): Instance or string to get the name of.
+            cls (type, optional): Class to use in place of the
+                instance's type if the instance is not a string.
+
+        Returns:
+            str: Class name.
+
+        """
         if isinstance(instance, str):
             classname = instance
         else:
@@ -461,6 +481,12 @@ _class_registry = ClassRegistry()
 
 
 def get_class_registry():
+    r"""Get the global class registry.
+
+    Returns:
+        ClassRegistry: Global class registry instance.
+
+    """
     return _class_registry
 
 
@@ -503,6 +529,7 @@ def readonly_cached_property(method, args=None, **kwargs):
 
     @property
     def _method_wrapper(self):
+        r"""function: Property that caches the method's output."""
         if methodname not in self._cached_properties:
             with self.calculating(methodname):
                 self._cached_properties[methodname] = method(self)
@@ -560,6 +587,15 @@ def cached_factory_property(classname):
 
     """
     def _cached_factory_property(method):
+        r"""Register a cached property for a factory produced class.
+
+        Args:
+            method (function): Method who's output should be cached.
+
+        Returns:
+            function: Decorated method.
+
+        """
         return cached_property(method, classname=classname)
 
     return _cached_factory_property
@@ -628,6 +664,12 @@ class RegisteredClassBase(object, metaclass=RegisteredMetaClass):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Record the registered base classes for a new class.
+
+        Args:
+            cls (type): Class that was registered.
+
+        """
         import inspect
         base = inspect.getmro(cls)[1]
         if getattr(base, '_registered_base_classes', None) is not None:
@@ -1375,6 +1417,15 @@ def correct_obj_color(fname, verbose=False):
     abort = False
 
     def is_int_color(v):
+        r"""Check if a value is an integer in the color range [0, 255].
+
+        Args:
+            v (str): Color value to check.
+
+        Returns:
+            bool: True if the value is a valid integer color.
+
+        """
         vf = float(v)
         if (vf % 1) > 0:
             if verbose:
@@ -1638,6 +1689,15 @@ def scene2geom(scene, cls, d=None, verbose=False, colormap=None,
         import matplotlib as mpl
 
         def fcmap(x):
+            r"""Map a value in [0, 1] to an integer RGBA color tuple.
+
+            Args:
+                x (float): Value between 0 and 1 to map.
+
+            Returns:
+                tuple: Integer RGB color tuple.
+
+            """
             return tuple([
                 int(255 * i) for i in
                 mpl.colormaps[colormap](x)[:-1]
@@ -2931,6 +2991,15 @@ def get_periodic_shifts(period, direction, count,
             continue
 
         def _shift(axis):
+            r"""Get the shift along an axis for the current buffers.
+
+            Args:
+                axis (int): Axis to get the shift for.
+
+            Returns:
+                np.ndarray: Shift vector for the axis.
+
+            """
             return buffers[axis] * period[axis] * direction[axis, :]
 
         ishift = _shift(0)
@@ -2977,11 +3046,13 @@ class UnitSet(object):
 
     @property
     def dimensions(self):
+        r"""list: Names of the dimensions that are set."""
         return [k for k in self._dimensions + self._calculated_dimensions
                 if getattr(self, k) is not None]
 
     @property
     def area(self):
+        r"""units.Unit: Area unit for the set."""
         if self._area is not None:
             return self._area
         if self.length is None:
@@ -2990,6 +3061,7 @@ class UnitSet(object):
 
     @property
     def density(self):
+        r"""units.Unit: Density unit for the set."""
         if self._density is not None:
             return self._density
         if self.length is None or self.mass is None:
@@ -2998,6 +3070,7 @@ class UnitSet(object):
 
     @property
     def units(self):
+        r"""units.Units: Combined units for all set dimensions."""
         out = units.Units()
         for k in self._dimensions:
             v = getattr(self, k)
@@ -3009,6 +3082,18 @@ class UnitSet(object):
     @classmethod
     def add_unit_arguments(cls, dest, prefix, help_template=None,
                            defaults=None):
+        r"""Add unit arguments for each dimension to a destination.
+
+        Args:
+            dest (object): Object with an ``_arguments`` list that the
+                argument specifications will be appended to.
+            prefix (str): Prefix to use in each argument name.
+            help_template (str, optional): Template for the help message
+                that will be formatted with the plural dimension name.
+            defaults (dict, optional): Default value to use for each
+                dimension's argument.
+
+        """
         for k in cls._dimensions:
             iargs = (f'--{prefix}-units-{k}', )
             ikws = {'type': parse_units}
@@ -3203,6 +3288,7 @@ def get_mesh_dict(x):
 ############################################################
 
 class ImmutableDictException(BaseException):
+    r"""Exception raised when an immutable dictionary is modified."""
     pass
 
 
@@ -3288,6 +3374,13 @@ class DictWrapper(MutableMapping):
         return [x for x in self._get_iterator(raw=raw)]
 
     def setdefault(self, k, v):
+        r"""Set a key to a value only if it is not already present.
+
+        Args:
+            k (str): Key to set.
+            v (object): Value to set.
+
+        """
         if k in self:
             return
         self[k] = v
@@ -3304,6 +3397,17 @@ class DictWrapper(MutableMapping):
 
     @classmethod
     def select_keys(cls, x, prefix=''):
+        r"""Copy select keys from a dictionary into a new dictionary.
+
+        Args:
+            x (dict): Dictionary to select keys from.
+            prefix (str, optional): Prefix that selected keys must
+                start with. If empty, all keys are selected.
+
+        Returns:
+            dict: Dictionary containing the selected keys.
+
+        """
         return {
             k: copy.deepcopy(v) for k, v in x.items()
             if (not prefix) or k.startswith(prefix)
@@ -3311,14 +3415,39 @@ class DictWrapper(MutableMapping):
 
     @classmethod
     def remove_prefixed_keys(cls, x, prefix):
+        r"""Remove keys that start with a prefix from a dictionary.
+
+        Args:
+            x (dict): Dictionary to remove keys from.
+            prefix (str): Prefix of keys that should be removed.
+
+        """
         for k in list(x.keys()):
             if k.startswith(prefix):
                 del x[k]
 
     def _forward_key(self, k):
+        r"""Map a key from the wrapped form to its stored form.
+
+        Args:
+            k (str): Key to map.
+
+        Returns:
+            str: Mapped key.
+
+        """
         return k
 
     def _reverse_key(self, k):
+        r"""Map a key from its stored form to the wrapped form.
+
+        Args:
+            k (str): Key to map.
+
+        Returns:
+            str: Mapped key.
+
+        """
         return k
 
     def count_prefix(self, prefix, raw=False):
@@ -3411,6 +3540,16 @@ class DictWrapper(MutableMapping):
         """
 
         def fcond(k, v):
+            r"""Check if a key should be removed.
+
+            Args:
+                k (str): Key to check.
+                v (object): Value associated with the key.
+
+            Returns:
+                bool: True if the key starts with the prefix.
+
+            """
             return ((not prefix) or k.startswith(prefix))
 
         self.remove_cond(fcond, **kwargs)
@@ -3432,9 +3571,28 @@ class DictWrapper(MutableMapping):
         """
 
         def fcond(k, v):
+            r"""Check if a key should be selected.
+
+            Args:
+                k (str): Key to check.
+                v (object): Value associated with the key.
+
+            Returns:
+                bool: True if the key starts with the prefix.
+
+            """
             return ((not prefix) or k.startswith(prefix))
 
         def fstrip(k):
+            r"""Strip the prefix from a key.
+
+            Args:
+                k (str): Key to strip.
+
+            Returns:
+                str: Key with the prefix removed.
+
+            """
             if not prefix:
                 return k
             return k.split(prefix, 1)[-1]
@@ -3545,6 +3703,19 @@ class DictWrapper(MutableMapping):
 
     @classmethod
     def assert_keys_match(cls, x, keys0, logger=None):
+        r"""Assert that a dictionary's keys match an expected list.
+
+        Args:
+            x (dict): Dictionary to check the keys of.
+            keys0 (list): Expected keys.
+            logger (object, optional): Logger that should be used to
+                report mismatches. If not provided, messages are
+                printed.
+
+        Raises:
+            AssertionError: If the keys do not match.
+
+        """
         if not list(x.keys()) == keys0:
             message = (
                 f'ADDED:   {set(x.keys()) - set(keys0)}\n'
@@ -3707,6 +3878,12 @@ class SimpleWrapper(DictWrapper):
 
     @members.setter
     def members(self, x):
+        r"""Set the members of the wrapped dictionary.
+
+        Args:
+            x (list): New members.
+
+        """
         self._wrapped.members = x
 
     def insert(self, idx, member, add_prefix=False, **kwargs):
@@ -3777,11 +3954,32 @@ class PrefixedDict(SimpleWrapper):
         return f'{self._logger_prefix}[{self.prefix}]'
 
     def _forward_key(self, k):
+        r"""Add the prefix to a key.
+
+        Args:
+            k (str): Key to add the prefix to.
+
+        Returns:
+            str: Key with the prefix added.
+
+        """
         if not self.prefix:
             return k
         return f'{self.prefix}{k}'
 
     def _reverse_key(self, k):
+        r"""Remove the prefix from a key.
+
+        Args:
+            k (str): Key to remove the prefix from.
+
+        Returns:
+            str: Key with the prefix removed.
+
+        Raises:
+            KeyError: If the key does not start with the prefix.
+
+        """
         if not self.prefix:
             return k
         if not k.startswith(self.prefix):
@@ -3960,6 +4158,16 @@ class DictSet(DictWrapper):
                 prev.append(k)
 
     def _get_iterator(self, raw=False, prev=None):
+        r"""Yield member key/item pairs from the set's members.
+
+        Args:
+            raw (bool, optional): If True, raw keys should be yielded.
+            prev (list, optional): Set of keys already yielded.
+
+        Yields:
+            tuple: Member items.
+
+        """
         if prev is None:
             prev = []
         for x in self.members:

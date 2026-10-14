@@ -58,6 +58,19 @@ class HothouseRayTracer(RayTracerBase):
 
         def add_plant(plant_type, plantid, triangles, baseID=None,
                       shift=None):
+            r"""Add a plant geometry to the scene.
+
+            Args:
+                plant_type (str): Type of plant being added ('real',
+                    'virtual', or 'periodic').
+                plantid (int): ID of the plant.
+                triangles (np.ndarray): Triangles for the plant faces.
+                baseID (int, optional): Geometry ID of the plant that a
+                    periodic copy is based on.
+                shift (np.ndarray, optional): Translation to apply to the
+                    plant.
+
+            """
             mesh_dict = self.plants[plantid]
             geomID = self._currentIDs['geomID']
             primID = self._currentIDs['primID']
@@ -301,6 +314,13 @@ class HothouseRayTracer(RayTracerBase):
         any_hits = (hits["primID"] != self.RTC_INVALID_GEOMETRY_ID)
 
         def assign_geomID(geomID, v):
+            r"""Assign values to the rays that hit a geometry.
+
+            Args:
+                geomID (int): Scene geometry ID.
+                v (np.ndarray): Values for each face in the geometry.
+
+            """
             idx_hits = np.logical_and(hits["geomID"] == geomID, any_hits)
             idx_scene = hits["primID"][idx_hits]
             if method == 'accumulate':

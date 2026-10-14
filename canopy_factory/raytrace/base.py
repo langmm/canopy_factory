@@ -96,6 +96,7 @@ class RayTracerBase(RegisteredClassBase):
 
     @property
     def mesh_dict(self):
+        r"""dict: Mesh dictionary."""
         return self.mesh.mesh_dict
 
     def mesh_keys(self):
@@ -305,6 +306,7 @@ class RayTracerBase(RegisteredClassBase):
 
     @cached_args_property
     def nvirtual(self):
+        r"""int: Number of virtual copies of the canopy."""
         if not self.args.canopy.startswith('virtual'):
             return 0
         return np.prod(self.args.virtual_canopy_count_array) - 1
@@ -563,6 +565,7 @@ class RayTracerBase(RegisteredClassBase):
 
     @cached_args_property
     def tan_camera_fov(self):
+        r"""list: Tangents of half the camera field-of-view angles."""
         return [
             stable_tan(np.radians(self.args.camera_fov_width.value) / 2),
             stable_tan(np.radians(self.args.camera_fov_height.value) / 2)

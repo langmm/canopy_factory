@@ -123,6 +123,15 @@ class SuffixGenerator(object):
         return True
 
     def _value2str(self, x):
+        r"""Convert a value to a string for use in a suffix.
+
+        Args:
+            x (object): Value to convert.
+
+        Returns:
+            str: String representation of the value.
+
+        """
         if isinstance(x, str):
             return x
         if ((isinstance(x, (list, np.ndarray, units.QuantityArray))
@@ -136,9 +145,29 @@ class SuffixGenerator(object):
         return str(x)
 
     def _callable(self, x):
+        r"""Check if a value is a callable that is not NoDefault.
+
+        Args:
+            x (object): Value to check.
+
+        Returns:
+            bool: True if the value is a callable and is not NoDefault.
+
+        """
         return (x is not NoDefault and callable(x))
 
     def _resolve_callable(self, x, args):
+        r"""Resolve a value, calling it with args if it is a callable.
+
+        Args:
+            x (object): Value to resolve.
+            args (argparse.Namespace): Arguments to pass to the
+                callable.
+
+        Returns:
+            object: The resolved value.
+
+        """
         if not self._callable(x):
             return x
         return x(args)
@@ -163,6 +192,17 @@ class SuffixGenerator(object):
             if self._callable(self.noteq):
 
                 def noteq_cond(args):
+                    r"""Check that the value does not equal the noteq
+                    callable result.
+
+                    Args:
+                        args (argparse.Namespace): Parsed arguments.
+
+                    Returns:
+                        bool: True if the value is not equal to the
+                            noteq result.
+
+                    """
                     return (value != self.noteq(args))
 
                 cond.append(noteq_cond)
@@ -177,6 +217,16 @@ class SuffixGenerator(object):
         elif cond:
 
             def cond_accum(args):
+                r"""Accumulate the conditions, returning True only when
+                all are satisfied.
+
+                Args:
+                    args (argparse.Namespace): Parsed arguments.
+
+                Returns:
+                    bool: True if all conditions evaluate to True.
+
+                """
                 return all(self._resolve_callable(x, args)
                            for x in cond)
 
@@ -574,6 +624,24 @@ class ArgumentDescriptionABC(abc.ABC):
         return out
 
     def _get_property(self, name, src=None, from_name=False):
+        r"""Get an argument property value.
+
+        Args:
+            name (str): Property name. If the name starts with
+                'suffix_', the suffix parameter will be used as the
+                source.
+            src (dict, optional): Dictionary for properties in
+                self._properties_dicts should be read.
+            from_name (bool, optional): If True, this lookup is name
+                specific.
+
+        Returns:
+            object: Property value.
+
+        Raises:
+            MissingSourceError: If the property source does not exist.
+
+        """
         if name in self._properties_attributes:
             return getattr(self, name)
         if name.startswith('suffix_'):
@@ -590,6 +658,22 @@ class ArgumentDescriptionABC(abc.ABC):
         return src.get(name, NoDefault)
 
     def _set_property(self, name, value, src=None, from_name=False):
+        r"""Set an argument property value.
+
+        Args:
+            name (str): Property name. If the name starts with
+                'suffix_', the suffix parameter will be used as the
+                target.
+            value (object): Property value.
+            src (dict, optional): Dictionary for properties in
+                self._properties_dicts should be stored.
+            from_name (bool, optional): If True, this modification is
+                name specific.
+
+        Raises:
+            MissingSourceError: If the property source does not exist.
+
+        """
         if name in self._properties_attributes:
             setattr(self, name, value)
             return
@@ -1316,6 +1400,21 @@ class ArgumentDescription(ArgumentDescriptionABC):
                                                self.class_converter)
 
     def _modify(self, name, value, src=None, **kwargs):
+        r"""Modify an argument property with class specific behavior.
+
+        Args:
+            name (str): Property name.
+            value (object): New property value.
+            src (dict, optional): Dictionary for properties in
+                self._properties_dicts should be stored.
+            **kwargs: Additional keyword arguments are passed to the
+                parent _modify method.
+
+        Returns:
+            bool: True if the property should also be passed to child
+                members.
+
+        """
         if name == 'subparser':
             if self.subparser_specific_dest is True:
                 self.subparser_specific_dest = value
@@ -1949,6 +2048,15 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
             return
 
         def suffix_index(x):
+            r"""Return the sort index for an argument.
+
+            Args:
+                x (tuple): Key/value pair for an argument.
+
+            Returns:
+                int: Sort index for the argument.
+
+            """
             k, v = x[:]
             if not v.generates_suffix:
                 return 10000000000000
@@ -2061,6 +2169,13 @@ class ArgumentDescriptionSet(ArgumentDescriptionABC, utils.SimpleWrapper):
         self[key] = x
 
     def replace(self, k, v):
+        r"""Replace an argument in this set.
+
+        Args:
+            k (str): Key of the argument to replace.
+            v (ArgumentDescriptionABC): Replacement argument.
+
+        """
         self.modify(exclude=[k])
         self.__setitem__(k, v, dont_add_class=True)
 
@@ -2322,6 +2437,12 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
 
     @staticmethod
     def _on_registration(cls):
+        r"""Build the arguments when a class is registered.
+
+        Args:
+            cls (type): Class being registered.
+
+        """
         RegisteredClassBase._on_registration(cls)
         if inspect.getmro(cls)[1] == RegisteredClassBase:
             return
@@ -2330,6 +2451,12 @@ class RegisteredArgumentClassBase(RegisteredClassBase):
 
     @staticmethod
     def _build_arguments(cls):
+        r"""Build the argument set for a class.
+
+        Args:
+            cls (type): Class whose arguments should be built.
+
+        """
         if isinstance(cls._arguments, list):
             cls._arguments = ArgumentDescriptionSet(
                 cls._arguments, suffix_param={})
