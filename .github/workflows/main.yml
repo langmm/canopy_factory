@@ -47,9 +47,24 @@ jobs:
       - name: Run tests
         run: pixi run -e ${{ matrix.environment }} test -sv --log-cli-level=INFO
 
-      # Disable this once it is verified to work on all jobs
+  # Disable this or limit to ubuntu once it is verified to work on all jobs?
+  build:
+    name: Run build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-tags: true
+      - uses: prefix-dev/setup-pixi@v0.11.2
+        with:
+          environments: dev
       - name: Build a binary wheel and a source tarball
-        run: pixi run -e ${{ matrix.environment }} python -m build
+        run: pixi run -e dev python -m build
 
   docs:
     name: Build the docs
@@ -70,7 +85,7 @@ jobs:
   all_tests_passed:
     runs-on: ubuntu-latest
     name: All tests passed
-    needs: [lint, test, docs]
+    needs: [lint, test, docs, build]
     if: always()
     steps:
       - name: All tests ok
