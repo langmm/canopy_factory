@@ -5990,8 +5990,8 @@ class PlantGenerator(ParameterCollection):
         }
         if ids:
             mods['append_choices'] = ids
-            if 'id' in cls._defaults:
-                assert cls._defaults['id'] in ids
+            if (('id' in cls._defaults
+                 and cls._defaults['id'] in ids)):
                 mods['default'] = cls._defaults['id']
             else:
                 mods['default'] = ids[0]
