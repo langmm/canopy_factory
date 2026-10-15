@@ -36,7 +36,7 @@ hothouse = ">=0.1.0"
 canopy_factory = { path = ".", editable = true }
 
 [feature.test.dependencies]
-pytest = ">=7.4"
+pytest = ">=8.4"
 pytest-cov = ">=4.1"
 
 [feature.docs.dependencies]
@@ -50,7 +50,9 @@ sphinx-book-theme = ">=1.1"
 conda-index = "*"
 flake8 = "*"
 git-changelog = "*"
-python-build = "*"
+python-build = ">=1.6.1"
+setuptools = ">=61.0"
+setuptools_scm = "*"
 
 [tasks]
 test = { cmd = "pytest", description = "Run the test suite" }

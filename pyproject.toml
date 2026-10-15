@@ -73,12 +73,20 @@ Issues = "https://github.com/langmm/canopy_factory/issues"
 Changelog = "https://github.com/langmm/canopy_factory/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = [
-  'git-changelog',
+test = [
   'pytest>=8.4',
-  'pytest-cov',
-  'sphinx',
+  'pytest-cov>=4.1',
+]
+docs = [
+  'sphinx>=7.2',
+  'myst-parser>=2.0',
+  'numpydoc>=1.6',
+  'sphinx-copybutton>=0.5',
+  'sphinx-book-theme>=1.1',
+]
+dev = [
   'flake8',
+  'git-changelog',
 ]
 
 [tool.setuptools]
