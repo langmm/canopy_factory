@@ -1,0 +1,62 @@
+name: Build and test conda recipe
+
+on:
+  push:
+    branches-ignore:
+      - gh-pages
+  schedule:
+    - cron: 0 10 * * 1  # 3AM PST
+  workflow_dispatch:
+
+jobs:
+  build-conda:
+    name: Build and test conda recipe on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          environments: dev
+
+      - name: Build the conda package
+        run: pixi run -e dev build-conda
+
+      - name: Create a local channel from the built package
+        run: |
+          mkdir -p build/noarch
+          mv build/*.conda build/noarch/
+          pixi run -e dev conda index build/
+
+      - name: Create an environment with the built package
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: install-test
+          create-args: >-
+            -c conda-forge
+            -c ${{ github.workspace }}/build
+            canopy_factory
+
+      - name: Test the installed package
+        shell: bash -leo pipefail {0}
+        run: |
+          cd $RUNNER_TEMP
+          micromamba run -n install-test python -c "import canopy_factory; from canopy_factory import utils; print('import OK')"
+          micromamba run -n install-test canopy_factory --help
+
+  all_recipes_build:
+    runs-on: ubuntu-latest
+    name: Recipe builds on all operating systems
+    needs: [build-conda]
+    if: always()
+    steps:
+      - name: All tests ok
+        if: ${{ !(contains(needs.*.result, 'failure')) }}
+        run: exit 0
+      - name: Some tests failed
+        if: ${{ contains(needs.*.result, 'failure') }}
+        run: exit 1
