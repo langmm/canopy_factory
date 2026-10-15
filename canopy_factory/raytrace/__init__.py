@@ -2095,6 +2095,10 @@ class TotalsTask(ExploreParametersTaskBase):
             x = np.array(x)
         if isinstance(y, list):
             y = np.array(y)
+        if isinstance(x, units.QuantityArray):
+            x = x.value
+        if isinstance(y, units.QuantityArray):
+            y = y.value
         # if isinstance(x, units.QuantityArray):
         #     idxsort = np.argsort(x.value)
         # else:

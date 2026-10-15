@@ -84,12 +84,12 @@ python = "3.13.*"
 # python = "3.14.*"
 
 [environments]
-default = ["test", "docs", "dev", "py313", "apsimx"]
-dev = ["test", "docs", "dev", "py313", "apsimx"]
+default = ["test", "docs", "dev", "apsimx"]
+dev = ["test", "docs", "dev", "apsimx"]
 test = ["test"]
 docs = ["docs"]
 py311 = ["test", "py311", "apsimx"]
 py312 = ["test", "py312", "apsimx"]
 py313 = ["test", "py313", "apsimx"]
 # py314 = ["test", "py314", "apsimx"]
-prod = ["py313", "apsimx"]
+prod = ["apsimx"]

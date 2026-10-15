@@ -308,6 +308,8 @@ class TestRayTraceTask(TestTask):
 
     _registry_name = 'raytrace'
     _params = {
+        'crop': ['maize'],
+        'id': ['default'],
         'arguments': {
             'values': [
                 {'crop': 'maize', 'id': 'default', 'canopy': 'single'},
@@ -394,6 +396,8 @@ class TestTotalsTask(TestTask):
 
     _registry_name = 'totals'
     _params = {
+        'crop': ['maize'],
+        'id': ['default'],
         'arguments': {
             'values': [
                 dict(x, start_time='noon', value_range='1 hr',
@@ -434,6 +438,8 @@ class TestAnimateTask(TestTask):
 
     _registry_name = 'animate'
     _params = {
+        'crop': ['maize'],
+        'id': ['default'],
         'arguments': {
             'values': [
                 TestTotalsTask._params['arguments']['values'][0],

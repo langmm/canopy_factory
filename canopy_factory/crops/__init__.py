@@ -1135,13 +1135,13 @@ class LayoutTask(TaskBase):
         ax = self.axes
         plantid = self.args.plantid
         for pos in layout['plants']:
-            ax.plot(pos[0], pos[1],
+            ax.plot(pos[0].value, pos[1].value,
                     color=self._get_color(plantid),
                     marker='o')
-            ax.annotate(str(plantid), xy=pos, textcoords='data')
+            ax.annotate(str(plantid), xy=pos.value, textcoords='data')
             plantid += 1
         for pos in layout['periodic_plants']:
-            ax.plot(pos[0], pos[1],
+            ax.plot(pos[0].value, pos[1].value,
                     color=self.args.periodic_plant_color,
                     marker='o')
         plant_min = np.vstack([layout['plants'].data,
