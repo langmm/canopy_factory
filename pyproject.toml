@@ -186,7 +186,11 @@ exclude = '''
 '''
 
 [tool.git-changelog]
-template = "keepachangelog"
+# Custom template based on the builtin "keepachangelog" one, extended to also
+# render commits that the "basic" convention cannot classify (e.g. subjects that
+# don't start with add/fix/change/remove/merge/doc) under a trailing "Misc"
+# section, so refactors and other uncategorized commits are never dropped.
+template = "path:changelog.md.jinja"
 bump = "auto"
 output = "CHANGELOG.md"
 in-place = true
